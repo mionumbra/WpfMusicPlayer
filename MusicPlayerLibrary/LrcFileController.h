@@ -83,8 +83,10 @@ public:
 	LrcLanguageHelper& operator=(LrcLanguageHelper&&) = delete;
 	std::string lyric_type_to_std_string(LanguageType type);
 	std::vector<double> extract_line_features(const CString& text, const std::unordered_map<std::string, int>& vocab);
-	song_sample_type extract_song_features(const std::vector<std::string>& seq);
-	LanguageClassification detect_song_language_classification(const CStringArray& lyrics);
+	song_sample_type extract_song_features(const std::vector<LrcLanguageHelper::LanguageType>& seq);
+	LanguageClassification detect_song_language_classification(const std::vector<LrcLanguageHelper::LanguageType>& lyric_lang_type);
+	auto detect_language_slot(
+		const std::vector<std::vector<LanguageType>>& lines) -> std::vector<LanguageType>;
 	LanguageType detect_line_language_type(const CString& input_trimmed);
 	static LrcLanguageHelper& GetSingleton();
 };
@@ -155,7 +157,9 @@ class LrcMultiNode : virtual public LrcAbstractNode {
 
 public:
 
-	LrcMultiNode(int t, const CSimpleArray<CString>& texts, LrcLanguageHelper::LanguageClassification classification);
+	LrcMultiNode(int t, const CSimpleArray<CString>& texts,
+		LrcLanguageHelper::LanguageClassification classification,
+		std::vector<LrcLanguageHelper::LanguageType> recommend_slot);
 
 	[[nodiscard]] int get_lrc_str_count() const override {
 		return str_count;
@@ -238,7 +242,10 @@ class LrcProgressMultiNode final:
 	public LrcProgressNode, public LrcMultiNode
 {
 public:
-	LrcProgressMultiNode(int t, const CString& str_1, const CSimpleArray<CString>& str_arr_2, LrcLanguageHelper::LanguageClassification classification);
+	LrcProgressMultiNode(int t, const CSimpleArray<CString>& str_arr_2, 
+		LrcLanguageHelper::LanguageClassification classification,
+		std::vector<LrcLanguageHelper::LanguageType> recommend_slot);
+	
 	[[nodiscard]] int get_lrc_str_count() const override
 	{
 		return LrcMultiNode::get_lrc_str_count();
@@ -267,25 +274,7 @@ public:
 
 class LrcNodeFactory {
 public:
-	static LrcAbstractNode* CreateLrcNode(int time_ms, const CSimpleArray<CString>& lrc_texts, LrcLanguageHelper::LanguageClassification classification) {
-		auto ifLrcContainsControllerNode = [](const CString& lrc_text)
-		{
-			const auto last_index = lrc_text.GetLength() - 1;
-			return lrc_text.GetLength() > 0 &&
-				(lrc_text[last_index] == ']' || lrc_text[last_index] == '>');
-		};
-		if (lrc_texts.GetSize() == 1) {
-			if (ifLrcContainsControllerNode(lrc_texts[0]))
-				return new LrcProgressNode(time_ms, lrc_texts[0]);
-			return new LrcNode(time_ms, lrc_texts[0]);
-		}
-		if (lrc_texts.GetSize() > 1) {
-			if (ifLrcContainsControllerNode(lrc_texts[0]))
-				return new LrcProgressMultiNode(time_ms, lrc_texts[0], lrc_texts, classification);
-			return new LrcMultiNode(time_ms, lrc_texts, classification);
-		}
-		return nullptr;
-	}
+	static LrcAbstractNode* CreateLrcNode(int time_ms, const CSimpleArray<CString>& lrc_texts, LrcLanguageHelper::LanguageClassification classification, std::vector<LrcLanguageHelper::LanguageType> recommend_slot);
 };
 
 struct LrcLanguageInfo {

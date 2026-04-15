@@ -68,9 +68,7 @@ You can download the latest build from Github CI/CD, but if you want to build by
 - The build system will automatically download and build the required dependencies using vcpkg.
 #### For users using ARM64 solution with non-English environment:
 - FFmpeg may fail to build under non‑English locales.
-- you may need to install a Hyper-V virtual machine with **Visual Studio 2026** and **English (United States) language** Windows 11
-- open the ARM64 solution file in the virtual machine, build the solution, and copy the built executable back to your host machine.
-- or copy the vcpkg_installed folder to your host machine.
+- You can switch your Visual Studio language to en_US and try rebuilding of this solution.
 #### For users using Windows 10 with Intel Hybrid-Architecture CPU (post Alder-lake):
 - On Windows 10, FFmpeg build threads may be scheduled only to E‑cores, causing extremely slow builds.
 - Execute the following command:
@@ -91,7 +89,8 @@ You can download the latest build from Github CI/CD, but if you want to build by
 
 ## Icon Copyright Notice
 - File path: `WpfMusicPlayer/Assets/ApplicationIcon.ico`
-- The project icon was created by [白菜叶_](https://space.bilibili.com/1954890407).  **This icon is NOT free for use and is NOT distributed under the MIT license.**
+
+The project icon was created by [白菜叶_](https://space.bilibili.com/1954890407).  **This icon is NOT free for use and is NOT distributed under the MIT license.**
 
 Users are granted **a limited, non‑exclusive license** to:
 
@@ -100,8 +99,27 @@ Users are granted **a limited, non‑exclusive license** to:
 
 Any other form of use — including extraction, modification, reuse in other projects, or standalone redistribution — is **strictly prohibited** without explicit written permission from **白菜叶_** or **lucas150670**.
 
+## Model Weight Copyright Notice
+- File Path: `WpfMusicPlayer/lyric_lang_mlp.dat`
+- File Path: `WpfMusicPlayer/song_structure_mlp.dat`
+
+The model weights included in this repository are NOT distributed under the MIT license.
+They are licensed under [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/).
+
+If you require:
+
+- higher recognition accuracy,
+- a smaller model, or
+- a model trained on your own dataset,
+
+you can retrain the network using the scripts provided in the following repository:
+
+[dlib_train](https://github.com/WpfMusicPlayer-Dev/dlib_train)
+
+THESE MODEL WEIGHTS ARE PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE. IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY ARISING FROM, OUT OF OR IN CONNECTION WITH THE USE OF THESE WEIGHTS.
+
 ## License
-- License under MIT license.
+- Licensed under the MIT license.
 - This project includes third-party components. Their licenses are listed in [LICENSE.thirdparty.txt](LICENSE.thirdparty.txt).
 
 
