@@ -2,6 +2,7 @@
 #include "LrcFileController.h"
 #include "LocaleConverter.h"
 #include <regex>
+#include <ranges>
 
 #include <msclr/marshal_cppstd.h>
 #include <vcclr.h>
@@ -9,86 +10,30 @@
 using namespace MusicPlayerLibrary;
 
 // 没用了。至少证明我在规则匹配上努力过。但是一直打补丁永远不是解决问题的方法。
-bool IsRomajiSyllableToken(const CStringA& token)
+// IsRomajiSyllableToken and IsStrongSeparatedRomaji removed.
+
+CString SplitLrcForProgressMultiNode1(const CString& text) 
 {
-    static const std::initializer_list<CStringA> romaji_tokens = {
-        "a", "i", "u", "e", "o",
-        "ka", "ki", "ku", "ke", "ko", "ga", "gi", "gu", "ge", "go",
-        "sa", "shi", "su", "se", "so", "za", "ji", "zu", "ze", "zo",
-        "ta", "chi", "tsu", "te", "to", "da", "de", "do",
-        "na", "ni", "nu", "ne", "no",
-        "ha", "hi", "fu", "he", "ho", "ba", "bi", "bu", "be", "bo", "pa", "pi", "pu", "pe", "po",
-        "ma", "mi", "mu", "me", "mo",
-        "ya", "yu", "yo",
-        "ra", "ri", "ru", "re", "ro",
-        "wa", "wo", "n",
-        "kya", "kyu", "kyo", "gya", "gyu", "gyo",
-        "sha", "shu", "sho", "ja", "ju", "jo",
-        "cha", "chu", "cho",
-        "nya", "nyu", "nyo", "hya", "hyu", "hyo",
-        "bya", "byu", "byo", "pya", "pyu", "pyo",
-        "mya", "myu", "myo", "rya", "ryu", "ryo"
-    };
-
-    for (const auto& romaji_token : romaji_tokens)
+    auto new_text = CString();
+    bool is_pressed = false;
+    for (int j = 0; j < text.GetLength(); ++j)
     {
-        if (token == romaji_token)
+        if (text[j] == '[' || text[j] == '<')
         {
-            return true;
-        }
-    }
-    return false;
-}
-
-bool IsStrongSeparatedRomaji(const CString& input)
-{
-    CString lower = input;
-    lower.MakeLower();
-    CStringA text{ CT2A(lower) };
-    CStringA token;
-    int token_count = 0;
-    bool has_separator = false;
-
-    auto flush_token = [&token, &token_count]()
-    {
-        if (token.IsEmpty())
-        {
-            return true;
-        }
-
-        ++token_count;
-        const bool is_valid = IsRomajiSyllableToken(token);
-        token.Empty();
-        return is_valid;
-    };
-
-    for (int i = 0; i < text.GetLength(); ++i)
-    {
-        const unsigned char c = static_cast<unsigned char>(text[i]);
-        if (isspace(c) || c == '-' || c == '\'')
-        {
-            has_separator = true;
-            if (!flush_token())
-            {
-                return false;
-            }
+            is_pressed = true;
             continue;
         }
-
-        if (!isalpha(c))
+        if (text[j] == ']' || text[j] == '>')
         {
-            return false;
+            is_pressed = false;
         }
-
-        token.AppendChar(static_cast<char>(c));
+        else
+        {
+            if (is_pressed) continue;
+            new_text.AppendChar(text[j]);
+        }
     }
-
-    if (!flush_token())
-    {
-        return false;
-    }
-
-    return has_separator && token_count >= 2;
+    return new_text;
 }
 
 CSimpleArray<CString> SplitLrcForProgressMultiNode2(const CSimpleArray<CString>& texts)
@@ -96,27 +41,7 @@ CSimpleArray<CString> SplitLrcForProgressMultiNode2(const CSimpleArray<CString>&
     CSimpleArray<CString> strs;
     for (int i = 0; i < texts.GetSize(); ++i)
     {
-        const auto& text = texts[i];
-        auto new_text = CString();
-        bool is_pressed = false;
-        for (int j = 0; j < text.GetLength(); ++j)
-        {
-            if (text[j] == '[' || text[j] == '<')
-            {
-                is_pressed = true;
-                continue;
-            }
-            if (text[j] == ']' || text[j] == '>')
-            {
-                is_pressed = false;
-            }
-            else
-            {
-                if (is_pressed) continue;
-                new_text.AppendChar(text[j]);
-            }
-        }
-        strs.Add(new_text);
+        strs.Add(SplitLrcForProgressMultiNode1(texts[i]));
     }
     return strs;
 }
@@ -129,22 +54,47 @@ static const std::initializer_list<CString> chinese_aux_lyric_start = {
     _T("编曲:"), _T("编曲：")
 };
 
-LrcMultiNode::LrcMultiNode(int t, const CSimpleArray<CString>& texts, LrcLanguageHelper::LanguageClassification classification) :
+LrcMultiNode::LrcMultiNode(int t, const CSimpleArray<CString>& texts, 
+    LrcLanguageHelper::LanguageClassification classification,
+    std::vector<LrcLanguageHelper::LanguageType> recommend_slot) :
     LrcAbstractNode(t), str_count(texts.GetSize()), lrc_texts(texts)
 {
     for (int i = 0; i < str_count; ++i)
     {
-        lang_types.Add(LrcLanguageHelper::GetSingleton().detect_line_language_type(texts[i]));
         aux_infos.Add(LrcAuxiliaryInfoNative::Ignored);
     }
-    int jp_index = lang_types.Find(LrcLanguageHelper::LanguageType::jp), 
+    int jp_index = -1, kr_index = -1, eng_index = -1, zh_index = -1, jyut_index = -1, roma_index = -1, onomatopoeia_index = -1;
+    using LC = LrcLanguageHelper::LanguageClassification;
+    if (recommend_slot.size() == texts.GetSize())
+    {
+        for (int i = 0; i < recommend_slot.size(); ++i)
+        {
+            switch (recommend_slot[i])
+            {
+            case LrcLanguageHelper::LanguageType::jp: if (jp_index == -1) jp_index = i; break;
+            case LrcLanguageHelper::LanguageType::kr: if (kr_index == -1) kr_index = i; break;
+            case LrcLanguageHelper::LanguageType::en: if (eng_index == -1) eng_index = i; break;
+            case LrcLanguageHelper::LanguageType::zh: if (zh_index == -1) zh_index = i; break;
+            case LrcLanguageHelper::LanguageType::jyut: if (jyut_index == -1) jyut_index = i; break;
+            case LrcLanguageHelper::LanguageType::roma: if (roma_index == -1) roma_index = i; break;
+            default: if (onomatopoeia_index == -1) onomatopoeia_index = i; break;
+            }
+        }
+    }
+    else
+    {
+        for (int i = 0; i < str_count; ++i)
+        {
+            lang_types.Add(LrcLanguageHelper::GetSingleton().detect_line_language_type(texts[i]));
+        }
+        jp_index = lang_types.Find(LrcLanguageHelper::LanguageType::jp), 
         kr_index = lang_types.Find(LrcLanguageHelper::LanguageType::kr),
         eng_index = lang_types.Find(LrcLanguageHelper::LanguageType::en),
         zh_index = lang_types.Find(LrcLanguageHelper::LanguageType::zh),
         jyut_index = lang_types.Find(LrcLanguageHelper::LanguageType::jyut),
         roma_index = lang_types.Find(LrcLanguageHelper::LanguageType::roma),
         onomatopoeia_index = lang_types.Find(LrcLanguageHelper::LanguageType::onomatopoeia);
-    using LC = LrcLanguageHelper::LanguageClassification;
+    }
     auto assign_with_language = [&](int index, LrcAuxiliaryInfoNative type)
     {
         if (index != -1) aux_infos[index] = type;
@@ -267,6 +217,10 @@ LrcMultiNode::LrcMultiNode(int t, const CSimpleArray<CString>& texts, LrcLanguag
                         assign_with_language(eng_index, LrcAuxiliaryInfoNative::Lyric);
                         assign_with_language(zh_index, LrcAuxiliaryInfoNative::Translation);
                     }
+                    else if (onomatopoeia_index != -1)
+                    {
+                        assign_with_language(onomatopoeia_index, LrcAuxiliaryInfoNative::Lyric);
+                    }
                     else
                     {
                         assign_with_language(zh_index, LrcAuxiliaryInfoNative::Lyric);
@@ -278,7 +232,7 @@ LrcMultiNode::LrcMultiNode(int t, const CSimpleArray<CString>& texts, LrcLanguag
                 }
                 else
                 {
-                    assign_with_language(onomatopoeia_index, LrcAuxiliaryInfoNative::Romanization);
+                    assign_with_language(onomatopoeia_index, LrcAuxiliaryInfoNative::Lyric);
                 }
             }
             break;
@@ -299,7 +253,7 @@ LrcMultiNode::LrcMultiNode(int t, const CSimpleArray<CString>& texts, LrcLanguag
                 }
                 else
                 {
-                    assign_with_language(onomatopoeia_index, LrcAuxiliaryInfoNative::Romanization);
+                    assign_with_language(onomatopoeia_index, LrcAuxiliaryInfoNative::Lyric);
                 }
             }
             break;
@@ -439,8 +393,9 @@ LrcLanguageHelper::detect_line_language_type(const CString& input)
 }
 
 song_sample_type 
-LrcLanguageHelper::extract_song_features(const std::vector<std::string>& seq)
+LrcLanguageHelper::extract_song_features(const std::vector<LrcLanguageHelper::LanguageType>& seq)
 {
+    using LT = LrcLanguageHelper::LanguageType;
     const int LANGS = 7; // zh jp kr en jyut roma ono
     song_sample_type feat(67, 1); 
     feat = 0;
@@ -449,13 +404,14 @@ LrcLanguageHelper::extract_song_features(const std::vector<std::string>& seq)
     std::vector count(LANGS, 0);
     for (auto& s : seq)
     {
-        if (s == "zh") count[0]++;
-        else if (s == "jp") count[1]++;
-        else if (s == "kr") count[2]++;
-        else if (s == "en") count[3]++;
-        else if (s == "jyut") count[4]++;
-        else if (s == "roma") count[5]++;
+        if (s == LT::zh) count[0]++;
+        else if (s == LT::jp) count[1]++;
+        else if (s == LT::kr) count[2]++;
+        else if (s == LT::en) count[3]++;
+        else if (s == LT::jyut) count[4]++;
+        else if (s == LT::roma) count[5]++;
         else count[6]++; // onomatopoeia
+        
     }
 
     int idx = 0;
@@ -476,13 +432,13 @@ LrcLanguageHelper::extract_song_features(const std::vector<std::string>& seq)
         auto prev = seq[i - 1];
         auto curr = seq[i];
 
-        auto id = [&](const std::string& s) {
-            if (s == "zh") return 0;
-            if (s == "jp") return 1;
-            if (s == "kr") return 2;
-            if (s == "en") return 3;
-            if (s == "jyut") return 4;
-            if (s == "roma") return 5;
+        auto id = [&](LT s) {
+            if (s == LT::zh) return 0;
+            if (s == LT::jp) return 1;
+            if (s == LT::kr) return 2;
+            if (s == LT::en) return 3;
+            if (s == LT::jyut) return 4;
+            if (s == LT::roma) return 5;
             return 6;
         };
 
@@ -513,14 +469,8 @@ LrcLanguageHelper::extract_song_features(const std::vector<std::string>& seq)
 }
 
 LrcLanguageHelper::LanguageClassification LrcLanguageHelper::detect_song_language_classification(
-    const CStringArray& lyrics)
+    const std::vector<LrcLanguageHelper::LanguageType>& lyric_lang_type)
 {
-    std::vector<std::string> lyric_lang_type;
-    for (int i = 0; i < lyrics.GetCount(); ++i)
-    {
-        const auto& line = lyrics[i];
-        lyric_lang_type.push_back(lyric_type_to_std_string(detect_line_language_type(line)));
-    }
     auto song_feat = extract_song_features(lyric_lang_type);
     int reasoning_result;
     {
@@ -548,6 +498,53 @@ LrcLanguageHelper::LanguageClassification LrcLanguageHelper::detect_song_languag
     if (it != table.end())
         return it->first;
     return LanguageClassification::en_only;
+}
+
+auto LrcLanguageHelper::detect_language_slot(
+    const std::vector<std::vector<LanguageType>>& lines) -> std::vector<LanguageType>
+{
+    // language序列转int，不固定
+    std::unordered_map<int, std::vector<LanguageType>> slot_map_table;
+    // 桶，记录每个序列的得分
+    std::unordered_map<int, int> slot_bucket;
+    
+    int lang_id = 0;
+    for (const auto& line: lines)
+    {
+        int this_lang_id;
+        auto it = std::ranges::find_if(slot_map_table, [line](const std::pair<int, std::vector<LanguageType>>& key)
+        {
+            return key.second == line;
+        });
+        if (it == slot_map_table.end())
+        {
+            this_lang_id = lang_id;
+            slot_map_table[lang_id++] = line;
+        }
+        else
+        {
+            this_lang_id = it->first;
+        }
+        slot_bucket[this_lang_id]++;
+    }
+    auto max_it = std::ranges::max_element(slot_bucket,
+        [](const auto& a, const auto& b) {
+            return a.second < b.second; // 按 value 比较
+        });
+
+    if (max_it == slot_bucket.end())
+        return {};
+
+    int best_lang_id = max_it->first;
+    const auto& best_slot_type = slot_map_table[best_lang_id];
+    std::string best_slot_debug_str = "[ ";
+    for (const auto& slot : best_slot_type)
+    {
+        best_slot_debug_str += lyric_type_to_std_string(slot) + " ";
+    }
+    best_slot_debug_str += "]";
+    ATLTRACE("info: detect slot type = %s", best_slot_debug_str.c_str());
+    return best_slot_type;
 }
 
 LrcLanguageHelper& LrcLanguageHelper::GetSingleton()
@@ -644,11 +641,44 @@ float LrcProgressNode::get_lrc_percentage(float current_timestamp) const
     return percentage;
 }
 
+int SelectBestControllerLine(const CSimpleArray<CString>& str_arr)
+{
+    // 控制点越多，该行为控制行的置信度越高
+    std::vector controller_bucket(str_arr.GetSize(), 0);
+    for (int i = 0; i < str_arr.GetSize(); ++i)
+    {
+        const auto& text = str_arr[i];
+        bool is_pressed = false;
+        for (int j = 0; j < text.GetLength(); ++j)
+        {
+            if (text[j] == '[' || text[j] == '<')
+            {
+                is_pressed = true;
+                continue;
+            }
+            if (text[j] == ']' || text[j] == '>')
+            {
+                is_pressed = false;
+                controller_bucket[i]++;
+            }
+            else
+            {
+                if (is_pressed) continue;
+            }
+        }
+    }
+    auto max_it = std::max_element(controller_bucket.begin(), controller_bucket.end());
+    int max_index = std::distance(controller_bucket.begin(), max_it);
+    return max_index;
+}
+
 LrcProgressMultiNode::LrcProgressMultiNode
-    (int t, const CString& str_1, const CSimpleArray<CString>& str_arr_2, LrcLanguageHelper::LanguageClassification classification):
+    (int t, const CSimpleArray<CString>& str_arr_2, 
+        LrcLanguageHelper::LanguageClassification classification, 
+        std::vector<LrcLanguageHelper::LanguageType> recommend_slot):
     LrcAbstractNode(t),
-    LrcProgressNode(t, str_1),
-    LrcMultiNode(t, SplitLrcForProgressMultiNode2(str_arr_2), classification) { }
+    LrcMultiNode(t, SplitLrcForProgressMultiNode2(str_arr_2), classification, recommend_slot),
+    LrcProgressNode(t, str_arr_2[SelectBestControllerLine(str_arr_2)]) { }
 
 LrcFileControllerNative::~LrcFileControllerNative()
 {
@@ -676,6 +706,32 @@ void LrcFileControllerNative::parse_lrc_file(const CString& file_path)
         err_msg.ReleaseBuffer();
         ATLTRACE(_T("err: err in file open:%s\n"), err_msg.GetString());
     } // nothing happened, LrcFileController remains invalid
+}
+
+LrcAbstractNode* LrcNodeFactory::CreateLrcNode(
+    int time_ms, const CSimpleArray<CString>& lrc_texts, 
+    LrcLanguageHelper::LanguageClassification classification,
+    std::vector<LrcLanguageHelper::LanguageType> recommend_slot)
+{
+    auto ifLrcContainsControllerNode = [](const CString& lrc_text)
+        {
+            const auto last_index = lrc_text.GetLength() - 1;
+            return lrc_text.GetLength() > 0 &&
+                (lrc_text[last_index] == ']' || lrc_text[last_index] == '>');
+        };
+    if (lrc_texts.GetSize() == 1) {
+        if (ifLrcContainsControllerNode(lrc_texts[0]))
+            return new LrcProgressNode(time_ms, lrc_texts[0]);
+        return new LrcNode(time_ms, lrc_texts[0]);
+    }
+    // 遍历所有行，选取第一个有控制点的行构造LrcProgressMultiNode；若没有控制点，回退到LrcMultiNode
+    if (lrc_texts.GetSize() > 1) {
+        for (int i = 0; i < lrc_texts.GetSize(); ++i)
+            if (ifLrcContainsControllerNode(lrc_texts[i]))
+                return new LrcProgressMultiNode(time_ms, lrc_texts, classification, recommend_slot);
+        return new LrcMultiNode(time_ms, lrc_texts, classification, recommend_slot);
+    }
+    return nullptr;
 }
 
 void LrcFileControllerNative::parse_lrc_file_stream(CFile* file_stream)
@@ -856,14 +912,31 @@ void LrcFileControllerNative::parse_lrc_file_stream(CFile* file_stream)
                              {
                                  return a.time_stamp_ms < b.time_stamp_ms;
                              });
-    CStringArray arr_cleaned;
+    std::vector<std::vector<LrcLanguageHelper::LanguageType>> lang_types_node_seq;
+    std::vector<LrcLanguageHelper::LanguageType> lang_types;
+    if (time_lines.empty())
+        throw gcnew System::InvalidOperationException("Empty LRC file or no data found, aborting!");
+    int time_stamp_ms_cur = time_lines[0].time_stamp_ms;
+    auto& detector_instance = LrcLanguageHelper::GetSingleton();
+    // 清洗控制点
     for (const CachedTimeLine& line : time_lines)
     {
-        arr_cleaned.Add(line.text);
+        if (time_stamp_ms_cur != line.time_stamp_ms)
+        {
+            lang_types_node_seq.push_back(lang_types);
+            lang_types.clear();
+            time_stamp_ms_cur = line.time_stamp_ms;
+        }
+        lang_types.push_back(detector_instance.detect_line_language_type(line.text));
     }
-    auto& detector_instance = LrcLanguageHelper::GetSingleton();
-    auto classification = detector_instance.detect_song_language_classification(arr_cleaned);
+    lang_types_node_seq.push_back(lang_types);
+    lang_types.clear();
+    for (const auto& multi_line_tag : lang_types_node_seq)
+        for (const auto& single_line_tag : multi_line_tag)
+            lang_types.push_back(single_line_tag);
+    auto classification = detector_instance.detect_song_language_classification(lang_types);
     ATLTRACE("info: detected classification = %d\n", classification);
+    auto slot_type = detector_instance.detect_language_slot(lang_types_node_seq);
     
     auto pump_stack = [&](bool is_lrc_ended)
     {
@@ -877,7 +950,7 @@ void LrcFileControllerNative::parse_lrc_file_stream(CFile* file_stream)
             std::reverse(lrc_texts.GetData(), lrc_texts.GetData() + lrc_texts.GetSize());
         if (lrc_texts.GetSize() == 0)
             return;
-        if (LrcAbstractNode* node = LrcNodeFactory::CreateLrcNode(recorded_ms, lrc_texts, classification))
+        if (LrcAbstractNode* node = LrcNodeFactory::CreateLrcNode(recorded_ms, lrc_texts, classification, slot_type))
         {
             if (!lrc_nodes.IsEmpty())
             {

@@ -67,9 +67,18 @@
                                    Text="{Binding CurrentLyric.Text}"
                                    FontSize="{Binding FontSize}"
                                    FontWeight="Bold"
-                                   TextWrapping="NoWrap"
                                    TextAlignment="Center"
                                    HorizontalAlignment="Center">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="TextWrapping" Value="Wrap"/>
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding CurrentLyric.IsProgressEnabled, FallbackValue='False'}" Value="True">
+                                            <Setter Property="TextWrapping" Value="NoWrap"/>
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
                             <!-- 渐变笔刷效果 -->
                             <TextBlock.Foreground>
                                 <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
@@ -88,7 +97,8 @@
                         <TextBlock Text="{Binding CurrentLyric.Text}"
                                    FontSize="{Binding FontSize}"
                                    FontWeight="Bold"
-                                   TextWrapping="NoWrap"
+                                   TextAlignment="Center"
+                                   HorizontalAlignment="Center"
                                    IsHitTestVisible="False">
                             <TextBlock.Foreground>
                                 <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
@@ -103,6 +113,7 @@
                             <TextBlock.Style>
                                 <Style TargetType="TextBlock">
                                     <Setter Property="Visibility" Value="Collapsed"/>
+                                    <Setter Property="TextWrapping" Value="Wrap"/>
                                     <Style.Triggers>
                                         <MultiDataTrigger>
                                             <MultiDataTrigger.Conditions>
@@ -113,6 +124,7 @@
                                         </MultiDataTrigger>
                                         <DataTrigger Binding="{Binding CurrentLyric.IsProgressEnabled, FallbackValue='False'}" Value="True">
                                             <Setter Property="Visibility" Value="Visible"/>
+                                            <Setter Property="TextWrapping" Value="NoWrap"/>
                                             <Setter Property="Clip">
                                                 <Setter.Value>
                                                     <MultiBinding Converter="{StaticResource KaraokeClipConverter}">
@@ -132,7 +144,7 @@
 
             <TextBlock Text="{Binding CurrentLyric.Translation, FallbackValue=''}"
                        FontSize="{Binding AuxFontSize}" FontWeight="Normal"
-                       TextAlignment="Center" TextWrapping="NoWrap"
+                       TextAlignment="Center" TextWrapping="Wrap"
                        Margin="0,4,0,0"
                        HorizontalAlignment="Center"
                        Foreground="#CCDDDDDD"
@@ -145,7 +157,7 @@
             
             <TextBlock Text="{Binding CurrentLyric.Romanji, FallbackValue=''}"
                        FontSize="{Binding AuxFontSize}" FontWeight="Normal"
-                       TextAlignment="Center" TextWrapping="NoWrap"
+                       TextAlignment="Center" TextWrapping="Wrap"
                        Margin="0,4,0,0"
                        HorizontalAlignment="Center"
                        Foreground="#CCDDDDDD"
