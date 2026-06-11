@@ -259,11 +259,14 @@ int MusicPlayerLibrary::MusicPlayerNative::load_audio_context_stream(CFile* in_f
 	// set parallel decode (flac, wav..
 	av_opt_set_int(codec_context, "threads", 0, 0);
 
-	// init avaudiofifo
+	// init avaudiofifo with the same format the filter graph feeds to XAudio2.
 	AVChannelLayout stereo_layout = AV_CHANNEL_LAYOUT_STEREO;
+	fifo_audio_channels = stereo_layout.nb_channels;
+	fifo_audio_sample_fmt = AV_SAMPLE_FMT_S16;
+	fifo_sample_rate = sample_rate;
 	if (!audio_fifo) {
-		res = initialize_audio_fifo(codec_context->sample_fmt,
-			stereo_layout.nb_channels,
+		res = initialize_audio_fifo(fifo_audio_sample_fmt,
+			fifo_audio_channels,
 			1024); // initial size
 		if (res < 0) {
 			ATLTRACE("err: initialize_audio_fifo failed\n");
@@ -278,11 +281,14 @@ int MusicPlayerLibrary::MusicPlayerNative::load_audio_context_stream(CFile* in_f
 	frame = av_frame_alloc();
 	filt_frame = av_frame_alloc();
 	packet = av_packet_alloc();
-	decoder_audio_channels = codec_context->ch_layout.nb_channels;
-	decoder_audio_sample_fmt = codec_context->sample_fmt;
 
 	reset_av_filter_equalizer();
-	init_av_filter_equalizer();
+	if (init_av_filter_equalizer() < 0)
+	{
+		uninitialize_audio_engine();
+		release_audio_context();
+		return -1;
+	}
 
 	init_decoder_thread();
 	return 0;
@@ -330,12 +336,14 @@ void MusicPlayerLibrary::MusicPlayerNative::reset_audio_context()
 		stop_audio_decode();
 		av_seek_frame(format_context, static_cast<int>(audio_stream_index), 0, AVSEEK_FLAG_BACKWARD);
 		avcodec_flush_buffers(codec_context);
-		// 清除重采样上下文缓存
-		swr_convert(swr_ctx, nullptr, 0, nullptr, 0);
 		// 重置滤镜图
 		ATLTRACE("info: audio context reset, rebuilding filter graph\n");
 		reset_av_filter_equalizer();
-		init_av_filter_equalizer();
+		if (init_av_filter_equalizer() < 0)
+		{
+			InterlockedExchange(playback_state, audio_playback_state_stopped);
+			return;
+		}
 	}
 	InterlockedExchange(playback_state, audio_playback_state_init);
 	reset_audio_fifo();
@@ -612,31 +620,8 @@ void MusicPlayerLibrary::MusicPlayerNative::read_metadata()
 // playback area
 inline int MusicPlayerLibrary::MusicPlayerNative::initialize_audio_engine()
 {
-	// 初始化swscale
 	if (!codec_context)
 		return -1;
-
-	auto stereo_layout = AVChannelLayout(AV_CHANNEL_LAYOUT_STEREO);
-	swr_alloc_set_opts2(
-		&swr_ctx,
-		&stereo_layout,              // 输出立体声
-		AV_SAMPLE_FMT_S16,
-		sample_rate,
-		&codec_context->ch_layout,
-		codec_context->sample_fmt,
-		codec_context->sample_rate,
-		0, nullptr
-	);
-	out_buffer = DBG_NEW uint8_t[8192];
-	if (int res = swr_init(swr_ctx); res < 0) {
-		char* buf = DBG_NEW char[1024];
-		memset(buf, 0, sizeof(char) * 1024);
-		av_strerror(res, buf, 1024);
-		ATLTRACE("err: swr_init failed, reason=%s\n", buf);
-		delete[] buf;
-		uninitialize_audio_engine();
-		return -1;
-	}
 
 	// COM init in CMFCMusicPlayerLibrary::MusicPlayerNative.cpp
 
@@ -712,16 +697,6 @@ inline void MusicPlayerLibrary::MusicPlayerNative::uninitialize_audio_engine()
 		delete  audio_playback_section;
 		audio_playback_section = nullptr;
 	}
-	if (swr_ctx)
-	{
-		swr_close(swr_ctx);
-		swr_free(&swr_ctx);
-	}
-	if (out_buffer)
-	{
-		delete[] out_buffer;
-		out_buffer = nullptr;
-	}
 	if (source_voice) {
 		UNREFERENCED_PARAMETER(source_voice->Stop(0));
 		UNREFERENCED_PARAMETER(source_voice->FlushSourceBuffers());
@@ -766,7 +741,6 @@ void MusicPlayerLibrary::MusicPlayerNative::audio_playback_worker_thread()
 	CEvent doneEvent(false, false, nullptr, nullptr);
 	DWORD spinWaitResult;
 	double decode_time_ms = 0.0;
-	bool swr_flushed = false;
 
 	while (true) {
 		decode_time_ms = 0.0;
@@ -813,47 +787,9 @@ void MusicPlayerLibrary::MusicPlayerNative::audio_playback_worker_thread()
 			// bypass
 		}
 		else if (!decoder_is_running && fifo_size == 0) {
-			if (!swr_flushed && swr_ctx) {
-				swr_flushed = true;
-				out_buffer_size = sizeof(uint8_t) * xaudio2_play_frame_size * wfx.nBlockAlign;
-
-				while (true) {
-					// reset out_buffer
-					delete[] out_buffer;
-					out_buffer = DBG_NEW uint8_t[out_buffer_size];
-					memset(out_buffer, 0, out_buffer_size);
-
-					// 冲洗swr_convert中最后的残留数据
-					int out_samples = swr_convert(swr_ctx, &out_buffer, xaudio2_play_frame_size, nullptr, 0);
-					if (out_samples <= 0) {
-						// all done!
-						break;
-					}
-
-					ATLTRACE("info: swr_convert flushed %d samples\n", out_samples);
-					// 最后做一次频谱分析
-					if (fft_executer)
-					{
-						fft_executer->AddSamplesToRingBuffer(
-							out_buffer,
-							out_samples * wfx.nBlockAlign);
-					}
-					
-					// 将冲洗出的数据提交给XAudio2
-					XAUDIO2_BUFFER* buffer_pcm = xaudio2_get_available_buffer(out_samples * wfx.nBlockAlign);
-					buffer_pcm->AudioBytes = out_samples * wfx.nBlockAlign;
-					memcpy(const_cast<BYTE*>(buffer_pcm->pAudioData), out_buffer, buffer_pcm->AudioBytes);
-
-					if (FAILED(source_voice->SubmitSourceBuffer(buffer_pcm))) {
-						ATLTRACE("err: submit flushed source buffer failed\n");
-						break;
-					}
-				}
-
-				ATLTRACE("info: decoder stopped and fifo empty, ending playback thread\n");
-				InterlockedExchange(playback_state, audio_playback_state_decoder_exit_pre_stop);
-				continue;
-			}
+			ATLTRACE("info: decoder stopped and fifo empty, ending playback thread\n");
+			InterlockedExchange(playback_state, audio_playback_state_decoder_exit_pre_stop);
+			continue;
 		}
 		// if (fifo_size < xaudio2_play_frame_size) {
 		// 	SetEvent(frame_underrun_event);
@@ -915,45 +851,49 @@ void MusicPlayerLibrary::MusicPlayerNative::audio_playback_worker_thread()
 			}
 		}
 
-		// 创建输出缓冲区
-		// get decoded frame from audio fifo
-
-		//out_buffer_size = sizeof(uint8_t) * frame->nb_samples * wfx.nBlockAlign;
-		// out_buffer_size = (
-		// 	decode_lag_use_big_buffer
-		// 	? sizeof(uint8_t) * xaudio2_play_frame_size * wfx.nBlockAlign * static_cast<int>(ceil(last_frametime / standard_frametime))
-		// 	: sizeof(uint8_t) * xaudio2_play_frame_size * wfx.nBlockAlign
-		// );
-		out_buffer_size = sizeof(uint8_t) * xaudio2_play_frame_size * wfx.nBlockAlign;
-		delete[] out_buffer;
-		out_buffer = DBG_NEW uint8_t[out_buffer_size];
-		memset(out_buffer, 0, out_buffer_size);
-		uint8_t** fifo_buf; int read_bytes;
-		// while (!TryEnterCriticalSection(audio_fifo_section)) {}
+		// Read XAudio2-ready PCM directly from the FIFO. The filter graph already
+		// converts to stereo/s16/sample_rate, so sample counts are in output frames.
+		uint8_t** fifo_buf = nullptr;
+		int read_samples = 0;
 		{
 			CriticalSectionLock fifo_lock(audio_fifo_section);
-			// read_samples_from_fifo((uint8_t**)out_buffer, xaudio2_play_frame_size);
-			// 注意：自定义采样率后，可能会出现FIFO采样率与XAudio2采样率不同的问题，会导致缓冲区被丢弃直到异常停止
-			int fifo_read_size = av_rescale_rnd(xaudio2_play_frame_size, 
-				codec_context->sample_rate, sample_rate, AV_ROUND_DOWN);
-			fifo_buf = (uint8_t**)av_calloc(decoder_audio_channels, sizeof(uint8_t*));
-			if (int alloc_ret = av_samples_alloc(fifo_buf, nullptr, decoder_audio_channels, fifo_read_size, decoder_audio_sample_fmt, 0);
-				alloc_ret < 0) {
-				FFMPEG_CRITICAL_ERROR(alloc_ret);
-				// remove duplicate check.
+			fifo_size = get_audio_fifo_cached_samples_size();
+			if (fifo_size <= 0)
+			{
+				SetEvent(frame_underrun_event);
+				continue;
+			}
+			if (decoder_is_running && !file_stream_end && fifo_size < xaudio2_play_frame_size)
+			{
+				SetEvent(frame_underrun_event);
+				continue;
+			}
+			const int fifo_read_size = (std::min)(xaudio2_play_frame_size, fifo_size);
+			fifo_buf = reinterpret_cast<uint8_t**>(av_calloc(fifo_audio_channels, sizeof(uint8_t*)));
+			if (!fifo_buf)
+			{
 				InterlockedExchange(playback_state, audio_playback_state_stopped);
 				break;
 			}
-			read_bytes = read_samples_from_fifo(fifo_buf, fifo_read_size);
-			if (read_bytes < 0) {
-				ATLTRACE("err: read samples from fifo failed, code=%d\n", read_bytes);
+			if (int alloc_ret = av_samples_alloc(fifo_buf, nullptr, fifo_audio_channels, fifo_read_size, fifo_audio_sample_fmt, 0);
+				alloc_ret < 0) {
+				FFMPEG_CRITICAL_ERROR(alloc_ret);
+				av_free(fifo_buf);
+				InterlockedExchange(playback_state, audio_playback_state_stopped);
+				break;
+			}
+			read_samples = read_samples_from_fifo(fifo_buf, fifo_read_size);
+			if (read_samples < 0) {
+				ATLTRACE("err: read samples from fifo failed, code=%d\n", read_samples);
 				ATLTRACE("err: fifo size=%d", get_audio_fifo_cached_samples_size());
 				if (user_request_stop)
 				{
 					ATLTRACE("info: user request stop and fifo cleared up, exiting\n");
+					av_freep(&fifo_buf[0]);
+					av_free(fifo_buf);
 					break;
 				}
-				FFMPEG_CRITICAL_ERROR(read_bytes);
+				FFMPEG_CRITICAL_ERROR(read_samples);
 				av_freep(&fifo_buf[0]);
 				av_free(fifo_buf);
 				// LeaveCriticalSection(audio_fifo_section);
@@ -963,30 +903,23 @@ void MusicPlayerLibrary::MusicPlayerNative::audio_playback_worker_thread()
 			}
 		}
 
-		int out_samples = swr_convert(swr_ctx, &out_buffer, xaudio2_play_frame_size,
-			fifo_buf, read_bytes); // pass actual read samples
-		av_freep(&fifo_buf[0]);
-		av_free(fifo_buf);
-		// LeaveCriticalSection(audio_fifo_section);
-		if (out_samples < 0) {
-			FFMPEG_CRITICAL_ERROR(out_samples);
-			// LeaveCriticalSection(audio_playback_section);
-			break;
-		}
-		if (out_samples == 0)
+		if (read_samples == 0)
 		{
 			ATLTRACE("info: no samples read, spin wait instead\n");
+			av_freep(&fifo_buf[0]);
+			av_free(fifo_buf);
 			Sleep(5); // wait for producing buffer
 			continue;
 		}
+		const UINT32 audio_bytes = read_samples * wfx.nBlockAlign;
 		// samples read
 		// remove callback func because 100% causes audio lag
 		// submit to FFTExecuter directly
 		if (fft_executer)
 		{
 			fft_executer->AddSamplesToRingBuffer(
-				out_buffer,
-				out_samples * wfx.nBlockAlign);
+				fifo_buf[0],
+				static_cast<int>(audio_bytes));
 		}
 
 
@@ -998,10 +931,12 @@ void MusicPlayerLibrary::MusicPlayerNative::audio_playback_worker_thread()
 			}
 		}
 
-		// 将转换后的音频数据输出到xaudio2
-		XAUDIO2_BUFFER* buffer_pcm = xaudio2_get_available_buffer(out_samples * wfx.nBlockAlign);
-		buffer_pcm->AudioBytes = out_samples * wfx.nBlockAlign; // 每样本2字节，每声道2字节
-		memcpy(const_cast<BYTE*>(buffer_pcm->pAudioData), out_buffer, buffer_pcm->AudioBytes);
+		// 将滤镜图输出的PCM数据提交到XAudio2
+		XAUDIO2_BUFFER* buffer_pcm = xaudio2_get_available_buffer(audio_bytes);
+		buffer_pcm->AudioBytes = audio_bytes; // 16-bit stereo, bytes per sample-frame = wfx.nBlockAlign
+		memcpy(const_cast<BYTE*>(buffer_pcm->pAudioData), fifo_buf[0], buffer_pcm->AudioBytes);
+		av_freep(&fifo_buf[0]);
+		av_free(fifo_buf);
 
 		hr = source_voice->SubmitSourceBuffer(buffer_pcm);
 		if (FAILED(hr)) {
@@ -1634,7 +1569,8 @@ int MusicPlayerLibrary::MusicPlayerNative::decoder_query_xaudio2_buffer_size()
 
 bool MusicPlayerLibrary::MusicPlayerNative::is_xaudio2_initialized()
 {
-	return swr_ctx && out_buffer && source_voice && mastering_voice && xaudio2;
+	return wfx.nSamplesPerSec > 0 && wfx.nBlockAlign > 0
+		&& source_voice && mastering_voice && xaudio2;
 }
 
 size_t MusicPlayerLibrary::MusicPlayerNative::get_samples_played_per_session()
@@ -1684,9 +1620,17 @@ MusicPlayerLibrary::MusicPlayerNative::MusicPlayerNative() :
  * @note in case of pcm buffering using AVAudioFifo,
  * equalizer will only affect decoding after ~1s.
  */
-void MusicPlayerLibrary::MusicPlayerNative::init_av_filter_equalizer()
+int MusicPlayerLibrary::MusicPlayerNative::init_av_filter_equalizer()
 {
 	filter_graph = avfilter_graph_alloc();
+	if (!filter_graph)
+	{
+		ATLTRACE("err: avfilter_graph_alloc failed\n");
+		return -1;
+	}
+
+	if (sample_rate <= 0)
+		sample_rate = 48000;
 
 	CStringA layout_str;
 	auto layout_str_buffer = layout_str.GetBufferSetLength(256);
@@ -1698,15 +1642,25 @@ void MusicPlayerLibrary::MusicPlayerNative::init_av_filter_equalizer()
 		av_get_sample_fmt_name(codec_context->sample_fmt),
 		layout_str.GetString());
 	ATLTRACE("info: init_av_filter_equalizer, filter args: %s\n", args.GetString());
-	avfilter_graph_create_filter(&filter_context_src, avfilter_get_by_name("abuffer"),
+	int ret = avfilter_graph_create_filter(&filter_context_src, avfilter_get_by_name("abuffer"),
 		"src", args.GetString(), nullptr, filter_graph);
-	if (codec_context->ch_layout.nb_channels != 2) {
-		CStringA channel_layout_str;
-		channel_layout_str.Format("in_chlayout=%s:out_chlayout=stereo", layout_str.GetString());
-		avfilter_graph_create_filter(&channels_normalize_ctx, avfilter_get_by_name("aresample"),
-			"aresample", channel_layout_str.GetString(), nullptr, filter_graph);
-		ATLTRACE("info: non-stereo audio detected, normalize to stereo!\n");
+	if (ret < 0)
+	{
+		FFMPEG_CRITICAL_ERROR(ret);
+		return ret;
 	}
+
+	CStringA resample_args;
+	resample_args.Format("sample_rate=%d:out_chlayout=stereo:out_sample_fmt=s16", sample_rate);
+	ret = avfilter_graph_create_filter(&resample_ctx, avfilter_get_by_name("aresample"),
+		"resample", resample_args.GetString(), nullptr, filter_graph);
+	if (ret < 0)
+	{
+		FFMPEG_CRITICAL_ERROR(ret);
+		return ret;
+	}
+	ATLTRACE("info: resample filter created, param = %s\n", resample_args.GetString());
+
 	if (eq_bands.GetSize() != 10)
 	{
 		ATLTRACE("warn: invalid eq_bands size, =%d\n", eq_bands.GetSize());
@@ -1733,63 +1687,103 @@ void MusicPlayerLibrary::MusicPlayerNative::init_av_filter_equalizer()
 		arg_str.Format("f=%d:t=q:w=1:g=%d", freq_hz[i], eq_bands[i]);
 		ATLTRACE("info: init_av_filter_equalizer, filter args: %s\n", arg_str.GetString());
 
-		int ret = avfilter_graph_create_filter(&eq_graph.eq_context, avfilter_get_by_name("equalizer"),
+		ret = avfilter_graph_create_filter(&eq_graph.eq_context, avfilter_get_by_name("equalizer"),
 			eq_graph.eq_name.GetString(),
 			arg_str.GetString(), nullptr, filter_graph);
 		if (ret < 0)
 		{
 			FFMPEG_CRITICAL_ERROR(ret);
-			return;
+			return ret;
 		}
 
 		filter_graphs.Add(eq_graph);
 	}
-	avfilter_graph_create_filter(&filter_context_sink, avfilter_get_by_name("abuffersink"),
+	ret = avfilter_graph_create_filter(&filter_context_sink, avfilter_get_by_name("abuffersink"),
 		"sink", nullptr, nullptr, filter_graph);
-	int ret = avfilter_graph_create_filter(&volume_ctx, avfilter_get_by_name("volume"),
+	if (ret < 0)
+	{
+		FFMPEG_CRITICAL_ERROR(ret);
+		return ret;
+	}
+	ret = avfilter_graph_create_filter(&volume_ctx, avfilter_get_by_name("volume"),
 		"pregain", "volume=0.7", nullptr, filter_graph);
 	if (ret < 0)
 	{
 		FFMPEG_CRITICAL_ERROR(ret);
-		return;
+		return ret;
 	}
-	if (codec_context->ch_layout.nb_channels != 2) {
-		avfilter_link(filter_context_src, 0, channels_normalize_ctx, 0);
-		avfilter_link(channels_normalize_ctx, 0, volume_ctx, 0);
+	if ((ret = avfilter_link(filter_context_src, 0, resample_ctx, 0)) < 0 ||
+		(ret = avfilter_link(resample_ctx, 0, volume_ctx, 0)) < 0)
+	{
+		FFMPEG_CRITICAL_ERROR(ret);
+		return ret;
 	}
-	else {
-		avfilter_link(filter_context_src, 0, volume_ctx, 0);
+	if ((ret = avfilter_link(volume_ctx, 0, filter_graphs[0].eq_context, 0)) < 0)
+	{
+		FFMPEG_CRITICAL_ERROR(ret);
+		return ret;
 	}
-	avfilter_link(volume_ctx, 0, filter_graphs[0].eq_context, 0);
 	for (int i = 0; i < 9; i++)
 	{
-		avfilter_link(filter_graphs[i].eq_context, 0, filter_graphs[i + 1].eq_context, 0);
+		if ((ret = avfilter_link(filter_graphs[i].eq_context, 0, filter_graphs[i + 1].eq_context, 0)) < 0)
+		{
+			FFMPEG_CRITICAL_ERROR(ret);
+			return ret;
+		}
 	}
 	ret = avfilter_graph_create_filter(&limiter_ctx, avfilter_get_by_name("alimiter"),
 		"lim", "limit=0.70:attack=5:release=50:level=disabled", nullptr, filter_graph);
 	if (ret < 0)
 	{
 		FFMPEG_CRITICAL_ERROR(ret);
-		return;
+		return ret;
 	}
-	avfilter_link(filter_graphs[9].eq_context, 0, limiter_ctx, 0);
+	if ((ret = avfilter_link(filter_graphs[9].eq_context, 0, limiter_ctx, 0)) < 0)
+	{
+		FFMPEG_CRITICAL_ERROR(ret);
+		return ret;
+	}
 	ATLTRACE("info: limiter linked\n");
 	CStringA fmt_args;
-	fmt_args.Format("sample_fmts=%s:channel_layouts=stereo",
-		av_get_sample_fmt_name(codec_context->sample_fmt));
+	fmt_args.Format("sample_fmts=s16:sample_rates=%d:channel_layouts=stereo", sample_rate);
 	ret = avfilter_graph_create_filter(&format_normalize_ctx,
 		avfilter_get_by_name("aformat"),
 		"aformat", fmt_args.GetString(), nullptr, filter_graph);
 	if (ret < 0)
 	{
 		FFMPEG_CRITICAL_ERROR(ret);
-		return;
+		return ret;
 	}
 	ATLTRACE("info: format filter created, param = %s\n", fmt_args.GetString());
-	avfilter_link(limiter_ctx, 0, format_normalize_ctx, 0);
-	avfilter_link(format_normalize_ctx, 0, filter_context_sink, 0);
+	if ((ret = avfilter_link(limiter_ctx, 0, format_normalize_ctx, 0)) < 0 ||
+		(ret = avfilter_link(format_normalize_ctx, 0, filter_context_sink, 0)) < 0)
+	{
+		FFMPEG_CRITICAL_ERROR(ret);
+		return ret;
+	}
 
-	avfilter_graph_config(filter_graph, nullptr);
+	ret = avfilter_graph_config(filter_graph, nullptr);
+	if (ret < 0)
+	{
+		FFMPEG_CRITICAL_ERROR(ret);
+		return ret;
+	}
+
+	const AVFilterLink* sink_link = filter_context_sink->inputs[0];
+	const int sink_channels = sink_link->ch_layout.nb_channels;
+	ATLTRACE("info: filter output format=%s, sample_rate=%d, channels=%d\n",
+		av_get_sample_fmt_name(static_cast<AVSampleFormat>(sink_link->format)),
+		sink_link->sample_rate,
+		sink_channels);
+	if (sink_link->sample_rate != sample_rate ||
+		sink_channels != fifo_audio_channels ||
+		sink_link->format != fifo_audio_sample_fmt)
+	{
+		ATLTRACE("err: filter output format mismatch, expected format=s16, sample_rate=%d, channels=%d\n",
+			sample_rate, fifo_audio_channels);
+		return -1;
+	}
+	return 0;
 }
 
 bool MusicPlayerLibrary::MusicPlayerNative::is_av_filter_equalizer_initialized()
@@ -1804,6 +1798,7 @@ void MusicPlayerLibrary::MusicPlayerNative::reset_av_filter_equalizer()
 		avfilter_graph_free(&filter_graph);
 	filter_graph = nullptr;
 	filter_context_src = filter_context_sink = nullptr;
+	resample_ctx = nullptr;
 	volume_ctx = limiter_ctx = format_normalize_ctx = nullptr;
 	filter_graphs.RemoveAll();
 }
@@ -1974,22 +1969,6 @@ void MusicPlayerLibrary::MusicPlayerNative::SetManagedPlayer(MusicPlayer^ manage
 	this->managed_music_player = managed_player;
 }
 
-/*
-int MusicPlayerLibrary::MusicPlayerNative::GetRawPCMBytes(uint8_t* buffer_out, int buffer_size) const
-{
-	int read_size = -1;
-	{
-		CriticalSectionLock lock(audio_playback_section);
-		if (!this->out_buffer) return -1;
-		read_size = static_cast<int>(out_buffer_size);
-		if (!read_size) return -1;
-		if (read_size > buffer_size) read_size = buffer_size;
-		memcpy(buffer_out, this->out_buffer, read_size);
-	}
-	return read_size;
-}
-*/
-
 void MusicPlayerLibrary::MusicPlayerNative::Pause()
 {
 	if (IsInitialized() && IsPlaying()) {
@@ -2028,8 +2007,6 @@ MusicPlayerLibrary::MusicPlayerNative::~MusicPlayerNative()
 		DeleteCriticalSection(audio_fifo_section);
 		delete audio_fifo_section;
 	}
-
-	if (out_buffer)					delete[] out_buffer;
 
 	if (frame_ready_event)			CloseHandle(frame_ready_event);
 	if (frame_underrun_event)		CloseHandle(frame_underrun_event);

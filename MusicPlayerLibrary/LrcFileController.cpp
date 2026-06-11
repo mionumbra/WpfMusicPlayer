@@ -11,6 +11,8 @@ using namespace MusicPlayerLibrary;
 
 // 没用了。至少证明我在规则匹配上努力过。但是一直打补丁永远不是解决问题的方法。
 // IsRomajiSyllableToken and IsStrongSeparatedRomaji removed.
+static std::regex time_tag_regex(R"(\[\s*(\d{1,2})\s*[:.]\s*(\d{1,2})(?:\s*[:.]\s*(\d{1,4}))?\s*\])");
+static std::regex time_tag_progress_regex(R"(\s*(\d{1,2})\s*[:.]\s*(\d{1,2})(?:\s*[:.]\s*(\d{1,4}))?\s*)");
 
 CString SplitLrcForProgressMultiNode1(const CString& text) 
 {
@@ -45,14 +47,6 @@ CSimpleArray<CString> SplitLrcForProgressMultiNode2(const CSimpleArray<CString>&
     }
     return strs;
 }
-
-static const std::initializer_list<CString> chinese_aux_lyric_start = {
-    _T("作词:"), _T("作词："), 
-    _T("作曲:"), _T("作曲："), 
-    _T("词:"), _T("词："),
-    _T("曲:"), _T("曲："), 
-    _T("编曲:"), _T("编曲：")
-};
 
 LrcMultiNode::LrcMultiNode(int t, const CSimpleArray<CString>& texts, 
     LrcLanguageHelper::LanguageClassification classification,
@@ -581,21 +575,33 @@ LrcProgressNode::LrcProgressNode(int t, const CString& text_with_node)
         auto time_stamp = node.Mid(node_controller_start_index + 1);
         time_stamp.Remove(right_brace_type);
         auto lyric_text = node.Left(node_controller_start_index);
-        int minutes = _ttoi(time_stamp.Left(2));
-        int seconds = _ttoi(time_stamp.Mid(3, 2));
-        CString milliseconds_str = time_stamp.Mid(6);
-        int milliseconds = _ttoi(milliseconds_str);
-        if (milliseconds_str.GetLength() < 3)
+        auto time_stamp_std_string = static_cast<std::string>(CT2A(time_stamp));
+        std::smatch m;
+        if (std::regex_search(time_stamp_std_string, m, time_tag_progress_regex)
+            && m.size() == 4)
         {
-            auto multiples = 3 - milliseconds_str.GetLength();
-            milliseconds *= std::floor(pow(10, multiples));
+            int minutes = std::stoi(m[1].str());
+            int seconds = std::stoi(m[2].str());
+            std::string milliseconds_str = m[3].str();
+            int milliseconds = std::stoi(milliseconds_str);
+            if (milliseconds_str.size() < 3)
+            {
+                auto multiples = 3 - milliseconds_str.size();
+                milliseconds *= std::floor(pow(10, multiples));
+            }
+            if (milliseconds_str.size() > 4)
+            {
+                auto multiples = milliseconds_str.size() - 3;
+                milliseconds /= std::floor(pow(10, multiples));
+            }
+            int total_ms = minutes * 60000 + seconds * 1000 + milliseconds;
+            if (total_ms < 0) total_ms = 0;
+            nodes.Add({
+                .time_ms = total_ms,
+                .node_text = lyric_text
+            });
+            node_count++;
         }
-        int total_ms = minutes * 60000 + seconds * 1000 + milliseconds;
-        nodes.Add({
-            .time_ms = total_ms,
-            .node_text = lyric_text
-        });
-        node_count++;
         text = text.Mid(find_right_brace_info + 1);
     } while (find_right_brace_info != -1);
 }
@@ -667,7 +673,7 @@ int SelectBestControllerLine(const CSimpleArray<CString>& str_arr)
             }
         }
     }
-    auto max_it = std::max_element(controller_bucket.begin(), controller_bucket.end());
+    auto max_it = std::ranges::max_element(controller_bucket);
     int max_index = std::distance(controller_bucket.begin(), max_it);
     return max_index;
 }
@@ -736,8 +742,8 @@ LrcAbstractNode* LrcNodeFactory::CreateLrcNode(
 
 void LrcFileControllerNative::parse_lrc_file_stream(CFile* file_stream)
 {
-    static std::regex time_tag_regex(R"(\[\s*(\d{1,2})\s*[:.]\s*(\d{1,2})(?:\s*[:.]\s*(\d{1,4}))?\s*\])");
-    // 目前仅支持逐行lrc解析
+    // 当前支持的格式：
+    // 逐行LRC，逐字LRC，Extended LRC，交错翻译，同步翻译
     if (file_stream == nullptr)
     {
         return;
@@ -856,7 +862,6 @@ void LrcFileControllerNative::parse_lrc_file_stream(CFile* file_stream)
         {
             int time_tag_end_index_multi = lyric_text.Find(']');
             auto time_tag = static_cast<std::string>(CT2A(lyric_text.Left(time_tag_end_index_multi + 1)));
-            auto utf8 = static_cast<std::string>(CT2A(lyric_text));
             std::smatch m;
             bool is_malformed_time_tag = true;
             if (std::regex_search(time_tag, m, time_tag_regex))

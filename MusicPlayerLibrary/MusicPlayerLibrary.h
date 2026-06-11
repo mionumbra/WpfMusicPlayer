@@ -125,8 +125,9 @@ namespace MusicPlayerLibrary {
 		float length = 0.0f;
 		bool is_pause = false;
 		bool decoder_is_running = false;
-		int decoder_audio_channels = 0;
-		AVSampleFormat decoder_audio_sample_fmt = AV_SAMPLE_FMT_NONE;
+		int fifo_audio_channels = 0;
+		AVSampleFormat fifo_audio_sample_fmt = AV_SAMPLE_FMT_NONE;
+		int fifo_sample_rate = 0;
 		HBITMAP album_art = nullptr;
 		CString song_title = {};
 		CString song_artist = {};
@@ -137,7 +138,6 @@ namespace MusicPlayerLibrary {
 		IXAudio2* xaudio2 = nullptr;
 		IXAudio2MasteringVoice* mastering_voice = nullptr;
 		IXAudio2SourceVoice* source_voice = nullptr;
-		SwrContext* swr_ctx = nullptr;
 		WAVEFORMATEX wfx = {};
 
 		volatile unsigned long long* xaudio2_buffer_ended;
@@ -149,8 +149,7 @@ namespace MusicPlayerLibrary {
 		std::list<XAUDIO2_BUFFER*> xaudio2_playing_buffers = {};
 		std::list<XAUDIO2_BUFFER*> xaudio2_free_buffers = {};
 		size_t xaudio2_played_buffers = 0, xaudio2_allocated_buffers = 0, xaudio2_played_samples = 0;
-		uint8_t* out_buffer = nullptr;
-		size_t out_buffer_size = 0, base_offset = 0;
+		size_t base_offset = 0;
 
 		// use avaudiofifo to avoid lag on low-cpu performance system, like jasper lake/alder lake-n
 		AVAudioFifo* audio_fifo = nullptr;
@@ -162,7 +161,7 @@ namespace MusicPlayerLibrary {
 		float message_interval = 16.67f, message_interval_timer = 0.0f;
 		size_t prev_decode_cycle_xaudio2_played_samples = 0;
 		CString id3_string_lyric;
-		int sample_rate = 0;
+		int sample_rate = 48000;
 
 		// managed variables
 		gcroot<MusicPlayer^> managed_music_player;
@@ -229,11 +228,11 @@ namespace MusicPlayerLibrary {
 			AVFilterContext* eq_context;
 			CStringA eq_name;
 		};
-		AVFilterContext* filter_context_src = nullptr, * filter_context_sink = nullptr, * channels_normalize_ctx = nullptr,
+		AVFilterContext* filter_context_src = nullptr, * filter_context_sink = nullptr, * resample_ctx = nullptr,
 			* volume_ctx = nullptr, * limiter_ctx = nullptr, * format_normalize_ctx = nullptr;
 		CSimpleArray<av_filter_eq_graph> filter_graphs;
 
-		void init_av_filter_equalizer();
+		int init_av_filter_equalizer();
 		bool is_av_filter_equalizer_initialized();
 		void reset_av_filter_equalizer();
 	public:
