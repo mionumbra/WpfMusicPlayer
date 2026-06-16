@@ -1,5 +1,7 @@
 ﻿#pragma once
+
 #include "pch.h"
+#include "FileAbstractionLayer.h"
 
 #include <dlib/svm_threaded.h>
 #include <dlib/dnn.h>
@@ -300,7 +302,7 @@ class LrcFileControllerNative {
 public:
 	~LrcFileControllerNative();
 	void parse_lrc_file(const CString& file_path);
-	void parse_lrc_file_stream(CFile* file_stream);
+	void parse_lrc_file_stream(IFile* file_stream);
 	void clear_lrc_nodes();
 	void set_time_stamp(int time_stamp_ms_in);
 	void time_stamp_increase(int ms);

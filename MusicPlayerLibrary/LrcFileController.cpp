@@ -694,24 +694,17 @@ LrcFileControllerNative::~LrcFileControllerNative()
 void LrcFileControllerNative::parse_lrc_file(const CString& file_path)
 {
     clear_lrc_nodes();
-    if (CFileStatus file_status;
-        file_path.IsEmpty()
-        || file_path.Find(_T(".lrc")) == -1
-        || !CFile::GetStatus(file_path, file_status))
-        return;
-    try
-    {
-        CFile file(file_path, CFile::modeRead | CFile::typeBinary);
-        parse_lrc_file_stream(&file);
-    }
-    catch (const CFileException*& ex)
-    {
-        CString err_msg;
-        LPTSTR err_msg_buf = err_msg.GetBufferSetLength(1024);
-        ex->GetErrorMessage(err_msg_buf, 1024);
-        err_msg.ReleaseBuffer();
-        ATLTRACE(_T("err: err in file open:%s\n"), err_msg.GetString());
-    } // nothing happened, LrcFileController remains invalid
+	const std::wstring lrc_file_path(file_path.GetString());
+	if (file_path.IsEmpty()
+		|| file_path.Find(_T(".lrc")) == -1
+		|| !GetDefaultFileSystem().FileExists(lrc_file_path))
+		return;
+	auto file = GetDefaultFileSystem().OpenReadFile(lrc_file_path, false, true);
+	if (!file)
+	{
+		return;
+	}
+	parse_lrc_file_stream(file.get());
 }
 
 LrcAbstractNode* LrcNodeFactory::CreateLrcNode(
@@ -740,7 +733,7 @@ LrcAbstractNode* LrcNodeFactory::CreateLrcNode(
     return nullptr;
 }
 
-void LrcFileControllerNative::parse_lrc_file_stream(CFile* file_stream)
+void LrcFileControllerNative::parse_lrc_file_stream(IFile* file_stream)
 {
     // 当前支持的格式：
     // 逐行LRC，逐字LRC，Extended LRC，交错翻译，同步翻译
@@ -1211,10 +1204,12 @@ void LrcFileController::ParseLrcStream(System::String^ lrcString)
     CStringA utf8Str;
     WideCharToMultiByte(CP_UTF8, 0, wch, -1, utf8Str.GetBuffer(utf8Len), utf8Len, nullptr, nullptr);
     utf8Str.ReleaseBuffer();
-    CMemFile mfcMemFile;
-    mfcMemFile.Write(utf8Str.GetString(), static_cast<UINT>(utf8Str.GetLength()));
-    mfcMemFile.SeekToBegin();
-    native_handle->parse_lrc_file_stream(&mfcMemFile);
+	auto mem_file = GetDefaultFileSystem().CreateMemoryFile();
+	if (!mem_file)
+		return;
+	mem_file->Write(utf8Str.GetString(), static_cast<UINT>(utf8Str.GetLength()));
+	mem_file->SeekToBegin();
+	native_handle->parse_lrc_file_stream(mem_file.get());
 }
 
 void LrcFileController::ClearLrcNodes()

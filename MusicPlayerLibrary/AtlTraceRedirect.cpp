@@ -1,8 +1,10 @@
 #include "pch.h"
 #include "AtlTraceRedirect.h"
+#include <cstdarg>
+#include <cstdio>
+#include <cstring>
 #include <ctime>
-#include <iomanip>
-#include <sstream>
+#include <string>
 
 AtlTraceRedirect* AtlTraceRedirect::global_atl_trace_redirector;
 
@@ -36,7 +38,7 @@ void AtlTraceRedirect::flush_stream()
 {
 }
 
-CStringA AtlTraceRedirect::query_time_stamp() const
+std::string AtlTraceRedirect::query_time_stamp() const
 {
     auto now = std::chrono::system_clock::now();
     auto now_time_t = std::chrono::system_clock::to_time_t(now);
@@ -56,7 +58,7 @@ CStringA AtlTraceRedirect::query_time_stamp() const
         timeinfo.tm_sec,
         now_ms.count());
 
-    return { buffer };
+    return buffer;
 }
 
 void AtlTraceRedirect::write_log(const char* file_name_full, int line_num, const char* message)
@@ -64,9 +66,9 @@ void AtlTraceRedirect::write_log(const char* file_name_full, int line_num, const
     if (!enable_redirect || System::Object::ReferenceEquals(logger, nullptr) || message == nullptr)
         return;
 
-    CSingleLock file_mut_lock(&file_mut);
+    std::lock_guard file_mut_lock(file_mut);
 
-    CStringA log_line;
+    std::string log_line;
 
     if (timestamp_enable)
     {
@@ -86,19 +88,20 @@ void AtlTraceRedirect::write_log(const char* file_name_full, int line_num, const
         else
             file_name = file_name_full;
 
-        CStringA fileInfo;
-        fileInfo.Format("[%s:%d] ", file_name, line_num);
-        log_line += fileInfo;
+        char file_info[256];
+        snprintf(file_info, sizeof(file_info), "[%s:%d] ", file_name, line_num);
+        log_line += file_info;
     }
 
     log_line += message;
 
-    if (!log_line.IsEmpty() && log_line[log_line.GetLength() - 1] == '\n')
+    if (!log_line.empty() && log_line.back() == '\n')
     {
-        log_line.Remove('\n');
+        log_line.pop_back();
     }
 
-    System::String^ managedLog = gcnew System::String(log_line);
+    System::String^ managedLog = gcnew System::String(log_line.c_str(),
+        0, static_cast<int>(log_line.size()), System::Text::Encoding::UTF8);
 
     System::Type^ loggerType = logger->GetType();
     array<System::Type^>^ paramTypes = gcnew array<System::Type^>(1) { System::String::typeid };
@@ -111,25 +114,47 @@ void AtlTraceRedirect::write_log(const char* file_name_full, int line_num, const
     }
 }
 
-CStringA AtlTraceRedirect::format_message_va(const wchar_t* format, va_list args)
+std::string AtlTraceRedirect::format_message_va(const wchar_t* format, va_list args)
 {
     if (format == nullptr)
         return {};
 
-    CStringW wide_msg;
-    wide_msg.FormatV(format, args);
+    va_list args_copy;
+    va_copy(args_copy, args);
+    int needed = _vscwprintf(format, args_copy);
+    va_end(args_copy);
 
-    return CStringA(wide_msg);
+    if (needed <= 0)
+        return {};
+
+    std::wstring wide(static_cast<size_t>(needed), L'\0');
+    vswprintf_s(wide.data(), static_cast<size_t>(needed) + 1, format, args);
+
+    int utf8_len = WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), -1, nullptr, 0, nullptr, nullptr);
+    if (utf8_len <= 0)
+        return {};
+
+    std::string result(static_cast<size_t>(utf8_len - 1), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), -1, result.data(), utf8_len, nullptr, nullptr);
+    return result;
 }
 
-CStringA AtlTraceRedirect::format_message_va(const char* format, va_list args)
+std::string AtlTraceRedirect::format_message_va(const char* format, va_list args)
 {
     if (format == nullptr)
         return {};
 
-    CStringA msg;
-    msg.FormatV(format, args);
-    return msg;
+    va_list args_copy;
+    va_copy(args_copy, args);
+    int needed = _vscprintf(format, args_copy);
+    va_end(args_copy);
+
+    if (needed < 0)
+        return {};
+
+    std::string result(static_cast<size_t>(needed), '\0');
+    vsprintf_s(result.data(), static_cast<size_t>(needed) + 1, format, args);
+    return result;
 }
 
 void AtlTraceRedirect::TraceEx(const char* file_name, int line_num, const wchar_t* format, ...)
@@ -139,10 +164,10 @@ void AtlTraceRedirect::TraceEx(const char* file_name, int line_num, const wchar_
 
     va_list args;
     va_start(args, format);
-    CStringA message = format_message_va(format, args);
+    std::string message = format_message_va(format, args);
     va_end(args);
 
-    write_log(file_name, line_num, message);
+    write_log(file_name, line_num, message.c_str());
 }
 
 void AtlTraceRedirect::TraceEx(const char* file_name, int line_num, const char* format, ...)
@@ -152,10 +177,10 @@ void AtlTraceRedirect::TraceEx(const char* file_name, int line_num, const char* 
 
     va_list args;
     va_start(args, format);
-    CStringA message = format_message_va(format, args);
+    std::string message = format_message_va(format, args);
     va_end(args);
 
-    write_log(file_name, line_num, message);
+    write_log(file_name, line_num, message.c_str());
 }
 
 void AtlTraceRedirect::Trace(const wchar_t* format, ...)
@@ -165,10 +190,10 @@ void AtlTraceRedirect::Trace(const wchar_t* format, ...)
 
     va_list args;
     va_start(args, format);
-    CStringA message = format_message_va(format, args);
+    std::string message = format_message_va(format, args);
     va_end(args);
 
-    write_log(nullptr, -1, message);
+    write_log(nullptr, -1, message.c_str());
 }
 
 void AtlTraceRedirect::Trace(const char* format, ...)
@@ -178,10 +203,10 @@ void AtlTraceRedirect::Trace(const char* format, ...)
 
     va_list args;
     va_start(args, format);
-    CStringA message = format_message_va(format, args);
+    std::string message = format_message_va(format, args);
     va_end(args);
 
-    write_log(nullptr, -1, message);
+    write_log(nullptr, -1, message.c_str());
 }
 
 AtlTraceRedirect* AtlTraceRedirect::GetAtlTraceRedirector()

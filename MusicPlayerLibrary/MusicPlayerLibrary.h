@@ -1,8 +1,10 @@
 ﻿#pragma once
 
 #include "AtlTraceRedirect.h"
+#include <atomic>
 #include <vcclr.h>
 #include "FFTExecuter.h"
+#include "FileAbstractionLayer.h"
 using namespace System;
 
 namespace MusicPlayerLibrary {
@@ -16,7 +18,7 @@ namespace MusicPlayerLibrary {
 
 	public delegate void WriteRawPCMBytesCallback(array<uint8_t>^ buffer_out, int buffer_size);
 
-	public enum audio_playback_state : unsigned long long
+	public enum audio_playback_state : int
 	{
 		audio_playback_state_init,
 		audio_playback_state_playing,
@@ -79,24 +81,6 @@ namespace MusicPlayerLibrary {
 		static CString Utf8ToWstring(const CString& s);
 	};
 
-	public class CriticalSectionLock
-	{
-		LPCRITICAL_SECTION cs;
-	public:
-		explicit CriticalSectionLock(LPCRITICAL_SECTION section, bool spinwait = false) : cs(section) {
-			if (spinwait)
-				while (!TryEnterCriticalSection(cs)) {}
-			else
-				EnterCriticalSection(cs);
-		}
-		~CriticalSectionLock() { LeaveCriticalSection(cs); }
-
-		CriticalSectionLock(const CriticalSectionLock&) = delete;
-		CriticalSectionLock& operator=(const CriticalSectionLock&) = delete;
-		CriticalSectionLock(CriticalSectionLock&&) = delete;
-		CriticalSectionLock& operator=(CriticalSectionLock&&) = delete;
-	};
-
 	ref class MusicPlayer;
 	public class MusicPlayerNative
 	{
@@ -117,9 +101,9 @@ namespace MusicPlayerLibrary {
 		unsigned char* buffer = nullptr;
 
 		CString file_extension;
-		CFile* file_stream = nullptr;
+		std::unique_ptr<IFile> file_stream;
 		bool file_stream_end = false;
-		bool user_request_stop = false;
+		std::atomic_bool user_request_stop = false;
 		double pts_seconds = 0.0;
 		float elapsed_time = 0.0;
 		float length = 0.0f;
@@ -132,19 +116,23 @@ namespace MusicPlayerLibrary {
 		CString song_title = {};
 		CString song_artist = {};
 
-		CRITICAL_SECTION* audio_fifo_section{};
-		CRITICAL_SECTION* audio_playback_section;
+		std::mutex audio_fifo_mutex;
+		std::mutex audio_playback_mutex;
+		std::mutex frame_event_mutex;
+		std::condition_variable frame_ready_cv;
+		std::condition_variable frame_underrun_cv;
+		bool frame_ready_requested = false;
+		bool frame_underrun_requested = false;
 
 		IXAudio2* xaudio2 = nullptr;
 		IXAudio2MasteringVoice* mastering_voice = nullptr;
 		IXAudio2SourceVoice* source_voice = nullptr;
 		WAVEFORMATEX wfx = {};
 
-		volatile unsigned long long* xaudio2_buffer_ended;
-		volatile unsigned long long* playback_state;
-		volatile unsigned long long* audio_position;
-		CWinThread* audio_player_worker_thread = nullptr;
-		CWinThread* audio_decoder_worker_thread = nullptr;
+		std::atomic_int playback_state;
+		std::jthread audio_player_worker_thread;
+		std::jthread audio_decoder_worker_thread;
+		std::jthread album_art_worker_thread;
 
 		std::list<XAUDIO2_BUFFER*> xaudio2_playing_buffers = {};
 		std::list<XAUDIO2_BUFFER*> xaudio2_free_buffers = {};
@@ -155,8 +143,6 @@ namespace MusicPlayerLibrary {
 		AVAudioFifo* audio_fifo = nullptr;
 		int xaudio2_play_frame_size = 256;
 		LPDWORD xaudio2_thread_task_index = nullptr;
-		HANDLE frame_ready_event = nullptr;
-		HANDLE frame_underrun_event = nullptr;
 		double standard_frametime = 0.0, last_frametime = 0.0;
 		float message_interval = 16.67f, message_interval_timer = 0.0f;
 		size_t prev_decode_cycle_xaudio2_played_samples = 0;
@@ -172,7 +158,7 @@ namespace MusicPlayerLibrary {
 		int64_t seek_func(int64_t offset, int whence);
 		static int64_t seek_func_wrapper(void* opaque, int64_t offset, int whence);
 		int load_audio_context(const CString& audio_filename, const CString& file_extension_in = CString());
-		int load_audio_context_stream(CFile* in_file_stream);
+		int load_audio_context_from_file_stream();
 		void release_audio_context();
 		void reset_audio_context();
 		bool is_audio_context_initialized();
@@ -185,6 +171,12 @@ namespace MusicPlayerLibrary {
 		int initialize_audio_engine();
 		void init_decoder_thread();
 		void uninitialize_audio_engine();
+		bool wait_frame_ready(std::chrono::milliseconds timeout);
+		bool wait_frame_underrun(std::chrono::milliseconds timeout);
+		void notify_frame_ready();
+		void notify_frame_underrun();
+		void reset_frame_notifications();
+		void notify_all_frame_notifications();
 		void audio_playback_worker_thread();
 		void audio_decode_worker_thread();
 		void start_audio_playback();

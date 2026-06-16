@@ -1,10 +1,8 @@
 #pragma once
 
-#include <atlstr.h>
-#include <cstdio>
 #include <chrono>
-#include <memory>
-#include <afxmt.h>
+#include <mutex>
+#include <string>
 #include <vcclr.h>
 
 class AtlTraceRedirect
@@ -36,18 +34,18 @@ public:
     static void SetAtlTraceRedirector(AtlTraceRedirect*);
 
 private:
-    [[nodiscard]] CStringA query_time_stamp() const;
+    [[nodiscard]] std::string query_time_stamp() const;
 
     void write_log(const char* file_name_full, int line_num, const char* message);
 
-    CStringA format_message_va(const wchar_t* format, va_list args);
-    CStringA format_message_va(const char* format, va_list args);
+    std::string format_message_va(const wchar_t* format, va_list args);
+    std::string format_message_va(const char* format, va_list args);
 
     gcroot<System::Object^> logger;
     bool enable_redirect;
     bool timestamp_enable;
     bool info_enable;
-    CMutex file_mut;
+    std::mutex file_mut;
 
     static AtlTraceRedirect* global_atl_trace_redirector;
 };
