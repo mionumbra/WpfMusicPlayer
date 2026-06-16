@@ -48,14 +48,19 @@
 
 #include <afxdialogex.h>
 #include <afxdlgs.h>
-#include <afxinet.h>
 #include <afxcontrolbars.h>     // MFC 支持功能区和控制条
 
 #include <cstdlib>
 #include <cassert>
 #include <list>
+#include <vector>
 #include <functional>
 #include <future>
+#include <thread>
+#include <mutex>
+#include <condition_variable>
+#include <atomic>
+#include <chrono>
 #include <string>
 #include <stack>
 #include <algorithm>
@@ -69,6 +74,7 @@
 #include <mmdeviceapi.h>
 #include <audioclient.h>
 #include <shlwapi.h>
+#include <winhttp.h>
 #include <functiondiscoverykeys_devpkey.h>
 
 #include <roapi.h>
@@ -76,6 +82,7 @@
 #include <winstring.h>
 
 #pragma comment(lib, "runtimeobject.lib")
+#pragma comment(lib, "winhttp.lib")
 
 #if defined(__cplusplus)
 extern "C" {
