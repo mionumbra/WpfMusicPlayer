@@ -63,7 +63,9 @@ private:
             (redirector)->Trace(fmt, __VA_ARGS__); \
         } \
     } while(0)
-#if defined(ATLTRACE) && defined(ATLTRACE_REDIRECT_ENABLED)
+#if defined(ATLTRACE_REDIRECT_ENABLED)
+#if defined(ATLTRACE)
 #undef ATLTRACE
+#endif
 #define ATLTRACE(fmt, ...) ATLTRACE_REDIRECT_EX(AtlTraceRedirect::GetAtlTraceRedirector(), fmt, __VA_ARGS__)
 #endif

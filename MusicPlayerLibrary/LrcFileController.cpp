@@ -9,16 +9,23 @@
 
 using namespace MusicPlayerLibrary;
 
+template <typename T>
+static int FindVectorIndex(const std::vector<T>& values, const T& value)
+{
+    auto it = std::ranges::find(values, value);
+    return it == values.end() ? -1 : static_cast<int>(std::distance(values.begin(), it));
+}
+
 // 没用了。至少证明我在规则匹配上努力过。但是一直打补丁永远不是解决问题的方法。
 // IsRomajiSyllableToken and IsStrongSeparatedRomaji removed.
 static std::regex time_tag_regex(R"(\[\s*(\d{1,2})\s*[:.]\s*(\d{1,2})(?:\s*[:.]\s*(\d{1,4}))?\s*\])");
 static std::regex time_tag_progress_regex(R"(\s*(\d{1,2})\s*[:.]\s*(\d{1,2})(?:\s*[:.]\s*(\d{1,4}))?\s*)");
 
-CString SplitLrcForProgressMultiNode1(const CString& text) 
+std::wstring SplitLrcForProgressMultiNode1(const std::wstring& text) 
 {
-    auto new_text = CString();
+    std::wstring new_text;
     bool is_pressed = false;
-    for (int j = 0; j < text.GetLength(); ++j)
+    for (size_t j = 0; j < text.size(); ++j)
     {
         if (text[j] == '[' || text[j] == '<')
         {
@@ -32,36 +39,37 @@ CString SplitLrcForProgressMultiNode1(const CString& text)
         else
         {
             if (is_pressed) continue;
-            new_text.AppendChar(text[j]);
+            new_text.push_back(text[j]);
         }
     }
     return new_text;
 }
 
-CSimpleArray<CString> SplitLrcForProgressMultiNode2(const CSimpleArray<CString>& texts)
+std::vector<std::wstring> SplitLrcForProgressMultiNode2(const std::vector<std::wstring>& texts)
 {
-    CSimpleArray<CString> strs;
-    for (int i = 0; i < texts.GetSize(); ++i)
+    std::vector<std::wstring> strs;
+    strs.reserve(texts.size());
+    for (const auto& text : texts)
     {
-        strs.Add(SplitLrcForProgressMultiNode1(texts[i]));
+        strs.push_back(SplitLrcForProgressMultiNode1(text));
     }
     return strs;
 }
 
-LrcMultiNode::LrcMultiNode(int t, const CSimpleArray<CString>& texts, 
+LrcMultiNode::LrcMultiNode(int t, const std::vector<std::wstring>& texts, 
     LrcLanguageHelper::LanguageClassification classification,
     std::vector<LrcLanguageHelper::LanguageType> recommend_slot) :
-    LrcAbstractNode(t), str_count(texts.GetSize()), lrc_texts(texts)
+    LrcAbstractNode(t), str_count(static_cast<int>(texts.size())), lrc_texts(texts)
 {
     for (int i = 0; i < str_count; ++i)
     {
-        aux_infos.Add(LrcAuxiliaryInfoNative::Ignored);
+        aux_infos.push_back(LrcAuxiliaryInfoNative::Ignored);
     }
     int jp_index = -1, kr_index = -1, eng_index = -1, zh_index = -1, jyut_index = -1, roma_index = -1, onomatopoeia_index = -1;
     using LC = LrcLanguageHelper::LanguageClassification;
-    if (recommend_slot.size() == texts.GetSize())
+    if (recommend_slot.size() == texts.size())
     {
-        for (int i = 0; i < recommend_slot.size(); ++i)
+        for (int i = 0; i < static_cast<int>(recommend_slot.size()); ++i)
         {
             switch (recommend_slot[i])
             {
@@ -79,15 +87,15 @@ LrcMultiNode::LrcMultiNode(int t, const CSimpleArray<CString>& texts,
     {
         for (int i = 0; i < str_count; ++i)
         {
-            lang_types.Add(LrcLanguageHelper::GetSingleton().detect_line_language_type(texts[i]));
+            lang_types.push_back(LrcLanguageHelper::GetSingleton().detect_line_language_type(texts[i]));
         }
-        jp_index = lang_types.Find(LrcLanguageHelper::LanguageType::jp), 
-        kr_index = lang_types.Find(LrcLanguageHelper::LanguageType::kr),
-        eng_index = lang_types.Find(LrcLanguageHelper::LanguageType::en),
-        zh_index = lang_types.Find(LrcLanguageHelper::LanguageType::zh),
-        jyut_index = lang_types.Find(LrcLanguageHelper::LanguageType::jyut),
-        roma_index = lang_types.Find(LrcLanguageHelper::LanguageType::roma),
-        onomatopoeia_index = lang_types.Find(LrcLanguageHelper::LanguageType::onomatopoeia);
+        jp_index = FindVectorIndex(lang_types, LrcLanguageHelper::LanguageType::jp), 
+        kr_index = FindVectorIndex(lang_types, LrcLanguageHelper::LanguageType::kr),
+        eng_index = FindVectorIndex(lang_types, LrcLanguageHelper::LanguageType::en),
+        zh_index = FindVectorIndex(lang_types, LrcLanguageHelper::LanguageType::zh),
+        jyut_index = FindVectorIndex(lang_types, LrcLanguageHelper::LanguageType::jyut),
+        roma_index = FindVectorIndex(lang_types, LrcLanguageHelper::LanguageType::roma),
+        onomatopoeia_index = FindVectorIndex(lang_types, LrcLanguageHelper::LanguageType::onomatopoeia);
     }
     auto assign_with_language = [&](int index, LrcAuxiliaryInfoNative type)
     {
@@ -194,7 +202,7 @@ LrcMultiNode::LrcMultiNode(int t, const CSimpleArray<CString>& texts,
                 if (zh_index != -1)
                 {
                     int zh_index_2 = -1;
-                    for (int i = zh_index + 1; i < texts.GetSize(); i++)
+                    for (int i = zh_index + 1; i < static_cast<int>(texts.size()); i++)
                     {
                         if (lang_types[i] == LrcLanguageHelper::LanguageType::zh)
                         {
@@ -262,7 +270,7 @@ LrcMultiNode::LrcMultiNode(int t, const CSimpleArray<CString>& texts,
                 if (zh_index != -1)
                 {
                     int zh_index_2 = -1;
-                    for (int i = zh_index + 1; i < texts.GetSize(); i++)
+                    for (int i = zh_index + 1; i < static_cast<int>(texts.size()); i++)
                     {
                         if (lang_types[i] == LrcLanguageHelper::LanguageType::zh)
                         {
@@ -346,10 +354,10 @@ std::string LrcLanguageHelper::lyric_type_to_std_string(LanguageType type)
     }
 }
 
-std::vector<double> LrcLanguageHelper::extract_line_features(const CString& text_utf16,
+std::vector<double> LrcLanguageHelper::extract_line_features(const std::wstring& text_utf16,
                                                              const std::unordered_map<std::string, int>& vocab)
 {
-    std::string text = LocaleConverterNative::GetUtf8StringStdFromUtf16String(text_utf16);
+    std::string text = LocaleConverterNative::GetUtf8StringFromUtf16String(text_utf16);
     std::vector x(vocab.size(), 0.0);
 
     for (size_t i = 0; i < text.size(); ++i)
@@ -367,7 +375,7 @@ std::vector<double> LrcLanguageHelper::extract_line_features(const CString& text
 }
 
 LrcLanguageHelper::LanguageType
-LrcLanguageHelper::detect_line_language_type(const CString& input)
+LrcLanguageHelper::detect_line_language_type(const std::wstring& input)
 {
     auto feat = extract_line_features(input, line_vocab_reasoning);
     line_sample_type m(feat.size());
@@ -547,35 +555,35 @@ LrcLanguageHelper& LrcLanguageHelper::GetSingleton()
     return helper_instance;
 }
 
-LrcProgressNode::LrcProgressNode(int t, const CString& text_with_node)
+LrcProgressNode::LrcProgressNode(int t, const std::wstring& text_with_node)
     : LrcAbstractNode(t), node_count(0), end_time_ms(0)
 {
-    CString text = text_with_node;
+    std::wstring text = text_with_node;
     int find_right_brace_info;
-    const TCHAR right_brace_type = text[text.GetLength() - 1];
-    TCHAR left_brace_type;
+    const wchar_t right_brace_type = text[text.size() - 1];
+    wchar_t left_brace_type;
     switch (right_brace_type)
     {
-        case _T(']'): left_brace_type = _T('['); break;
-        case _T('>'): left_brace_type = _T('<'); break;
+        case L']': left_brace_type = L'['; break;
+        case L'>': left_brace_type = L'<'; break;
         default: return;
     }
     do
     {
-        find_right_brace_info = text.Find(right_brace_type);
-        CString node = text.Left(find_right_brace_info + 1);
-        if (node.IsEmpty())
+        find_right_brace_info = StringUtils::Find(text, right_brace_type);
+        std::wstring node = StringUtils::Left(text, static_cast<size_t>(find_right_brace_info + 1));
+        if (node.empty())
             continue;
-        auto node_controller_start_index = node.Find(left_brace_type);
+        auto node_controller_start_index = StringUtils::Find(node, left_brace_type);
         if (node_controller_start_index == -1)
         {
-            ATLTRACE(_T("warn: invalid progress node: %s\n"), node.GetString());
+            ATLTRACE(L"warn: invalid progress node: %s\n", node.c_str());
             break;
         }
-        auto time_stamp = node.Mid(node_controller_start_index + 1);
-        time_stamp.Remove(right_brace_type);
-        auto lyric_text = node.Left(node_controller_start_index);
-        auto time_stamp_std_string = static_cast<std::string>(CT2A(time_stamp));
+        auto time_stamp = StringUtils::Mid(node, static_cast<size_t>(node_controller_start_index + 1));
+        std::erase(time_stamp, right_brace_type);
+        auto lyric_text = StringUtils::Left(node, static_cast<size_t>(node_controller_start_index));
+        auto time_stamp_std_string = LocaleConverterNative::GetUtf8StringFromUtf16String(time_stamp);
         std::smatch m;
         if (std::regex_search(time_stamp_std_string, m, time_tag_progress_regex)
             && m.size() == 4)
@@ -596,19 +604,19 @@ LrcProgressNode::LrcProgressNode(int t, const CString& text_with_node)
             }
             int total_ms = minutes * 60000 + seconds * 1000 + milliseconds;
             if (total_ms < 0) total_ms = 0;
-            nodes.Add({
+            nodes.push_back({
                 .time_ms = total_ms,
                 .node_text = lyric_text
             });
             node_count++;
         }
-        text = text.Mid(find_right_brace_info + 1);
+        text = StringUtils::Mid(text, static_cast<size_t>(find_right_brace_info + 1));
     } while (find_right_brace_info != -1);
 }
 
 float LrcProgressNode::get_lrc_percentage(float current_timestamp) const
 {
-    auto base = nodes.GetSize();
+    auto base = nodes.size();
     if (base == 0) return 1.0f;
 
     const int timestamp_in_ms = static_cast<int>(current_timestamp * 1000);
@@ -647,15 +655,15 @@ float LrcProgressNode::get_lrc_percentage(float current_timestamp) const
     return percentage;
 }
 
-int SelectBestControllerLine(const CSimpleArray<CString>& str_arr)
+int SelectBestControllerLine(const std::vector<std::wstring>& str_arr)
 {
     // 控制点越多，该行为控制行的置信度越高
-    std::vector controller_bucket(str_arr.GetSize(), 0);
-    for (int i = 0; i < str_arr.GetSize(); ++i)
+    std::vector controller_bucket(str_arr.size(), 0);
+    for (int i = 0; i < static_cast<int>(str_arr.size()); ++i)
     {
         const auto& text = str_arr[i];
         bool is_pressed = false;
-        for (int j = 0; j < text.GetLength(); ++j)
+        for (size_t j = 0; j < text.size(); ++j)
         {
             if (text[j] == '[' || text[j] == '<')
             {
@@ -679,7 +687,7 @@ int SelectBestControllerLine(const CSimpleArray<CString>& str_arr)
 }
 
 LrcProgressMultiNode::LrcProgressMultiNode
-    (int t, const CSimpleArray<CString>& str_arr_2, 
+    (int t, const std::vector<std::wstring>& str_arr_2, 
         LrcLanguageHelper::LanguageClassification classification, 
         std::vector<LrcLanguageHelper::LanguageType> recommend_slot):
     LrcAbstractNode(t),
@@ -691,15 +699,14 @@ LrcFileControllerNative::~LrcFileControllerNative()
     clear_lrc_nodes();
 }
 
-void LrcFileControllerNative::parse_lrc_file(const CString& file_path)
+void LrcFileControllerNative::parse_lrc_file(const std::wstring& file_path)
 {
     clear_lrc_nodes();
-	const std::wstring lrc_file_path(file_path.GetString());
-	if (file_path.IsEmpty()
-		|| file_path.Find(_T(".lrc")) == -1
-		|| !GetDefaultFileSystem().FileExists(lrc_file_path))
+	if (file_path.empty()
+		|| file_path.find(L".lrc") == std::wstring::npos
+		|| !GetDefaultFileSystem().FileExists(file_path))
 		return;
-	auto file = GetDefaultFileSystem().OpenReadFile(lrc_file_path, false, true);
+	auto file = GetDefaultFileSystem().OpenReadFile(file_path, false, true);
 	if (!file)
 	{
 		return;
@@ -708,24 +715,24 @@ void LrcFileControllerNative::parse_lrc_file(const CString& file_path)
 }
 
 LrcAbstractNode* LrcNodeFactory::CreateLrcNode(
-    int time_ms, const CSimpleArray<CString>& lrc_texts, 
+    int time_ms, const std::vector<std::wstring>& lrc_texts, 
     LrcLanguageHelper::LanguageClassification classification,
     std::vector<LrcLanguageHelper::LanguageType> recommend_slot)
 {
-    auto ifLrcContainsControllerNode = [](const CString& lrc_text)
+    auto ifLrcContainsControllerNode = [](const std::wstring& lrc_text)
         {
-            const auto last_index = lrc_text.GetLength() - 1;
-            return lrc_text.GetLength() > 0 &&
+            const auto last_index = lrc_text.size() - 1;
+            return !lrc_text.empty() &&
                 (lrc_text[last_index] == ']' || lrc_text[last_index] == '>');
         };
-    if (lrc_texts.GetSize() == 1) {
+    if (lrc_texts.size() == 1) {
         if (ifLrcContainsControllerNode(lrc_texts[0]))
             return new LrcProgressNode(time_ms, lrc_texts[0]);
         return new LrcNode(time_ms, lrc_texts[0]);
     }
     // 遍历所有行，选取第一个有控制点的行构造LrcProgressMultiNode；若没有控制点，回退到LrcMultiNode
-    if (lrc_texts.GetSize() > 1) {
-        for (int i = 0; i < lrc_texts.GetSize(); ++i)
+    if (lrc_texts.size() > 1) {
+        for (int i = 0; i < static_cast<int>(lrc_texts.size()); ++i)
             if (ifLrcContainsControllerNode(lrc_texts[i]))
                 return new LrcProgressMultiNode(time_ms, lrc_texts, classification, recommend_slot);
         return new LrcMultiNode(time_ms, lrc_texts, classification, recommend_slot);
@@ -742,7 +749,7 @@ void LrcFileControllerNative::parse_lrc_file_stream(IFile* file_stream)
         return;
     }
     clear_lrc_nodes();
-    CStringA file_content_a;
+    std::string file_content_a;
     const int buf_size = 4096;
     char buffer[buf_size];
     UINT bytes_read = 0;
@@ -750,12 +757,12 @@ void LrcFileControllerNative::parse_lrc_file_stream(IFile* file_stream)
     {
         bytes_read = file_stream->Read(buffer, buf_size - 1);
         buffer[bytes_read] = '\0';
-        file_content_a += buffer;
+        file_content_a.append(buffer, bytes_read);
     }
     while (bytes_read > 0);
 
     // 转换为宽字符
-    CString file_content_w = LocaleConverterNative::GetUtf16StringFromUtf8String(file_content_a);
+    std::wstring file_content_w = LocaleConverterNative::GetUtf16StringFromUtf8String(file_content_a);
     
     // fix issue #12
     // 关于歌词文件/歌曲内嵌歌词内出现时间tag非强制有序的翻译歌词时程序的错误/闪退问题
@@ -763,45 +770,46 @@ void LrcFileControllerNative::parse_lrc_file_stream(IFile* file_stream)
     struct CachedTimeLine
     {
         int time_stamp_ms;
-        CString text;
+        std::wstring text;
     };
     std::vector<CachedTimeLine> time_lines;
     
     // 逐行解析
     int start = 0, flag_decoding_metadata = 1;
-    std::stack<CString> lyrics_in_ms;
+    std::stack<std::wstring> lyrics_in_ms;
     int recorded_ms = 0;
 
-    while (start < file_content_w.GetLength())
+    while (static_cast<size_t>(start) < file_content_w.size())
     {
-        int end = file_content_w.Find('\n', start);
+        int end = StringUtils::Find(file_content_w, L'\n', static_cast<size_t>(start));
         if (end == -1)
         {
-            end = file_content_w.GetLength();
+            end = static_cast<int>(file_content_w.size());
             // 因为现在缓存所有歌词行，所以不需要设置is_lrc_end flag
         }
-        CString line = file_content_w.Mid(start, end - start).Trim();
-        if (line.IsEmpty())
+        std::wstring line = StringUtils::Trim(StringUtils::Mid(file_content_w, static_cast<size_t>(start), static_cast<size_t>(end - start)));
+        if (line.empty())
         {
             start = end + 1;
             continue;
         }
         if (line[0] == '{')
         {
-            ATLTRACE(_T("warn: invalid ncm extension found, ignoring\n"));
+            ATLTRACE("warn: invalid ncm extension found, ignoring\n");
             start = end + 1;
             continue;
         }
-        auto line_start_index = line.Find(_T('['));
+        auto line_start_index = StringUtils::Find(line, L'[');
         // 剔除行开头的不合法字符
         if (line_start_index != -1 && line_start_index != 0)
         {
-            ATLTRACE(_T("warn: invalid lrc format, ignoring start character: %s\n"), line.Left(line_start_index).GetString());
-            line = line.Right(line.GetLength() - line_start_index);
+            ATLTRACE(L"warn: invalid lrc format, ignoring start character: %s\n",
+                StringUtils::Left(line, static_cast<size_t>(line_start_index)).c_str());
+            line = StringUtils::Right(line, line.size() - static_cast<size_t>(line_start_index));
         }
 
         // fix: moving decode_metadata as a lambda
-        auto decode_metadata = [](const CString& line, decltype(metadata)& meta, int& offset) -> int {
+        auto decode_metadata = [](const std::wstring& line, decltype(metadata)& meta, int& offset) -> int {
             // 走metadata解析，不遵守标准lrc解码
             switch (get_metadata_type(line))
             {
@@ -818,7 +826,7 @@ void LrcFileControllerNative::parse_lrc_file_stream(IFile* file_stream)
                 meta.by = get_metadata_value(line);
                 break;
             case LrcMetadataTypeNative::Offset:
-                offset = _ttoi(get_metadata_value(line));
+                offset = StringUtils::ToIntOrZero(get_metadata_value(line));
                 break;
             case LrcMetadataTypeNative::Author:
                 meta.author = get_metadata_value(line);
@@ -842,19 +850,20 @@ void LrcFileControllerNative::parse_lrc_file_stream(IFile* file_stream)
             continue;
         }
         // 解析时间tag
-        if (line.GetLength() < 10)
+        if (line.size() < 10)
         {
             clear_lrc_nodes();
             throw gcnew System::InvalidOperationException("Invalid lrc line, aborting!");
         }
 
-        CString lyric_text = line;
+        std::wstring lyric_text = line;
         // 处理同一行多个时间戳的问题
         std::vector<int> time_stamps;
-        while (lyric_text.GetLength() > 0 && lyric_text[0] == '[')
+        while (!lyric_text.empty() && lyric_text[0] == '[')
         {
-            int time_tag_end_index_multi = lyric_text.Find(']');
-            auto time_tag = static_cast<std::string>(CT2A(lyric_text.Left(time_tag_end_index_multi + 1)));
+            int time_tag_end_index_multi = StringUtils::Find(lyric_text, L']');
+            auto time_tag = LocaleConverterNative::GetUtf8StringFromUtf16String(
+                StringUtils::Left(lyric_text, static_cast<size_t>(time_tag_end_index_multi + 1)));
             std::smatch m;
             bool is_malformed_time_tag = true;
             if (std::regex_search(time_tag, m, time_tag_regex))
@@ -866,9 +875,9 @@ void LrcFileControllerNative::parse_lrc_file_stream(IFile* file_stream)
                 // malformed time tag
                 // guess: metadata tag?
                 // fix issue #12
-                auto metadata_substr = lyric_text.Left(time_tag_end_index_multi + 1);
+                auto metadata_substr = StringUtils::Left(lyric_text, static_cast<size_t>(time_tag_end_index_multi + 1));
                 decode_metadata(metadata_substr, metadata, lrc_offset_ms);
-                lyric_text = lyric_text.Mid(time_tag_end_index_multi + 1).Trim();
+                lyric_text = StringUtils::Trim(StringUtils::Mid(lyric_text, static_cast<size_t>(time_tag_end_index_multi + 1)));
                 continue;
             }
             int minutes = std::stoi(m[1].str());
@@ -888,11 +897,11 @@ void LrcFileControllerNative::parse_lrc_file_stream(IFile* file_stream)
             int total_ms_multi = minutes * 60000 + seconds * 1000 + milliseconds;
             if (total_ms_multi < 0) total_ms_multi = 0;
             time_stamps.push_back(total_ms_multi);
-            lyric_text = lyric_text.Mid(time_tag_end_index_multi + 1).Trim();
+            lyric_text = StringUtils::Trim(StringUtils::Mid(lyric_text, static_cast<size_t>(time_tag_end_index_multi + 1)));
         }
         if (time_stamps.empty())
             throw gcnew System::InvalidOperationException("Invalid lrc time tag, aborting!");
-        if (lyric_text.IsEmpty()) {
+        if (lyric_text.empty()) {
             // move to next line
             start = end + 1;
             continue;
@@ -938,27 +947,27 @@ void LrcFileControllerNative::parse_lrc_file_stream(IFile* file_stream)
     
     auto pump_stack = [&](bool is_lrc_ended)
     {
-        CSimpleArray<CString> lrc_texts;
+        std::vector<std::wstring> lrc_texts;
         while (!lyrics_in_ms.empty())
         {
-            lrc_texts.Add(lyrics_in_ms.top());
+            lrc_texts.push_back(lyrics_in_ms.top());
             lyrics_in_ms.pop();
         }
-        if (lrc_texts.GetSize() > 1)
-            std::reverse(lrc_texts.GetData(), lrc_texts.GetData() + lrc_texts.GetSize());
-        if (lrc_texts.GetSize() == 0)
+        if (lrc_texts.size() > 1)
+            std::reverse(lrc_texts.begin(), lrc_texts.end());
+        if (lrc_texts.empty())
             return;
         if (LrcAbstractNode* node = LrcNodeFactory::CreateLrcNode(recorded_ms, lrc_texts, classification, slot_type))
         {
-            if (!lrc_nodes.IsEmpty())
+            if (!lrc_nodes.empty())
             {
-                lrc_nodes[lrc_nodes.GetCount() - 1]->set_lrc_end_timestamp(recorded_ms);
+                lrc_nodes[lrc_nodes.size() - 1]->set_lrc_end_timestamp(recorded_ms);
             }
             if (is_lrc_ended)
             {
                 node->set_lrc_end_timestamp(std::floor(this->song_duration_sec * 1000));
             }
-            lrc_nodes.Add(node);
+            lrc_nodes.push_back(node);
             if (node->is_translation_enabled())
                 this->set_auxiliary_info_enabled(LrcAuxiliaryInfoNative::Translation);
             if (node->is_romanization_enabled())
@@ -993,11 +1002,11 @@ void LrcFileControllerNative::parse_lrc_file_stream(IFile* file_stream)
 
 void LrcFileControllerNative::clear_lrc_nodes()
 {
-    for (size_t i = 0; i < lrc_nodes.GetCount(); i++)
+    for (size_t i = 0; i < lrc_nodes.size(); i++)
     {
         delete lrc_nodes[i];
     }
-    lrc_nodes.RemoveAll();
+    lrc_nodes.clear();
 }
 
 void LrcFileControllerNative::set_time_stamp(int time_stamp_ms_in)
@@ -1009,7 +1018,7 @@ void LrcFileControllerNative::set_time_stamp(int time_stamp_ms_in)
         cur_lrc_node_index = 0;
     }
     bool found = false;
-    for (size_t i = cur_lrc_node_index; i < lrc_nodes.GetCount(); i++)
+    for (size_t i = cur_lrc_node_index; i < lrc_nodes.size(); i++)
     {
         if (lrc_nodes[i]->get_time_ms() > time_stamp_ms_in)
         {
@@ -1020,7 +1029,7 @@ void LrcFileControllerNative::set_time_stamp(int time_stamp_ms_in)
     }
     if (!found)
     {
-        cur_lrc_node_index = lrc_nodes.GetCount() - 1;
+        cur_lrc_node_index = lrc_nodes.size() - 1;
     }
     time_stamp_ms = time_stamp_ms_in + lrc_offset_ms;
 }
@@ -1033,7 +1042,7 @@ void LrcFileControllerNative::time_stamp_increase(int ms)
 
 bool LrcFileControllerNative::valid() const
 {
-    return lrc_nodes.GetCount() > 0 && song_duration_sec >= 0;
+    return !lrc_nodes.empty() && song_duration_sec >= 0;
 }
 
 int LrcFileControllerNative::get_current_lrc_lines_count() const
@@ -1041,14 +1050,14 @@ int LrcFileControllerNative::get_current_lrc_lines_count() const
     return lrc_nodes[cur_lrc_node_index]->get_lrc_str_count();
 }
 
-int LrcFileControllerNative::get_current_lrc_line_at(int index, CString& out_str) const
+int LrcFileControllerNative::get_current_lrc_line_at(int index, std::wstring& out_str) const
 {
     return lrc_nodes[cur_lrc_node_index]->get_lrc_str_at(index, out_str);
 }
 
-int LrcFileControllerNative::get_lrc_line_at(int lrc_node_index, int index, CString& out_str) const
+int LrcFileControllerNative::get_lrc_line_at(int lrc_node_index, int index, std::wstring& out_str) const
 {
-    if (lrc_node_index < 0 || lrc_node_index >= lrc_nodes.GetCount())
+    if (lrc_node_index < 0 || static_cast<size_t>(lrc_node_index) >= lrc_nodes.size())
         throw gcnew System::ArgumentOutOfRangeException("lrc_node_index out of range");
     return lrc_nodes[lrc_node_index]->get_lrc_str_at(index, out_str);
 }
@@ -1060,12 +1069,12 @@ int LrcFileControllerNative::get_current_lrc_line_aux_index(LrcAuxiliaryInfoNati
 
 int LrcFileControllerNative::get_lrc_line_aux_index(int lrc_node_index, LrcAuxiliaryInfoNative info) const
 {
-    if(lrc_node_index < 0 || lrc_node_index >= lrc_nodes.GetCount())
+    if(lrc_node_index < 0 || static_cast<size_t>(lrc_node_index) >= lrc_nodes.size())
         throw gcnew System::ArgumentOutOfRangeException("lrc_node_index out of range");
     return lrc_nodes[lrc_node_index]->get_auxiliary_info_at(info);
 }
 
-int MusicPlayerLibrary::LrcFileControllerNative::get_metadata_info(LrcMetadataTypeNative metadata_type, CString& out_str) const
+int MusicPlayerLibrary::LrcFileControllerNative::get_metadata_info(LrcMetadataTypeNative metadata_type, std::wstring& out_str) const
 {
     switch (metadata_type) {
     case LrcMetadataTypeNative::Album:
@@ -1099,21 +1108,21 @@ void MusicPlayerLibrary::LrcFileControllerNative::correct_lrc_language_info(LrcL
 
 }
 
-LrcMetadataTypeNative LrcFileControllerNative::get_metadata_type(const CString& str)
+LrcMetadataTypeNative LrcFileControllerNative::get_metadata_type(const std::wstring& str)
 {
-    if (str.IsEmpty() || str.GetLength() < 3 || str[0] != '[')
+    if (str.empty() || str.size() < 3 || str[0] != '[')
     {
         return LrcMetadataTypeNative::Error;
     }
     // 逐字歌词有可能每个单位后都带有时间戳
-    if (str.Find(']') != str.GetLength() - 1)
+    if (StringUtils::Find(str, L']') != static_cast<int>(str.size()) - 1)
         return LrcMetadataTypeNative::Error;
-    int metadata_end_index = str.Find(':', 1);
+    int metadata_end_index = StringUtils::Find(str, L':', 1);
     if (metadata_end_index == -1)
         return LrcMetadataTypeNative::Error;
 
-    switch (CString metadata_type_str = str.Left(metadata_end_index).Mid(1);
-        cstring_hash_fnv_64bit_int(metadata_type_str))
+    switch (std::wstring metadata_type_str = StringUtils::Mid(StringUtils::Left(str, static_cast<size_t>(metadata_end_index)), 1);
+        wide_string_hash_fnv_64bit_int(metadata_type_str))
     {
     case 0x645d220c: return LrcMetadataTypeNative::Artist;
     case 0x63d58dce: return LrcMetadataTypeNative::Album;
@@ -1125,13 +1134,13 @@ LrcMetadataTypeNative LrcFileControllerNative::get_metadata_type(const CString& 
     }
 }
 
-int LrcFileControllerNative::cstring_hash_fnv_64bit_int(const CString& str)
+int LrcFileControllerNative::wide_string_hash_fnv_64bit_int(const std::wstring& str)
 {
-    const TCHAR* p = str.GetString();
-    const int len = str.GetLength();
+    const wchar_t* p = str.data();
+    const size_t len = str.size();
     unsigned long long h = 14695981039346656037ull; // fnv offset basis
     const unsigned char* bytes = reinterpret_cast<const unsigned char*>(p); // NOLINT(*-use-auto)
-    const size_t count = static_cast<size_t>(len) * sizeof(TCHAR);
+    const size_t count = len * sizeof(wchar_t);
     for (size_t i = 0; i < count; ++i)
     {
         h ^= bytes[i];
@@ -1140,10 +1149,10 @@ int LrcFileControllerNative::cstring_hash_fnv_64bit_int(const CString& str)
     return static_cast<int>(h % 0x7fffffffull); // switch-case requires int
 }
 
-CString LrcFileControllerNative::get_metadata_value(const CString& str)
+std::wstring LrcFileControllerNative::get_metadata_value(const std::wstring& str)
 {
-    int metadata_end_index = str.Find(':', 1);
-    return str.Mid(metadata_end_index + 1).Trim(']').Trim();
+    int metadata_end_index = StringUtils::Find(str, L':', 1);
+    return StringUtils::Trim(StringUtils::Trim(StringUtils::Mid(str, static_cast<size_t>(metadata_end_index + 1)), L']'));
 }
 
 // ============================================================
@@ -1192,22 +1201,18 @@ void LrcFileController::ParseLrcFile(System::String^ filePath)
 {
     check_if_null();
     pin_ptr<const wchar_t> wch = PtrToStringChars(filePath);
-    CString mfcPath(wch);
-    native_handle->parse_lrc_file(mfcPath);
+    native_handle->parse_lrc_file(std::wstring(wch));
 }
 
 void LrcFileController::ParseLrcStream(System::String^ lrcString)
 {
     check_if_null();
     pin_ptr<const wchar_t> wch = PtrToStringChars(lrcString);
-    int utf8Len = WideCharToMultiByte(CP_UTF8, 0, wch, -1, nullptr, 0, nullptr, nullptr);
-    CStringA utf8Str;
-    WideCharToMultiByte(CP_UTF8, 0, wch, -1, utf8Str.GetBuffer(utf8Len), utf8Len, nullptr, nullptr);
-    utf8Str.ReleaseBuffer();
+    const std::string utf8Str = StringUtils::ToUtf8(std::wstring_view(wch));
 	auto mem_file = GetDefaultFileSystem().CreateMemoryFile();
 	if (!mem_file)
 		return;
-	mem_file->Write(utf8Str.GetString(), static_cast<UINT>(utf8Str.GetLength()));
+	mem_file->Write(utf8Str.data(), static_cast<UINT>(utf8Str.size()));
 	mem_file->SeekToBegin();
 	native_handle->parse_lrc_file_stream(mem_file.get());
 }
@@ -1287,21 +1292,21 @@ int LrcFileController::GetLrcNodeTimeMs(int index)
 System::String^ LrcFileController::GetCurrentLrcLineAt(int index)
 {
     check_if_null();
-    CString out_str;
+    std::wstring out_str;
     int result = native_handle->get_current_lrc_line_at(index, out_str);
     if (result != 0)
         return nullptr;
-    return msclr::interop::marshal_as<System::String^>(out_str.GetString());
+    return gcnew System::String(out_str.c_str());
 }
 
 System::String^ LrcFileController::GetLrcLineAt(int lrcNodeIndex, int index)
 {
     check_if_null();
-    CString out_str;
+    std::wstring out_str;
     int result = native_handle->get_lrc_line_at(lrcNodeIndex, index, out_str);
     if (result != 0)
         return nullptr;
-    return msclr::interop::marshal_as<System::String^>(out_str.GetString());
+    return gcnew System::String(out_str.c_str());
 }
 
 int LrcFileController::GetCurrentLrcLineAuxIndex(LrcAuxiliaryInfo info)
@@ -1319,11 +1324,11 @@ int LrcFileController::GetLrcLineAuxIndex(int lrcNodeIndex, LrcAuxiliaryInfo inf
 System::String^ MusicPlayerLibrary::LrcFileController::GetMetadataInfo(LrcMetadataType type)
 {
     check_if_null();
-    CString out_str;
+    std::wstring out_str;
     int result = native_handle->get_metadata_info(ToNativeMetadataType(type), out_str);
     if (result != 0)
         return nullptr;
-    return msclr::interop::marshal_as<System::String^>(out_str.GetString());
+    return gcnew System::String(out_str.c_str());
 }
 
 bool LrcFileController::IsAuxiliaryInfoEnabled(LrcAuxiliaryInfo enableInfo)

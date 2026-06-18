@@ -1,10 +1,11 @@
 #include "pch.h"
 
 #include "MusicPlayerLibrary.h"
-#include <atlbase.h>
 #include <limits>
+#include <memory>
 #include <msclr/marshal_cppstd.h>
 #include <numeric>
+#include "LocaleConverter.h"
 
 using namespace System::Runtime::InteropServices;
 
@@ -18,6 +19,29 @@ static float GetSystemDpiScale()
 
 namespace
 {
+	struct ComReleaser
+	{
+		template <typename T>
+		void operator()(T* ptr) const noexcept
+		{
+			if (ptr)
+				ptr->Release();
+		}
+	};
+
+	template <typename T>
+	using com_ptr = std::unique_ptr<T, ComReleaser>;
+
+	template <typename T, typename Factory>
+	HRESULT CreateComPtr(com_ptr<T>& target, Factory factory)
+	{
+		target.reset();
+		T* raw = nullptr;
+		const HRESULT hr = factory(&raw);
+		target.reset(raw);
+		return hr;
+	}
+
 	enum class ImageResizeMode
 	{
 		Stretch,
@@ -34,17 +58,23 @@ namespace
 			return nullptr;
 		}
 
-		CComPtr<IWICImagingFactory> imaging_factory;
-		HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
-			IID_PPV_ARGS(&imaging_factory));
+		com_ptr<IWICImagingFactory> imaging_factory;
+		HRESULT hr = CreateComPtr(imaging_factory, [](IWICImagingFactory** out)
+			{
+				return CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
+					IID_PPV_ARGS(out));
+			});
 		if (FAILED(hr) || !imaging_factory)
 		{
 			ATLTRACE("err: create WIC imaging factory failed, hr=0x%08lx\n", hr);
 			return nullptr;
 		}
 
-		CComPtr<IWICStream> iwic_stream;
-		hr = imaging_factory->CreateStream(&iwic_stream);
+		com_ptr<IWICStream> iwic_stream;
+		hr = CreateComPtr(iwic_stream, [&](IWICStream** out)
+			{
+				return imaging_factory->CreateStream(out);
+			});
 		if (FAILED(hr) || !iwic_stream)
 		{
 			ATLTRACE("err: create WIC stream failed, hr=0x%08lx\n", hr);
@@ -58,32 +88,41 @@ namespace
 			return nullptr;
 		}
 
-		CComPtr<IWICBitmapDecoder> bitmap_decoder;
-		hr = imaging_factory->CreateDecoderFromStream(iwic_stream, nullptr,
-			WICDecodeMetadataCacheOnLoad, &bitmap_decoder);
+		com_ptr<IWICBitmapDecoder> bitmap_decoder;
+		hr = CreateComPtr(bitmap_decoder, [&](IWICBitmapDecoder** out)
+			{
+				return imaging_factory->CreateDecoderFromStream(iwic_stream.get(), nullptr,
+					WICDecodeMetadataCacheOnLoad, out);
+			});
 		if (FAILED(hr) || !bitmap_decoder)
 		{
 			ATLTRACE("err: create decoder from stream failed, hr=0x%08lx\n", hr);
 			return nullptr;
 		}
 
-		CComPtr<IWICBitmapFrameDecode> source;
-		hr = bitmap_decoder->GetFrame(0, &source);
+		com_ptr<IWICBitmapFrameDecode> source;
+		hr = CreateComPtr(source, [&](IWICBitmapFrameDecode** out)
+			{
+				return bitmap_decoder->GetFrame(0, out);
+			});
 		if (FAILED(hr) || !source)
 		{
 			ATLTRACE("err: get WIC bitmap frame failed, hr=0x%08lx\n", hr);
 			return nullptr;
 		}
 
-		CComPtr<IWICFormatConverter> iwic_format_converter;
-		hr = imaging_factory->CreateFormatConverter(&iwic_format_converter);
+		com_ptr<IWICFormatConverter> iwic_format_converter;
+		hr = CreateComPtr(iwic_format_converter, [&](IWICFormatConverter** out)
+			{
+				return imaging_factory->CreateFormatConverter(out);
+			});
 		if (FAILED(hr) || !iwic_format_converter)
 		{
 			ATLTRACE("err: create WIC format converter failed, hr=0x%08lx\n", hr);
 			return nullptr;
 		}
 
-		hr = iwic_format_converter->Initialize(source, GUID_WICPixelFormat32bppBGRA,
+		hr = iwic_format_converter->Initialize(source.get(), GUID_WICPixelFormat32bppBGRA,
 			WICBitmapDitherTypeNone, nullptr, 0.f,
 			WICBitmapPaletteTypeCustom);
 		if (FAILED(hr))
@@ -101,9 +140,12 @@ namespace
 			return nullptr;
 		}
 
-		CComPtr<IWICBitmapClipper> clipper;
-		CComPtr<IWICBitmapScaler> scaler;
-		hr = imaging_factory->CreateBitmapScaler(&scaler);
+		com_ptr<IWICBitmapClipper> clipper;
+		com_ptr<IWICBitmapScaler> scaler;
+		hr = CreateComPtr(scaler, [&](IWICBitmapScaler** out)
+			{
+				return imaging_factory->CreateBitmapScaler(out);
+			});
 		if (FAILED(hr) || !scaler)
 		{
 			ATLTRACE("err: create WIC bitmap scaler failed, hr=0x%08lx\n", hr);
@@ -124,7 +166,10 @@ namespace
 			ATLTRACE("info: center crop - src(%u %u), crop(%u %u) at (%u %u)\n",
 				width, height, crop_width, crop_height, crop_x, crop_y);
 
-			hr = imaging_factory->CreateBitmapClipper(&clipper);
+			hr = CreateComPtr(clipper, [&](IWICBitmapClipper** out)
+				{
+					return imaging_factory->CreateBitmapClipper(out);
+				});
 			if (FAILED(hr) || !clipper)
 			{
 				ATLTRACE("err: create WIC bitmap clipper failed, hr=0x%08lx\n", hr);
@@ -133,18 +178,18 @@ namespace
 
 			const WICRect crop_rect = { static_cast<INT>(crop_x), static_cast<INT>(crop_y),
 								  static_cast<INT>(crop_width), static_cast<INT>(crop_height) };
-			hr = clipper->Initialize(iwic_format_converter, &crop_rect);
+			hr = clipper->Initialize(iwic_format_converter.get(), &crop_rect);
 			if (FAILED(hr))
 			{
 				ATLTRACE("err: initialize WIC bitmap clipper failed, hr=0x%08lx\n", hr);
 				return nullptr;
 			}
 
-			hr = scaler->Initialize(clipper, scale_size, scale_size, WICBitmapInterpolationModeFant);
+			hr = scaler->Initialize(clipper.get(), scale_size, scale_size, WICBitmapInterpolationModeFant);
 		}
 		else
 		{
-			hr = scaler->Initialize(iwic_format_converter, scale_size, scale_size, WICBitmapInterpolationModeFant);
+			hr = scaler->Initialize(iwic_format_converter.get(), scale_size, scale_size, WICBitmapInterpolationModeFant);
 		}
 		if (FAILED(hr))
 		{
@@ -223,12 +268,11 @@ int64_t MusicPlayerLibrary::MusicPlayerNative::seek_func_wrapper(void* opaque, i
 	return callObject->seek_func(offset, whence);
 }
 
-inline int MusicPlayerLibrary::MusicPlayerNative::load_audio_context(const CString& audio_filename, const CString& file_extension_in)
+inline int MusicPlayerLibrary::MusicPlayerNative::load_audio_context(const std::wstring& audio_filename, const std::wstring& file_extension_in)
 {
 	// 打开文件流
 	// std::ios::sync_with_stdio(false);
-	const std::wstring audio_file_path(audio_filename.GetString());
-	file_stream = GetDefaultFileSystem().OpenReadFile(audio_file_path, true, false);
+	file_stream = GetDefaultFileSystem().OpenReadFile(audio_filename, true, false);
 	bool is_ncm = false;
 	file_extension = file_extension_in;
 	if (!file_stream)
@@ -245,14 +289,14 @@ inline int MusicPlayerLibrary::MusicPlayerNative::load_audio_context(const CStri
 	}
 	magic[9] = '\0';
 	ATLTRACE("info: magic bytes: %s\n", magic);
-	if (CStringA(magic) == "CTENFDAM")
+	if (std::string_view(magic, 8) == "CTENFDAM")
 	{
 		ATLTRACE("info: found ncm header\n");
 		is_ncm = true;
 	}
 	file_stream->SeekToBegin();
 
-	if (file_extension_in.CompareNoCase(_T("ncm")) == 0 || is_ncm)
+	if (StringUtils::EqualsIgnoreCase(file_extension_in, L"ncm") || is_ncm)
 	{
 		try
 		{
@@ -384,7 +428,7 @@ int MusicPlayerLibrary::MusicPlayerNative::load_audio_context_from_file_stream()
 		album_art = decode_id3_album_art(image_stream_id, static_cast<int>(500.0f * GetSystemDpiScale()));
 	}
 
-	if (this->file_extension != _T("ncm"))
+	if (this->file_extension != L"ncm")
 	{
 		managed_music_player->ProcessEvent(WM_PLAYER_ALBUM_ART_INIT, reinterpret_cast<WPARAM>(album_art), 0);
 		album_art = nullptr; // ownership transferred to async event handler
@@ -528,9 +572,9 @@ bool MusicPlayerLibrary::MusicPlayerNative::is_audio_context_initialized()
 		&& file_stream;
 }
 
-HBITMAP MusicPlayerLibrary::MusicPlayerNative::download_ncm_album_art(const CString& url, int scale_size)
+HBITMAP MusicPlayerLibrary::MusicPlayerNative::download_ncm_album_art(const std::wstring& url, int scale_size)
 {
-	if (url.IsEmpty()) return nullptr;
+	if (url.empty()) return nullptr;
 
 	auto file = GetDefaultFileSystem().CreateMemoryFile();
 	if (!file)
@@ -567,7 +611,7 @@ HBITMAP MusicPlayerLibrary::MusicPlayerNative::download_ncm_album_art(const CStr
 		urlComponents.dwHostNameLength = static_cast<DWORD>(-1);
 		urlComponents.dwUrlPathLength = static_cast<DWORD>(-1);
 		urlComponents.dwExtraInfoLength = static_cast<DWORD>(-1);
-		if (!WinHttpCrackUrl(url.GetString(), static_cast<DWORD>(url.GetLength()), 0, &urlComponents))
+		if (!WinHttpCrackUrl(url.c_str(), static_cast<DWORD>(url.size()), 0, &urlComponents))
 		{
 			ATLTRACE("err: crack album art url failed, gle=%lu\n", GetLastError());
 			break;
@@ -579,16 +623,16 @@ HBITMAP MusicPlayerLibrary::MusicPlayerNative::download_ncm_album_art(const CStr
 			break;
 		}
 
-		CString host(urlComponents.lpszHostName, static_cast<int>(urlComponents.dwHostNameLength));
-		CString requestPath(urlComponents.lpszUrlPath, static_cast<int>(urlComponents.dwUrlPathLength));
-		if (requestPath.IsEmpty())
-			requestPath = _T("/");
+		std::wstring host(urlComponents.lpszHostName, urlComponents.dwHostNameLength);
+		std::wstring requestPath(urlComponents.lpszUrlPath, urlComponents.dwUrlPathLength);
+		if (requestPath.empty())
+			requestPath = L"/";
 		if (urlComponents.dwExtraInfoLength > 0)
-			requestPath += CString(urlComponents.lpszExtraInfo, static_cast<int>(urlComponents.dwExtraInfoLength));
+			requestPath.append(urlComponents.lpszExtraInfo, urlComponents.dwExtraInfoLength);
 
 		ATLTRACE("info: establishing connection with ncm server\n");
 		hSession = WinHttpOpen(
-			_T("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36"),
+			L"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
 			WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
 			WINHTTP_NO_PROXY_NAME,
 			WINHTTP_NO_PROXY_BYPASS,
@@ -599,7 +643,7 @@ HBITMAP MusicPlayerLibrary::MusicPlayerNative::download_ncm_album_art(const CStr
 			break;
 		}
 
-		hConnect = WinHttpConnect(hSession, host.GetString(), urlComponents.nPort, 0);
+		hConnect = WinHttpConnect(hSession, host.c_str(), urlComponents.nPort, 0);
 		if (!hConnect)
 		{
 			ATLTRACE("err: connect album art host failed, gle=%lu\n", GetLastError());
@@ -609,8 +653,8 @@ HBITMAP MusicPlayerLibrary::MusicPlayerNative::download_ncm_album_art(const CStr
 		DWORD requestFlags = urlComponents.nScheme == INTERNET_SCHEME_HTTPS ? WINHTTP_FLAG_SECURE : 0;
 		hRequest = WinHttpOpenRequest(
 			hConnect,
-			_T("GET"),
-			requestPath.GetString(),
+			L"GET",
+			requestPath.c_str(),
 			nullptr,
 			WINHTTP_NO_REFERER,
 			WINHTTP_DEFAULT_ACCEPT_TYPES,
@@ -621,11 +665,11 @@ HBITMAP MusicPlayerLibrary::MusicPlayerNative::download_ncm_album_art(const CStr
 			break;
 		}
 
-		static constexpr TCHAR cacheHeaders[] = _T("Cache-Control: no-cache\r\nPragma: no-cache\r\n");
+		static constexpr wchar_t cacheHeaders[] = L"Cache-Control: no-cache\r\nPragma: no-cache\r\n";
 		if (!WinHttpSendRequest(
 			hRequest,
 			cacheHeaders,
-			static_cast<DWORD>(_tcslen(cacheHeaders)),
+			static_cast<DWORD>(wcslen(cacheHeaders)),
 			WINHTTP_NO_REQUEST_DATA,
 			0,
 			0,
@@ -716,7 +760,7 @@ HBITMAP MusicPlayerLibrary::MusicPlayerNative::decode_id3_album_art(const int st
 		ImageResizeMode::CenterCrop);
 }
 
-void MusicPlayerLibrary::MusicPlayerNative::download_ncm_album_art_async(const CString& url, int scale_size)
+void MusicPlayerLibrary::MusicPlayerNative::download_ncm_album_art_async(const std::wstring& url, int scale_size)
 {
 	if (album_art_worker_thread.joinable())
 	{
@@ -745,29 +789,24 @@ void MusicPlayerLibrary::MusicPlayerNative::download_ncm_album_art_async(const C
 void MusicPlayerLibrary::MusicPlayerNative::read_metadata()
 {
 	auto convert_utf8 = [](const char* utf_8_str) {
-		int len = MultiByteToWideChar(CP_UTF8, 0, utf_8_str, -1, nullptr, 0);
-		CStringW wtitle;
-		wchar_t* wtitle_raw_buffer = wtitle.GetBufferSetLength(len);
-		MultiByteToWideChar(CP_UTF8, 0, utf_8_str, -1, wtitle_raw_buffer, len);
-		wtitle.ReleaseBuffer();
-		return wtitle;
+		return StringUtils::FromUtf8Bytes(utf_8_str, strlen(utf_8_str));
 		};
 	auto read_metadata_iter = [&](AVDictionaryEntry* tag) {
-		CString key = convert_utf8(tag->key);
-		CString value = convert_utf8(tag->value);
-		ATLTRACE(_T("info: key %s = %s\n"), key.GetString(), value.GetString());
-		if (!key.CompareNoCase(_T("title")) && song_title.IsEmpty()) {
+		std::wstring key = convert_utf8(tag->key);
+		std::wstring value = convert_utf8(tag->value);
+		ATLTRACE(L"info: key %s = %s\n", key.c_str(), value.c_str());
+		if (StringUtils::EqualsIgnoreCase(key, L"title") && song_title.empty()) {
 			song_title = value;
-			ATLTRACE(_T("info: song title: %s\n"), song_title.GetString());
+			ATLTRACE(L"info: song title: %s\n", song_title.c_str());
 		}
-		else if (!key.CompareNoCase(_T("artist")) && song_artist.IsEmpty()) {
+		else if (StringUtils::EqualsIgnoreCase(key, L"artist") && song_artist.empty()) {
 			song_artist = value;
-			ATLTRACE(_T("info: song artist: %s\n"), song_artist.GetString());
+			ATLTRACE(L"info: song artist: %s\n", song_artist.c_str());
 		}
 		else
 		{
-			key.MakeLower();
-			if (key.Find(_T("lyric")) != -1)
+			StringUtils::ToLowerInPlace(key);
+			if (key.find(L"lyric") != std::wstring::npos)
 			{
 				this->id3_string_lyric = value;
 				ATLTRACE("info: song contains lyric in metadata\n");
@@ -1291,7 +1330,7 @@ void MusicPlayerLibrary::MusicPlayerNative::audio_decode_worker_thread()
 		else if (!underrun_notified) {
 			continue;
 		}
-		clock_t decode_begin = clock();
+		// clock_t decode_begin = clock();
 		if (playback_state.load() == audio_playback_state_stopped) {
 			ATLTRACE("info: playback stopped, decoder thread exiting\n");
 			break;
@@ -1467,8 +1506,8 @@ void MusicPlayerLibrary::MusicPlayerNative::audio_decode_worker_thread()
 			// EOF模式时，发送的包是空包
 			av_packet_unref(packet);
 		}
-		clock_t decode_end = clock();
-		double decode_time_ms = (decode_end - decode_begin) * 1000.0 / CLOCKS_PER_SEC;
+		// clock_t decode_end = clock();
+		// double decode_time_ms = (decode_end - decode_begin) * 1000.0 / CLOCKS_PER_SEC;
 		// this seems to be disrupting.
 //		if (decode_time_ms > 10)
 //			ATLTRACE("warn: decode cycle time=%lf ms > 10, may cause frame underrun!\n", decode_time_ms);
@@ -1487,7 +1526,7 @@ void MusicPlayerLibrary::MusicPlayerNative::init_decoder_thread() {
 		[this] {
 			SetThreadExecutionState(ES_SYSTEM_REQUIRED | ES_AWAYMODE_REQUIRED);
 			SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
-			AvSetMmThreadCharacteristics(_T("Pro Audio"), xaudio2_thread_task_index);
+			AvSetMmThreadCharacteristics(L"Pro Audio", xaudio2_thread_task_index);
 			decoder_is_running = true;
 			audio_decode_worker_thread();
 			decoder_is_running = false;
@@ -1517,7 +1556,7 @@ inline void MusicPlayerLibrary::MusicPlayerNative::start_audio_playback()
 		[this] {
 			SetThreadExecutionState(ES_SYSTEM_REQUIRED | ES_AWAYMODE_REQUIRED);
 			SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
-			AvSetMmThreadCharacteristics(_T("Pro Audio"), xaudio2_thread_task_index);
+			AvSetMmThreadCharacteristics(L"Pro Audio", xaudio2_thread_task_index);
 			audio_playback_worker_thread();
 		});
 	ATLTRACE("info: player thread created\n");
@@ -1762,11 +1801,10 @@ void MusicPlayerLibrary::MusicPlayerNative::dialog_ffmpeg_critical_error(int err
 {
 	char buf[1024] = { 0 };
 	av_strerror(err_code, buf, 1024);
-	CString message = _T("FFmpeg critical error: ");
-	CString res{};
-	res.Format(_T("%s (file: %s, line: %d)\n"), CString(buf).GetString(), CString(file).GetString(), line);
-	message += res;
-	throw gcnew System::InvalidOperationException(msclr::interop::marshal_as<String^>(message.GetString()));
+	std::wstring message = L"FFmpeg critical error: ";
+	message += LocaleConverterNative::GetUtf16StringFromUtf8String(
+		StringUtils::FormatString("%s (file: %s, line: %d)\n", buf, file, line));
+	throw gcnew System::InvalidOperationException(gcnew String(message.c_str()));
 }
 
 // this stack_unwind function is not useful, removed.
@@ -1781,10 +1819,7 @@ MusicPlayerLibrary::MusicPlayerNative::MusicPlayerNative() :
 		avutil_version(),
 		swresample_version());
 	ATLTRACE("info: audio api backend: XAudio2 version %s\n", get_backend_implement_version());
-	for (int i = 0; i < 10; ++i)
-	{
-		eq_bands.Add(0);
-	}
+	eq_bands.assign(10, 0);
 }
 
 /**
@@ -1805,43 +1840,36 @@ int MusicPlayerLibrary::MusicPlayerNative::init_av_filter_equalizer()
 	if (sample_rate <= 0)
 		sample_rate = 48000;
 
-	CStringA layout_str;
-	auto layout_str_buffer = layout_str.GetBufferSetLength(256);
-	av_channel_layout_describe(&codec_context->ch_layout, layout_str_buffer, 256);
-	layout_str.ReleaseBuffer();
-	CStringA args;
-	args.Format("sample_rate=%d:sample_fmt=%s:channel_layout=%s",
+	std::string layout_str(256, '\0');
+	av_channel_layout_describe(&codec_context->ch_layout, layout_str.data(), static_cast<size_t>(layout_str.size()));
+	layout_str.resize(strlen(layout_str.c_str()));
+	std::string args = StringUtils::FormatString("sample_rate=%d:sample_fmt=%s:channel_layout=%s",
 		codec_context->sample_rate,
 		av_get_sample_fmt_name(codec_context->sample_fmt),
-		layout_str.GetString());
-	ATLTRACE("info: init_av_filter_equalizer, filter args: %s\n", args.GetString());
+		layout_str.c_str());
+	ATLTRACE("info: init_av_filter_equalizer, filter args: %s\n", args.c_str());
 	int ret = avfilter_graph_create_filter(&filter_context_src, avfilter_get_by_name("abuffer"),
-		"src", args.GetString(), nullptr, filter_graph);
+		"src", args.c_str(), nullptr, filter_graph);
 	if (ret < 0)
 	{
 		FFMPEG_CRITICAL_ERROR(ret);
 		return ret;
 	}
 
-	CStringA resample_args;
-	resample_args.Format("sample_rate=%d:out_chlayout=stereo:out_sample_fmt=s16", sample_rate);
+	std::string resample_args = StringUtils::FormatString("sample_rate=%d:out_chlayout=stereo:out_sample_fmt=s16", sample_rate);
 	ret = avfilter_graph_create_filter(&resample_ctx, avfilter_get_by_name("aresample"),
-		"resample", resample_args.GetString(), nullptr, filter_graph);
+		"resample", resample_args.c_str(), nullptr, filter_graph);
 	if (ret < 0)
 	{
 		FFMPEG_CRITICAL_ERROR(ret);
 		return ret;
 	}
-	ATLTRACE("info: resample filter created, param = %s\n", resample_args.GetString());
+	ATLTRACE("info: resample filter created, param = %s\n", resample_args.c_str());
 
-	if (eq_bands.GetSize() != 10)
+	if (eq_bands.size() != 10)
 	{
-		ATLTRACE("warn: invalid eq_bands size, =%d\n", eq_bands.GetSize());
-		eq_bands.RemoveAll();
-		for (int i = 0; i < 10; i++)
-		{
-			eq_bands.Add(0);
-		}
+		ATLTRACE("warn: invalid eq_bands size, =%d\n", static_cast<int>(eq_bands.size()));
+		eq_bands.assign(10, 0);
 	}
 	else
 	{
@@ -1855,21 +1883,20 @@ int MusicPlayerLibrary::MusicPlayerNative::init_av_filter_equalizer()
 			.gain_values = eq_bands[i],
 			.eq_context = nullptr
 		};
-		eq_graph.eq_name.Format("eq%d", i);
-		CStringA arg_str;
-		arg_str.Format("f=%d:t=q:w=1:g=%d", freq_hz[i], eq_bands[i]);
-		ATLTRACE("info: init_av_filter_equalizer, filter args: %s\n", arg_str.GetString());
+		eq_graph.eq_name = StringUtils::FormatString("eq%d", i);
+		std::string arg_str = StringUtils::FormatString("f=%d:t=q:w=1:g=%d", freq_hz[i], eq_bands[i]);
+		ATLTRACE("info: init_av_filter_equalizer, filter args: %s\n", arg_str.c_str());
 
 		ret = avfilter_graph_create_filter(&eq_graph.eq_context, avfilter_get_by_name("equalizer"),
-			eq_graph.eq_name.GetString(),
-			arg_str.GetString(), nullptr, filter_graph);
+			eq_graph.eq_name.c_str(),
+			arg_str.c_str(), nullptr, filter_graph);
 		if (ret < 0)
 		{
 			FFMPEG_CRITICAL_ERROR(ret);
 			return ret;
 		}
 
-		filter_graphs.Add(eq_graph);
+		filter_graphs.push_back(eq_graph);
 	}
 	ret = avfilter_graph_create_filter(&filter_context_sink, avfilter_get_by_name("abuffersink"),
 		"sink", nullptr, nullptr, filter_graph);
@@ -1917,17 +1944,16 @@ int MusicPlayerLibrary::MusicPlayerNative::init_av_filter_equalizer()
 		return ret;
 	}
 	ATLTRACE("info: limiter linked\n");
-	CStringA fmt_args;
-	fmt_args.Format("sample_fmts=s16:sample_rates=%d:channel_layouts=stereo", sample_rate);
+	std::string fmt_args = StringUtils::FormatString("sample_fmts=s16:sample_rates=%d:channel_layouts=stereo", sample_rate);
 	ret = avfilter_graph_create_filter(&format_normalize_ctx,
 		avfilter_get_by_name("aformat"),
-		"aformat", fmt_args.GetString(), nullptr, filter_graph);
+		"aformat", fmt_args.c_str(), nullptr, filter_graph);
 	if (ret < 0)
 	{
 		FFMPEG_CRITICAL_ERROR(ret);
 		return ret;
 	}
-	ATLTRACE("info: format filter created, param = %s\n", fmt_args.GetString());
+	ATLTRACE("info: format filter created, param = %s\n", fmt_args.c_str());
 	if ((ret = avfilter_link(limiter_ctx, 0, format_normalize_ctx, 0)) < 0 ||
 		(ret = avfilter_link(format_normalize_ctx, 0, filter_context_sink, 0)) < 0)
 	{
@@ -1961,7 +1987,7 @@ int MusicPlayerLibrary::MusicPlayerNative::init_av_filter_equalizer()
 
 bool MusicPlayerLibrary::MusicPlayerNative::is_av_filter_equalizer_initialized()
 {
-	return filter_graphs.GetSize() > 0
+	return !filter_graphs.empty()
 		&& filter_context_src && filter_context_sink;
 }
 
@@ -1973,7 +1999,7 @@ void MusicPlayerLibrary::MusicPlayerNative::reset_av_filter_equalizer()
 	filter_context_src = filter_context_sink = nullptr;
 	resample_ctx = nullptr;
 	volume_ctx = limiter_ctx = format_normalize_ctx = nullptr;
-	filter_graphs.RemoveAll();
+	filter_graphs.clear();
 }
 
 bool MusicPlayerLibrary::MusicPlayerNative::IsInitialized()
@@ -1987,7 +2013,7 @@ bool MusicPlayerLibrary::MusicPlayerNative::IsPlaying()
 		playback_state.load() != audio_playback_state_init && playback_state.load() != audio_playback_state_stopped;
 }
 
-void MusicPlayerLibrary::MusicPlayerNative::OpenFile(const CString& fileName, const CString& file_extension_in)
+void MusicPlayerLibrary::MusicPlayerNative::OpenFile(const std::wstring& fileName, const std::wstring& file_extension_in)
 {
 	if (load_audio_context(fileName, file_extension_in)) {
 		// AfxMessageBox(_T("err: load file failed, please check trace message!"), MB_ICONERROR);
@@ -2027,7 +2053,7 @@ float MusicPlayerLibrary::MusicPlayerNative::GetCurrentMusicPosition()
 	return 0.0f;
 }
 
-CString MusicPlayerLibrary::MusicPlayerNative::GetSongTitle()
+std::wstring MusicPlayerLibrary::MusicPlayerNative::GetSongTitle()
 {
 	if (IsInitialized()) {
 		return song_title;
@@ -2035,7 +2061,7 @@ CString MusicPlayerLibrary::MusicPlayerNative::GetSongTitle()
 	return {};
 }
 
-CString MusicPlayerLibrary::MusicPlayerNative::GetSongArtist()
+std::wstring MusicPlayerLibrary::MusicPlayerNative::GetSongArtist()
 {
 	if (IsInitialized()) {
 		return song_artist;
@@ -2108,7 +2134,7 @@ int MusicPlayerLibrary::MusicPlayerNative::GetNBlockAlign()
 	return wfx.nBlockAlign;
 }
 
-CString MusicPlayerLibrary::MusicPlayerNative::GetID3Lyric()
+std::wstring MusicPlayerLibrary::MusicPlayerNative::GetID3Lyric()
 {
 	return id3_string_lyric;
 }
@@ -2124,16 +2150,15 @@ void MusicPlayerLibrary::MusicPlayerNative::SetEqualizerBand(int index, int valu
 	if (index < 0 || index >= 10) return;
 	if (value < -24) value = -24;
 	else if (value > 24) value = 24;
-	if (eq_bands.GetSize() == 10)
+	if (eq_bands.size() == 10)
 		eq_bands[index] = value;
 	if (this->is_av_filter_equalizer_initialized())
 	{
 		filter_graphs[index].gain_values = value;
-		CStringA eq_name, gain_val;
-		eq_name.Format("eq%d", index);
-		gain_val.Format("%d", value);
+		std::string eq_name = StringUtils::FormatString("eq%d", index);
+		std::string gain_val = StringUtils::FormatString("%d", value);
 
-		avfilter_graph_send_command(filter_graph, eq_name.GetString(), "gain", gain_val.GetString(), nullptr, 0, 0);
+		avfilter_graph_send_command(filter_graph, eq_name.c_str(), "gain", gain_val.c_str(), nullptr, 0, 0);
 	}
 }
 
@@ -2282,35 +2307,36 @@ bool MusicPlayerLibrary::MusicPlayer::IsPlaying()
 	return native_handle->IsPlaying();
 }
 
-static bool IsValidPath(const CString& path)
+static bool IsValidPath(const std::wstring& path)
 {
-	if (path.IsEmpty())
+	if (path.empty())
 		return false;
 
-	static const CString invalidChars = _T("<>\"|?*");
-	for (int i = 0; i < invalidChars.GetLength(); ++i)
+	static constexpr std::wstring_view invalidChars = L"<>\"|?*";
+	for (wchar_t invalidChar : invalidChars)
 	{
-		if (path.Find(invalidChars[i]) != -1)
+		if (path.find(invalidChar) != std::wstring::npos)
 		{
-			ATLTRACE("err: invalid character found, char: %c\n", invalidChars[i]);
+			ATLTRACE("err: invalid character found, char: %c\n", static_cast<char>(invalidChar));
 			return false;
 		}
 	}
 
-	return PathFileExists(path);
+	return PathFileExists(path.c_str());
 }
 
 void MusicPlayerLibrary::MusicPlayer::OpenFile(const System::String^ fileName)
 {
 	check_if_null();
 	pin_ptr<const wchar_t> wch = PtrToStringChars(fileName);
-	CString mfcFileName(wch);
-	if (!IsValidPath(mfcFileName)) {
+	std::wstring nativeFileName(wch);
+	if (!IsValidPath(nativeFileName)) {
 		throw gcnew System::ArgumentException("file does not exist!");
 	}
-	CString extension = PathFindExtension(mfcFileName);
-	extension = extension.Mid(1);
-	native_handle->OpenFile(mfcFileName, extension);
+	std::wstring extension = PathFindExtension(nativeFileName.c_str());
+	if (!extension.empty() && extension[0] == L'.')
+		extension.erase(0, 1);
+	native_handle->OpenFile(nativeFileName, extension);
 }
 
 float MusicPlayerLibrary::MusicPlayer::GetMusicTimeLength()
@@ -2328,19 +2354,19 @@ float MusicPlayerLibrary::MusicPlayer::GetCurrentMusicPosition()
 System::String^ MusicPlayerLibrary::MusicPlayer::GetSongTitle()
 {
 	if (!is_native_valid()) return nullptr;
-	CString title = native_handle->GetSongTitle();
+	std::wstring title = native_handle->GetSongTitle();
 	// TODO: 在此处插入 return 语句
-	if (title.IsEmpty()) return nullptr;
-	return msclr::interop::marshal_as<System::String^>(title.GetString());
+	if (title.empty()) return nullptr;
+	return gcnew System::String(title.c_str());
 }
 
 System::String^ MusicPlayerLibrary::MusicPlayer::GetSongArtist()
 {
 	if (!is_native_valid()) return nullptr;
-	CString artist = native_handle->GetSongArtist();
+	std::wstring artist = native_handle->GetSongArtist();
 	// TODO: 在此处插入 return 语句
-	if (artist.IsEmpty()) return nullptr;
-	return msclr::interop::marshal_as<System::String^>(artist.GetString());
+	if (artist.empty()) return nullptr;
+	return gcnew System::String(artist.c_str());
 }
 
 void MusicPlayerLibrary::MusicPlayer::Start()
@@ -2382,9 +2408,9 @@ int MusicPlayerLibrary::MusicPlayer::GetNBlockAlign()
 System::String^ MusicPlayerLibrary::MusicPlayer::GetID3Lyric()
 {
 	if (!is_native_valid()) return nullptr;
-	CString lyric = native_handle->GetID3Lyric();
+	std::wstring lyric = native_handle->GetID3Lyric();
 	// TODO: 在此处插入 return 语句
-	return msclr::interop::marshal_as<System::String^>(lyric.GetString());
+	return gcnew System::String(lyric.c_str());
 }
 
 int MusicPlayerLibrary::MusicPlayer::GetEqualizerBand(int index)

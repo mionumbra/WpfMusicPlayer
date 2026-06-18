@@ -1,15 +1,16 @@
 #pragma once
 
 #include "pch.h"
+#include "StringUtils.h"
 
 namespace MusicPlayerLibrary 
 {
 	class LocaleConverterNative
 	{
 	public:
-		static CStringA GetUtf8StringFromBytesNative(const char* input, size_t size);
-		static CString GetUtf16StringFromUtf8String(const CStringA& input);
-		static std::string GetUtf8StringStdFromUtf16String(const CString& input);
+		static std::string GetUtf8StringFromBytesNative(const char* input, size_t size);
+		static std::wstring GetUtf16StringFromUtf8String(const std::string& input);
+		static std::string GetUtf8StringFromUtf16String(const std::wstring& input);
 	};
 
 	public ref class LocaleConverter abstract sealed {

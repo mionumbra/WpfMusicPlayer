@@ -5,9 +5,9 @@
 #include <uchardet/uchardet.h>
 #include <msclr/marshal_cppstd.h>
 
-CStringA MusicPlayerLibrary::LocaleConverterNative::GetUtf8StringFromBytesNative(const char* input, size_t size)
+std::string MusicPlayerLibrary::LocaleConverterNative::GetUtf8StringFromBytesNative(const char* input, size_t size)
 {
-    if (!input || size == 0) return "";
+    if (!input || size == 0) return {};
 
     auto uc_checker = uchardet_new();
     // 调用者负责约束input的有效性，因此不需要复制
@@ -21,7 +21,7 @@ CStringA MusicPlayerLibrary::LocaleConverterNative::GetUtf8StringFromBytesNative
     // conversion guard
     if (!charset || strlen(charset) == 0 || _stricmp(charset, "UTF-8") == 0) {
         uchardet_delete(uc_checker);
-        return CStringA(input, static_cast<int>(size));
+        return std::string(input, size);
     }
 
     iconv_t iconver = iconv_open("UTF-8", charset);
@@ -29,7 +29,7 @@ CStringA MusicPlayerLibrary::LocaleConverterNative::GetUtf8StringFromBytesNative
     uchardet_delete(uc_checker);
 
     if (iconver == reinterpret_cast<iconv_t>(-1)) {
-        return CStringA(input, static_cast<int>(size));
+        return std::string(input, size);
     }
 
     size_t insize = size;
@@ -37,8 +37,8 @@ CStringA MusicPlayerLibrary::LocaleConverterNative::GetUtf8StringFromBytesNative
     size_t outcapacity = size * 4; 
     size_t outleft = outcapacity;
     
-    CStringA outbuf;
-    char* pOriginalStart = outbuf.GetBufferSetLength(static_cast<int>(outcapacity));
+    std::string outbuf(outcapacity, '\0');
+    char* pOriginalStart = outbuf.data();
     char* pIn = const_cast<char*>(input);
     char* pOut = pOriginalStart;
 
@@ -48,45 +48,24 @@ CStringA MusicPlayerLibrary::LocaleConverterNative::GetUtf8StringFromBytesNative
     iconv_close(iconver); 
 
     if (res == static_cast<size_t>(-1)) {
-        outbuf.ReleaseBuffer(0);
-        return CStringA(input, static_cast<int>(size));
+        return std::string(input, size);
     }
 
     // Shrink actualSize to fit
-    int actualSize = static_cast<int>(outcapacity - outleft);
-    outbuf.ReleaseBufferSetLength(actualSize); 
+    size_t actualSize = outcapacity - outleft;
+    outbuf.resize(actualSize); 
 
     return outbuf;
 }
 
-CString MusicPlayerLibrary::LocaleConverterNative::GetUtf16StringFromUtf8String(const CStringA& input)
+std::wstring MusicPlayerLibrary::LocaleConverterNative::GetUtf16StringFromUtf8String(const std::string& input)
 {
-    int wide_len = MultiByteToWideChar(CP_UTF8, 0, input, -1, nullptr, 0);
-    CString file_content_w;
-    MultiByteToWideChar(CP_UTF8, 0, input, -1, file_content_w.GetBuffer(wide_len), wide_len);
-    file_content_w.ReleaseBuffer();
-    return file_content_w;
+    return StringUtils::FromUtf8Bytes(input.data(), input.size());
 }
 
-std::string MusicPlayerLibrary::LocaleConverterNative::GetUtf8StringStdFromUtf16String(const CString& input)
+std::string MusicPlayerLibrary::LocaleConverterNative::GetUtf8StringFromUtf16String(const std::wstring& input)
 {
-    int utf8_len = WideCharToMultiByte(
-        CP_UTF8, 0,
-        input, -1,
-        nullptr, 0,
-        nullptr, nullptr
-    );
-
-    CStringA utf8_str;
-    WideCharToMultiByte(
-        CP_UTF8, 0,
-        input, -1,
-        utf8_str.GetBuffer(utf8_len), utf8_len,
-        nullptr, nullptr
-    );
-    utf8_str.ReleaseBuffer();
-
-    return utf8_str.GetString();
+    return StringUtils::ToUtf8(input);
 }
 
 System::String^ MusicPlayerLibrary::LocaleConverter::GetSystemStringFromBytes(array<byte>^ input)
@@ -98,21 +77,21 @@ System::String^ MusicPlayerLibrary::LocaleConverter::GetSystemStringFromBytes(ar
     for (int i = 0; i < input->Length; ++i)
         buffer[i] = input[i];
 
-    CStringA utf8 = LocaleConverterNative::GetUtf8StringFromBytesNative(buffer.data(), buffer.size());
-    CString s = LocaleConverterNative::GetUtf16StringFromUtf8String(utf8);
+    std::string utf8 = LocaleConverterNative::GetUtf8StringFromBytesNative(buffer.data(), buffer.size());
+    std::wstring s = LocaleConverterNative::GetUtf16StringFromUtf8String(utf8);
 
-    while (!s.IsEmpty())
+    while (!s.empty())
     {
-        WCHAR ch = s[s.GetLength() - 1];
+        WCHAR ch = s.back();
         if ((ch >= 0x20 && ch <= 0xD7FF) ||
             (ch >= 0xE000 && ch <= 0xFFFD))
         {
             break;
         }
         // 剔除不合法Unicode字符
-        s.Truncate(s.GetLength() - 1);
+        s.pop_back();
     }
 
-    return msclr::interop::marshal_as<System::String^>(s.GetString());
+    return gcnew System::String(s.c_str());
 }
 
