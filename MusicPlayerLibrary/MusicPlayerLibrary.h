@@ -5,6 +5,7 @@
 #include <vcclr.h>
 #include "FFTExecuter.h"
 #include "FileAbstractionLayer.h"
+#include "StringUtils.h"
 using namespace System;
 
 namespace MusicPlayerLibrary {
@@ -39,46 +40,44 @@ namespace MusicPlayerLibrary {
 
 	public struct NcmMusicMeta
 	{
-		CString musicName;
-		std::vector<std::vector<CString>> artist;
-		CString format;
-		CString album;
-		CString albumPic;
+		std::wstring musicName;
+		std::vector<std::vector<std::wstring>> artist;
+		std::wstring format;
+		std::wstring album;
+		std::wstring albumPic;
 	};
 
 	public struct DecryptResult
 	{
-		CString title;
-		CString artist;
-		CString album;
-		CString ext;
-		CString pictureUrl;
+		std::wstring title;
+		std::wstring artist;
+		std::wstring album;
+		std::wstring ext;
+		std::wstring pictureUrl;
 		std::vector<uint8_t> audioData;
-		CString mime;
+		std::wstring mime;
 	};
 
 	public class NcmDecryptor
 	{
 	public:
-		NcmDecryptor(const std::vector<uint8_t>& data, const CString& filename);
+		NcmDecryptor(const std::vector<uint8_t>& data, const std::wstring& filename);
 		DecryptResult Decrypt();
 
 	private:
 		const std::vector<uint8_t>& m_raw;
 		size_t m_offset = 0;
-		CString m_filename;
+		std::wstring m_filename;
 
 		NcmMusicMeta m_oriMeta;
 		std::vector<uint8_t> m_audio;
-		CString m_format;
-		CString m_mime;
+		std::wstring m_format;
+		std::wstring m_mime;
 
 		std::vector<uint8_t> GetKeyData();
 		std::vector<uint8_t> GetKeyBox();
 		NcmMusicMeta GetMetaData();
 		std::vector<uint8_t> GetAudio(const std::vector<uint8_t>& keyBox);
-
-		static CString Utf8ToWstring(const CString& s);
 	};
 
 	ref class MusicPlayer;
@@ -100,7 +99,7 @@ namespace MusicPlayerLibrary {
 		AVIOContext* avio_context = nullptr;
 		unsigned char* buffer = nullptr;
 
-		CString file_extension;
+		std::wstring file_extension;
 		std::unique_ptr<IFile> file_stream;
 		bool file_stream_end = false;
 		std::atomic_bool user_request_stop = false;
@@ -113,8 +112,8 @@ namespace MusicPlayerLibrary {
 		AVSampleFormat fifo_audio_sample_fmt = AV_SAMPLE_FMT_NONE;
 		int fifo_sample_rate = 0;
 		HBITMAP album_art = nullptr;
-		CString song_title = {};
-		CString song_artist = {};
+		std::wstring song_title = {};
+		std::wstring song_artist = {};
 
 		std::mutex audio_fifo_mutex;
 		std::mutex audio_playback_mutex;
@@ -146,7 +145,7 @@ namespace MusicPlayerLibrary {
 		double standard_frametime = 0.0, last_frametime = 0.0;
 		float message_interval = 16.67f, message_interval_timer = 0.0f;
 		size_t prev_decode_cycle_xaudio2_played_samples = 0;
-		CString id3_string_lyric;
+		std::wstring id3_string_lyric;
 		int sample_rate = 48000;
 
 		// managed variables
@@ -157,14 +156,14 @@ namespace MusicPlayerLibrary {
 		static int read_func_wrapper(void* opaque, uint8_t* buf, int buf_size);
 		int64_t seek_func(int64_t offset, int whence);
 		static int64_t seek_func_wrapper(void* opaque, int64_t offset, int whence);
-		int load_audio_context(const CString& audio_filename, const CString& file_extension_in = CString());
+		int load_audio_context(const std::wstring& audio_filename, const std::wstring& file_extension_in = {});
 		int load_audio_context_from_file_stream();
 		void release_audio_context();
 		void reset_audio_context();
 		bool is_audio_context_initialized();
-		static HBITMAP download_ncm_album_art(const CString& url, int scale_size = 128);
+		static HBITMAP download_ncm_album_art(const std::wstring& url, int scale_size = 128);
 		HBITMAP decode_id3_album_art(int stream_index, int scale_size = 128);
-		void download_ncm_album_art_async(const CString& url, int scale_size);
+		void download_ncm_album_art_async(const std::wstring& url, int scale_size);
 		void read_metadata();
 
 		// playback area
@@ -211,18 +210,18 @@ namespace MusicPlayerLibrary {
 		void dialog_ffmpeg_critical_error(int err_code, const char* file, int line);
 
 		// equalizer settings
-		CSimpleArray<int> eq_bands;
+		std::vector<int> eq_bands;
 		AVFilterGraph* filter_graph = nullptr;
 		struct av_filter_eq_graph
 		{
 			int freq;
 			int gain_values;
 			AVFilterContext* eq_context;
-			CStringA eq_name;
+			std::string eq_name;
 		};
 		AVFilterContext* filter_context_src = nullptr, * filter_context_sink = nullptr, * resample_ctx = nullptr,
 			* volume_ctx = nullptr, * limiter_ctx = nullptr, * format_normalize_ctx = nullptr;
-		CSimpleArray<av_filter_eq_graph> filter_graphs;
+		std::vector<av_filter_eq_graph> filter_graphs;
 
 		int init_av_filter_equalizer();
 		bool is_av_filter_equalizer_initialized();
@@ -241,11 +240,11 @@ namespace MusicPlayerLibrary {
 		// Interfaces
 		bool IsInitialized();
 		bool IsPlaying();
-		void OpenFile(const CString& fileName, const CString& file_extension_in = CString());
+		void OpenFile(const std::wstring& fileName, const std::wstring& file_extension_in = {});
 		float GetMusicTimeLength();
 		float GetCurrentMusicPosition();
-		CString GetSongTitle();
-		CString GetSongArtist();
+		std::wstring GetSongTitle();
+		std::wstring GetSongArtist();
 		void Start();
 		void Pause();
 		void Stop();
@@ -255,7 +254,7 @@ namespace MusicPlayerLibrary {
 		// int GetRawPCMBytes(uint8_t* buffer_out, int buffer_size) const;
 
 		int GetNBlockAlign();
-		CString GetID3Lyric();
+		std::wstring GetID3Lyric();
 
 		// Equalizer interfaces
 		int GetEqualizerBand(int index);

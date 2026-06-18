@@ -1,6 +1,5 @@
 #include "pch.h"
 #include "FileAbstractionLayer.h"
-#include <cstring>
 #include <limits>
 #include <utility>
 

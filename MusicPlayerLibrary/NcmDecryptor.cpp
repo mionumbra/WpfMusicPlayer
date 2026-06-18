@@ -1,10 +1,12 @@
 ﻿#include "pch.h"
 #include "MusicPlayerLibrary.h"
+#include "LocaleConverter.h"
 
 #include <openssl/evp.h>
 #include <cpp-base64/base64.h>
 #include <rapidjson/document.h>
 #include <rapidjson/error/en.h>
+#include <limits>
 
 static const uint8_t CORE_KEY[16] = {
     0x68, 0x7a, 0x48, 0x52, 0x41, 0x6d, 0x73, 0x6f,
@@ -70,7 +72,44 @@ static std::vector<uint8_t> Base64DecodeVector(const std::string& s)
     return { decoded.begin(), decoded.end() };
 }
 
-MusicPlayerLibrary::NcmDecryptor::NcmDecryptor(const std::vector<uint8_t>& data, const CString& filename)
+static std::wstring Utf8BytesToWideString(const char* input, size_t size)
+{
+    if (input == nullptr || size == 0)
+        return {};
+    if (size > static_cast<size_t>((std::numeric_limits<int>::max)()))
+        return {};
+
+    return MusicPlayerLibrary::LocaleConverterNative::GetUtf16StringFromUtf8String(std::string(input, size));
+}
+
+static std::wstring Utf8StringToWideString(const std::string& input)
+{
+    return Utf8BytesToWideString(input.data(), input.size());
+}
+
+static std::wstring JsonStringToWideString(const rapidjson::Value& value)
+{
+    if (!value.IsString())
+        return {};
+    return Utf8BytesToWideString(value.GetString(), value.GetStringLength());
+}
+
+static std::wstring JsonNumberToWideString(const rapidjson::Value& value)
+{
+    std::string number;
+    if (value.IsInt64())
+        number = std::to_string(value.GetInt64());
+    else if (value.IsUint64())
+        number = std::to_string(value.GetUint64());
+    else if (value.IsNumber())
+        number = std::to_string(value.GetDouble());
+    else
+        return {};
+
+    return Utf8StringToWideString(number);
+}
+
+MusicPlayerLibrary::NcmDecryptor::NcmDecryptor(const std::vector<uint8_t>& data, const std::wstring& filename)
     : m_raw(data), m_filename(filename) {
     if (m_raw.size() < 8)
         throw std::runtime_error("ncm file too small");
@@ -84,32 +123,32 @@ MusicPlayerLibrary::DecryptResult MusicPlayerLibrary::NcmDecryptor::Decrypt()
     auto keyBox = GetKeyBox();
     m_oriMeta = GetMetaData();
     m_audio = GetAudio(keyBox);
-    if (!m_oriMeta.format.IsEmpty())
+    if (!m_oriMeta.format.empty())
         m_format = m_oriMeta.format;
     else
-        m_format = _T("mp3");
-    if (m_format == _T("mp3"))
-        m_mime = _T("audio/mpeg");
-    else if (m_format == _T("flac"))
-        m_mime = _T("audio/flac");
+        m_format = L"mp3";
+    if (m_format == L"mp3")
+        m_mime = L"audio/mpeg";
+    else if (m_format == L"flac")
+        m_mime = L"audio/flac";
     else
-        m_mime = _T("application/octet-stream");
+        m_mime = L"application/octet-stream";
     DecryptResult res;
-    res.ext = Utf8ToWstring(m_format);
+    res.ext = m_format;
     res.mime = m_mime;
-    res.title = Utf8ToWstring(m_oriMeta.musicName);
-    res.album = Utf8ToWstring(m_oriMeta.album);
-    res.pictureUrl = Utf8ToWstring(m_oriMeta.albumPic);
-    CString artistJoined;
+    res.title = m_oriMeta.musicName;
+    res.album = m_oriMeta.album;
+    res.pictureUrl = m_oriMeta.albumPic;
+    std::wstring artistJoined;
     for (auto& arr : m_oriMeta.artist)
     {
         if (!arr.empty())
         {
-            if (!artistJoined.IsEmpty()) artistJoined += _T("; ");
+            if (!artistJoined.empty()) artistJoined += L"; ";
             artistJoined += arr[0];
         }
     }
-    res.artist = Utf8ToWstring(artistJoined);
+    res.artist = artistJoined;
     res.audioData = m_audio;
     return res;
 }
@@ -191,44 +230,53 @@ MusicPlayerLibrary::NcmMusicMeta MusicPlayerLibrary::NcmDecryptor::GetMetaData()
     {
         throw std::runtime_error(std::string("meta json parse error: ") + GetParseError_En(doc.GetParseError()));
     }
+    if (!doc.IsObject())
+        throw std::runtime_error("meta json root is not object");
     NcmMusicMeta result;
     auto parseMusicMeta = [&](const Value& v, NcmMusicMeta& out)
         {
-            if (v.HasMember("musicName") && v["musicName"].IsString())
-                out.musicName = Utf8ToWstring(CString(v["musicName"].GetString()));
-            if (v.HasMember("album") && v["album"].IsString())
-                out.album = Utf8ToWstring(CString(v["album"].GetString()));
-            if (v.HasMember("format") && v["format"].IsString())
-                out.format = Utf8ToWstring(CString(v["format"].GetString()));
-            if (v.HasMember("albumPic") && v["albumPic"].IsString())
-                out.albumPic = Utf8ToWstring(CString(v["albumPic"].GetString()));
-            if (v.HasMember("artist") && v["artist"].IsArray())
+            if (!v.IsObject())
+                return;
+
+            auto readStringMember = [](const Value& source, const char* name, std::wstring& dest)
+                {
+                    const auto member = source.FindMember(name);
+                    if (member != source.MemberEnd() && member->value.IsString())
+                        dest = JsonStringToWideString(member->value);
+                };
+            auto appendJsonValue = [](const Value& item, std::vector<std::wstring>& dest)
+                {
+                    std::wstring value;
+                    if (item.IsString())
+                        value = JsonStringToWideString(item);
+                    else if (item.IsNumber())
+                        value = JsonNumberToWideString(item);
+
+                    if (!value.empty())
+                        dest.emplace_back(value);
+                };
+
+            readStringMember(v, "musicName", out.musicName);
+            readStringMember(v, "album", out.album);
+            readStringMember(v, "format", out.format);
+            readStringMember(v, "albumPic", out.albumPic);
+
+            const auto artistMember = v.FindMember("artist");
+            if (artistMember != v.MemberEnd() && artistMember->value.IsArray())
             {
-                const auto& arr = v["artist"];
+                const auto& arr = artistMember->value;
                 for (SizeType i = 0; i < arr.Size(); ++i)
                 {
-                    std::vector<CString> oneArtist;
+                    std::vector<std::wstring> oneArtist;
                     const auto& item = arr[i];
                     if (item.IsArray())
                     {
                         for (SizeType j = 0; j < item.Size(); ++j)
-                        {
-                            if (item[j].IsString())
-                                oneArtist.emplace_back(Utf8ToWstring(CString(item[j].GetString())));
-                            else if (item[j].IsNumber())
-                            {
-                                oneArtist.emplace_back(std::to_string(item[j].GetInt64()).c_str());
-                            }
-                        }
+                            appendJsonValue(item[j], oneArtist);
                     }
-                    else if (item.IsString())
-                    {
-                        oneArtist.emplace_back(Utf8ToWstring(CString(item.GetString())));
-                    }
-                    else if (item.IsNumber())
-                    {
-                        oneArtist.emplace_back(std::to_string(item.GetInt64()).c_str());
-                    }
+                    else
+                        appendJsonValue(item, oneArtist);
+
                     if (!oneArtist.empty())
                         out.artist.push_back(std::move(oneArtist));
                 }
@@ -236,26 +284,32 @@ MusicPlayerLibrary::NcmMusicMeta MusicPlayerLibrary::NcmDecryptor::GetMetaData()
         };
     if (label == "dj")
     {
-        if (!doc.HasMember("mainMusic") || !doc["mainMusic"].IsObject())
+        const auto mainMusic = doc.FindMember("mainMusic");
+        if (mainMusic == doc.MemberEnd() || !mainMusic->value.IsObject())
             throw std::runtime_error(
                 "dj meta missing mainMusic");
-        parseMusicMeta(doc["mainMusic"], result);
+        parseMusicMeta(mainMusic->value, result);
     }
     else { parseMusicMeta(doc, result); }
-    if (!result.albumPic.IsEmpty())
+    if (!result.albumPic.empty())
     {
         // if (result.albumPic.rfind("http://", 0) == 0) result.albumPic.replace(0, 7, "https://");
-        if (result.albumPic.Find(_T("http://")) == 0)
-            result.albumPic = _T("https://") + result.albumPic.Mid(7);
-        result.albumPic += "?param=500y500";
+        if (result.albumPic.rfind(L"http://", 0) == 0)
+            result.albumPic = std::wstring(L"https://") + result.albumPic.substr(7);
+        result.albumPic += L"?param=500y500";
     }
-    ATLTRACE(_T("info: NcmDecrypt success!\n"));
-    ATLTRACE(_T("info: music name: %s\n"), result.musicName.GetString());
-    ATLTRACE(_T("info: album: %s\n"), result.album.GetString());
-    ATLTRACE(_T("info: artist: %s\n"), result.artist[0][0].GetString());
-    ATLTRACE(_T("info: album pic: %s\n"), result.albumPic.GetString());
-    ATLTRACE(_T("info: format: %s\n"), result.format.GetString());
-    ATLTRACE(_T("info: meta data: %s\n"), Utf8ToWstring(CString(jsonStr.c_str())).GetString());
+    std::wstring firstArtist;
+    if (!result.artist.empty() && !result.artist[0].empty())
+        firstArtist = result.artist[0][0];
+    std::wstring jsonTrace = Utf8StringToWideString(jsonStr);
+
+    ATLTRACE(L"info: NcmDecrypt success!\n");
+    ATLTRACE(L"info: music name: %s\n", result.musicName.c_str());
+    ATLTRACE(L"info: album: %s\n", result.album.c_str());
+    ATLTRACE(L"info: artist: %s\n", firstArtist.c_str());
+    ATLTRACE(L"info: album pic: %s\n", result.albumPic.c_str());
+    ATLTRACE(L"info: format: %s\n", result.format.c_str());
+    ATLTRACE(L"info: meta data: %s\n", jsonTrace.c_str());
     return result;
 }
 
@@ -272,23 +326,4 @@ std::vector<uint8_t> MusicPlayerLibrary::NcmDecryptor::GetAudio(const std::vecto
     for (size_t i = 0; i < audio.size(); ++i)
         audio[i] ^= keyBox[i & 0xff];
     return audio;
-}
-
-CString MusicPlayerLibrary::NcmDecryptor::Utf8ToWstring(const CString& s)
-{
-    if (s.IsEmpty())
-        return {};
-
-    CStringA utf8Str(s);
-
-    int wideLen = MultiByteToWideChar(CP_UTF8, 0, utf8Str.GetString(), -1, nullptr, 0);
-    if (wideLen <= 0)
-        return {};
-
-    CString result;
-    wchar_t* buffer = result.GetBufferSetLength(wideLen);
-    MultiByteToWideChar(CP_UTF8, 0, utf8Str.GetString(), -1, buffer, wideLen);
-    result.ReleaseBuffer();
-
-    return result;
 }

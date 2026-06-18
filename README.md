@@ -18,7 +18,7 @@ A simple music player.
 
 ## Technical stack
 - **Frontend:** WPF / C#  
-- **Backend:** C++/CLI  
+- **Backend:** Standard C++/CLI  
 - **Native Libraries:** FFmpeg, OpenSSL, RapidJSON, cpp-base64, kissfft, uchardet, libiconv, dlib
 - **Framework:** .NET 10.0 (Long Term Support)  
 - **Minimum Supported Windows Version:** Windows 10 2004 (build 10.0.19041.0)  
@@ -58,10 +58,10 @@ You can download the latest build from Github CI/CD, but if you want to build by
 1. Clone the repository
 2. Install vcpkg and integrate it with Visual Studio 2026
 - You need the following workloads:
-- MFC and ATL for latest v145 tools
 - Desktop development with C++
 - Desktop development with .NET
 - Execute `vcpkg integrate install` in the Developer Powershell
+- Notice: ATL/MFC is no longer needed to build this solution.
 3. Open the solution file `WpfMusicPlayer.slnx` in Visual Studio
 - If you are using Qualcomm 8cx series or X Elite Series CPU, Select the `WpfMusicPlayer.ARM64.slnx` solution file
 4. Build the solution.

@@ -2,6 +2,7 @@
 
 #include "pch.h"
 #include "FileAbstractionLayer.h"
+#include "StringUtils.h"
 
 #include <dlib/svm_threaded.h>
 #include <dlib/dnn.h>
@@ -84,12 +85,12 @@ public:
 	LrcLanguageHelper(LrcLanguageHelper&&) = delete;
 	LrcLanguageHelper& operator=(LrcLanguageHelper&&) = delete;
 	std::string lyric_type_to_std_string(LanguageType type);
-	std::vector<double> extract_line_features(const CString& text, const std::unordered_map<std::string, int>& vocab);
+	std::vector<double> extract_line_features(const std::wstring& text, const std::unordered_map<std::string, int>& vocab);
 	song_sample_type extract_song_features(const std::vector<LrcLanguageHelper::LanguageType>& seq);
 	LanguageClassification detect_song_language_classification(const std::vector<LrcLanguageHelper::LanguageType>& lyric_lang_type);
 	auto detect_language_slot(
 		const std::vector<std::vector<LanguageType>>& lines) -> std::vector<LanguageType>;
-	LanguageType detect_line_language_type(const CString& input_trimmed);
+	LanguageType detect_line_language_type(const std::wstring& input_trimmed);
 	static LrcLanguageHelper& GetSingleton();
 };
 
@@ -101,7 +102,7 @@ public:
 	virtual ~LrcAbstractNode() = default;
 	[[nodiscard]] int get_time_ms() const { return time_ms; }
 	[[nodiscard]] virtual int get_lrc_str_count() const = 0;
-	virtual int get_lrc_str_at(int index, CString& out_str) const = 0;
+	virtual int get_lrc_str_at(int index, std::wstring& out_str) const = 0;
 	[[nodiscard]] virtual LrcAuxiliaryInfoNative get_auxiliary_info(int index) const = 0;
 	[[nodiscard]] virtual int get_auxiliary_info_at(LrcAuxiliaryInfoNative info) const = 0;
 	[[nodiscard]] virtual bool is_translation_enabled() const { return false; }
@@ -116,9 +117,9 @@ public:
 };
 
 class LrcNode final: public LrcAbstractNode {
-	CString lrc_text;       // lyric text
+	std::wstring lrc_text;       // lyric text
 public:
-	LrcNode(int t, const CString& text)
+	LrcNode(int t, const std::wstring& text)
 		: LrcAbstractNode(t), lrc_text(text) {
 	}
 
@@ -126,7 +127,7 @@ public:
 		return 1;
 	}
 
-	int get_lrc_str_at(int index, CString& out_str) const override {
+	int get_lrc_str_at(int index, std::wstring& out_str) const override {
 		if (index != 0) return -1;
 		return out_str = lrc_text, 0;
 	}
@@ -153,13 +154,13 @@ public:
 class LrcMultiNode : virtual public LrcAbstractNode {
 	friend class LrcFileControllerNative;
 	int str_count;
-	CSimpleArray<CString> lrc_texts;
-	CSimpleArray<LrcAuxiliaryInfoNative> aux_infos;
-	CSimpleArray<LrcLanguageHelper::LanguageType> lang_types;
+	std::vector<std::wstring> lrc_texts;
+	std::vector<LrcAuxiliaryInfoNative> aux_infos;
+	std::vector<LrcLanguageHelper::LanguageType> lang_types;
 
 public:
 
-	LrcMultiNode(int t, const CSimpleArray<CString>& texts,
+	LrcMultiNode(int t, const std::vector<std::wstring>& texts,
 		LrcLanguageHelper::LanguageClassification classification,
 		std::vector<LrcLanguageHelper::LanguageType> recommend_slot);
 
@@ -167,7 +168,7 @@ public:
 		return str_count;
 	}
 
-	int get_lrc_str_at(int index, CString& out_str) const override {
+	int get_lrc_str_at(int index, std::wstring& out_str) const override {
 		if (index < 0 || index >= str_count) return -1;
 		out_str = lrc_texts[index];
 		return 0;
@@ -179,15 +180,16 @@ public:
 	}
 
 	[[nodiscard]] int get_auxiliary_info_at(LrcAuxiliaryInfoNative info) const override {
-		return aux_infos.Find(info);
+		auto it = std::find(aux_infos.begin(), aux_infos.end(), info);
+		return it == aux_infos.end() ? -1 : static_cast<int>(std::distance(aux_infos.begin(), it));
 	}
 
 	[[nodiscard]] bool is_translation_enabled() const override {
-		return aux_infos.Find(LrcAuxiliaryInfoNative::Translation) != -1;
+		return std::find(aux_infos.begin(), aux_infos.end(), LrcAuxiliaryInfoNative::Translation) != aux_infos.end();
 	}
 
 	[[nodiscard]] bool is_romanization_enabled() const override {
-		return aux_infos.Find(LrcAuxiliaryInfoNative::Romanization) != -1;
+		return std::find(aux_infos.begin(), aux_infos.end(), LrcAuxiliaryInfoNative::Romanization) != aux_infos.end();
 	}
 
 	[[nodiscard]] float get_lrc_percentage(float current_timestamp) const override
@@ -207,20 +209,20 @@ protected:
 	struct node_info
 	{
 		int time_ms;
-		CString node_text;
+		std::wstring node_text;
 	};
 	int end_time_ms;
-	CSimpleArray<node_info> nodes;
+	std::vector<node_info> nodes;
 public:
-	LrcProgressNode(int t, const CString& text_with_node);
+	LrcProgressNode(int t, const std::wstring& text_with_node);
 	[[nodiscard]] int get_lrc_str_count() const override { return 1; }
-	int get_lrc_str_at(int index, CString& out_str) const override
+	int get_lrc_str_at(int index, std::wstring& out_str) const override
 	{
 		if (index != 0) return -1;
-		CString text;
+		std::wstring text;
 		for (int i = 0; i < node_count; ++i)
 		{
-			text.Append(nodes[i].node_text);
+			text.append(nodes[i].node_text);
 		}
 		return out_str = text, 0;
 	}
@@ -244,7 +246,7 @@ class LrcProgressMultiNode final:
 	public LrcProgressNode, public LrcMultiNode
 {
 public:
-	LrcProgressMultiNode(int t, const CSimpleArray<CString>& str_arr_2, 
+	LrcProgressMultiNode(int t, const std::vector<std::wstring>& str_arr_2, 
 		LrcLanguageHelper::LanguageClassification classification,
 		std::vector<LrcLanguageHelper::LanguageType> recommend_slot);
 	
@@ -252,7 +254,7 @@ public:
 	{
 		return LrcMultiNode::get_lrc_str_count();
 	}
-	int get_lrc_str_at(int index, CString& out_str) const override
+	int get_lrc_str_at(int index, std::wstring& out_str) const override
 	{
 		return LrcMultiNode::get_lrc_str_at(index, out_str);
 	}
@@ -276,7 +278,7 @@ public:
 
 class LrcNodeFactory {
 public:
-	static LrcAbstractNode* CreateLrcNode(int time_ms, const CSimpleArray<CString>& lrc_texts, LrcLanguageHelper::LanguageClassification classification, std::vector<LrcLanguageHelper::LanguageType> recommend_slot);
+	static LrcAbstractNode* CreateLrcNode(int time_ms, const std::vector<std::wstring>& lrc_texts, LrcLanguageHelper::LanguageClassification classification, std::vector<LrcLanguageHelper::LanguageType> recommend_slot);
 };
 
 struct LrcLanguageInfo {
@@ -290,18 +292,18 @@ struct LrcLanguageInfo {
 */
 class LrcFileControllerNative {
 	LrcLanguageHelper::LanguageClassification main_classification = LrcLanguageHelper::LanguageClassification::en_only;
-	CAtlArray<LrcAbstractNode*> lrc_nodes;
+	std::vector<LrcAbstractNode*> lrc_nodes;
 	int time_stamp_ms = 0, lrc_offset_ms = 0;
 	size_t cur_lrc_node_index = 0;
 	struct
 	{
-		CString artist, album, author, by, title;
+		std::wstring artist, album, author, by, title;
 	} metadata;
 	int aux_enable_info = 0;
 	float song_duration_sec = 0;
 public:
 	~LrcFileControllerNative();
-	void parse_lrc_file(const CString& file_path);
+	void parse_lrc_file(const std::wstring& file_path);
 	void parse_lrc_file_stream(IFile* file_stream);
 	void clear_lrc_nodes();
 	void set_time_stamp(int time_stamp_ms_in);
@@ -312,13 +314,13 @@ public:
 	[[nodiscard]] int get_current_time_stamp() const { return time_stamp_ms; }
 	[[nodiscard]] int get_current_lrc_lines_count() const;
 	[[nodiscard]] int get_current_lrc_node_index() const { return static_cast<int>(cur_lrc_node_index); }
-	[[nodiscard]] int get_lrc_node_count() const { return static_cast<int>(lrc_nodes.GetCount()); }           
-	[[nodiscard]] int get_lrc_node_time_ms(int index) const { assert(index < lrc_nodes.GetCount());  return lrc_nodes[index]->get_time_ms() + lrc_offset_ms; }
-	int get_current_lrc_line_at(int index, CString& out_str) const;
-	int get_lrc_line_at(int lrc_node_index, int index, CString& out_str) const;
+	[[nodiscard]] int get_lrc_node_count() const { return static_cast<int>(lrc_nodes.size()); }           
+	[[nodiscard]] int get_lrc_node_time_ms(int index) const { assert(index >= 0 && static_cast<size_t>(index) < lrc_nodes.size());  return lrc_nodes[index]->get_time_ms() + lrc_offset_ms; }
+	int get_current_lrc_line_at(int index, std::wstring& out_str) const;
+	int get_lrc_line_at(int lrc_node_index, int index, std::wstring& out_str) const;
 	[[nodiscard]] int get_current_lrc_line_aux_index(LrcAuxiliaryInfoNative info) const;
 	[[nodiscard]] int get_lrc_line_aux_index(int lrc_node_index, LrcAuxiliaryInfoNative info) const;
-	[[nodiscard]] int get_metadata_info(LrcMetadataTypeNative metadata_type, CString& out_str) const;
+	[[nodiscard]] int get_metadata_info(LrcMetadataTypeNative metadata_type, std::wstring& out_str) const;
 
 	[[nodiscard]] int is_auxiliary_info_enabled(LrcAuxiliaryInfoNative enable_info) const
 	{
@@ -341,9 +343,9 @@ public:
 	void correct_lrc_language_info(LrcLanguageInfo info);
 
 	// static helpers
-	static LrcMetadataTypeNative get_metadata_type(const CString& str);
-	static int cstring_hash_fnv_64bit_int(const CString& str);
-	static CString get_metadata_value(const CString& str);
+	static LrcMetadataTypeNative get_metadata_type(const std::wstring& str);
+	static int wide_string_hash_fnv_64bit_int(const std::wstring& str);
+	static std::wstring get_metadata_value(const std::wstring& str);
 };
 
 public enum class LrcAuxiliaryInfo
