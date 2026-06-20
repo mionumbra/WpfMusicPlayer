@@ -46,6 +46,7 @@ namespace MusicPlayerLibrary
 		mutable std::mutex ring_buffer_mutex;
 		mutable std::mutex spectrum_data_mutex;
 		std::condition_variable ring_buffer_cv;
+		bool ring_buffer_has_unprocessed_data = false;
 		std::thread fft_worker_thread;
 		std::atomic<bool> fft_thread_running{ false };
 

@@ -17,6 +17,8 @@ void MusicPlayerLibrary::FFTExecuter::AddSamplesToRingBuffer(uint8_t* samples, i
     {
         spectrum_data_ring_buffer.pop_front();
     }
+    ring_buffer_has_unprocessed_data = true;
+
     // wake fft consumer thread
     ring_buffer_cv.notify_one();
 }
@@ -117,13 +119,14 @@ void MusicPlayerLibrary::FFTExecuter::ExecuteAudioFFT()
     {
         std::lock_guard lock(ring_buffer_mutex);
         // 检查缓冲区是否有足够数据
-        if (spectrum_data_ring_buffer.size() < RING_BUFFER_MAX_SIZE)
+        if (spectrum_data_ring_buffer.size() < RING_BUFFER_MAX_SIZE || !ring_buffer_has_unprocessed_data)
             return;
 
         // drain data
         raw_samples.assign(
             spectrum_data_ring_buffer.begin(),
             spectrum_data_ring_buffer.begin() + RING_BUFFER_MAX_SIZE);
+        ring_buffer_has_unprocessed_data = false;
     }
 
     // windowing
@@ -165,19 +168,6 @@ void MusicPlayerLibrary::FFTExecuter::ExecuteAudioFFT()
                 val *= attenuation;
             }
         }
-
-        // time-domain smoothing
-        if (spectrum_smooth_data.size() != spectrum_data.size()) {
-            spectrum_smooth_data.resize(spectrum_data.size(), 0.0f);
-        }
-
-        for (size_t i = 0; i < spectrum_data.size(); ++i) {
-            float smooth_factor = 0.75f;
-            spectrum_smooth_data[i] = smooth_factor * spectrum_smooth_data[i]
-                + (1.0f - smooth_factor) * spectrum_data[i];
-        }
-
-        spectrum_data = spectrum_smooth_data;
 
         // 将计算好的数据推送至delay_queue中，用于延迟补偿
         spectrum_delay_queue.push_back(spectrum_data);
@@ -233,23 +223,41 @@ void MusicPlayerLibrary::FFTExecuter::StopFFTThread()
 
 void MusicPlayerLibrary::FFTExecuter::FFTWorkerLoop()
 {
+    auto next_fft_time = std::chrono::steady_clock::now();
+
     while (fft_thread_running)
     {
         std::unique_lock lock(ring_buffer_mutex);
         // FFT execution limitd to 60fps
-        ring_buffer_cv.wait_for(lock, std::chrono::milliseconds(16), [this]()
+        ring_buffer_cv.wait(lock, [this]()
             {
-                return !fft_thread_running || spectrum_data_ring_buffer.size() >= RING_BUFFER_MAX_SIZE;
+                return !fft_thread_running ||
+                    (ring_buffer_has_unprocessed_data &&
+                        spectrum_data_ring_buffer.size() >= RING_BUFFER_MAX_SIZE);
             });
 
         if (!fft_thread_running)
             break;
 
-        if (spectrum_data_ring_buffer.size() < RING_BUFFER_MAX_SIZE)
-            continue;
+        const auto now = std::chrono::steady_clock::now();
+        if (now < next_fft_time)
+        {
+            ring_buffer_cv.wait_until(lock, next_fft_time, [this]()
+                {
+                    return !fft_thread_running;
+                });
+
+            if (!fft_thread_running)
+                break;
+
+            if (!ring_buffer_has_unprocessed_data ||
+                spectrum_data_ring_buffer.size() < RING_BUFFER_MAX_SIZE)
+                continue;
+        }
 
         lock.unlock();
         ExecuteAudioFFT();
+        next_fft_time = std::chrono::steady_clock::now() + std::chrono::milliseconds(16);
     }
 }
 

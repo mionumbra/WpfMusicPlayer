@@ -58,6 +58,44 @@ namespace MusicPlayerLibrary {
 			return true;
 		}
 
+		bool CreateTemporary()
+		{
+			Close();
+
+			constexpr DWORD TempPathBufferLength = MAX_PATH + 1;
+			wchar_t temp_path[TempPathBufferLength] = {};
+			const DWORD temp_path_len = ::GetTempPathW(TempPathBufferLength, temp_path);
+			if (temp_path_len == 0 || temp_path_len >= TempPathBufferLength)
+			{
+				ATLTRACE("err: GetTempPathW failed, gle=%lu\n", ::GetLastError());
+				return false;
+			}
+
+			wchar_t temp_file_path[MAX_PATH + 1] = {};
+			if (::GetTempFileNameW(temp_path, L"WMP", 0, temp_file_path) == 0)
+			{
+				ATLTRACE("err: GetTempFileNameW failed, gle=%lu\n", ::GetLastError());
+				return false;
+			}
+
+			file_ = CreateFileW(
+				temp_file_path,
+				GENERIC_READ | GENERIC_WRITE,
+				FILE_SHARE_READ,
+				nullptr,
+				CREATE_ALWAYS,
+				FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE,
+				nullptr);
+			if (file_ == INVALID_HANDLE_VALUE)
+			{
+				ATLTRACE(L"err: CreateFileW failed:%ls, gle=%lu\n", temp_file_path, ::GetLastError());
+				::DeleteFileW(temp_file_path);
+				return false;
+			}
+
+			return true;
+		}
+
 		UINT Read(void* buffer, UINT count) override
 		{
 			if (file_ == INVALID_HANDLE_VALUE || buffer == nullptr || count == 0)
@@ -303,6 +341,17 @@ namespace MusicPlayerLibrary {
 
 		auto file = std::make_unique<WindowsApiDiskFile>();
 		if (!file->Open(file_path, share_deny_write))
+			return nullptr;
+
+		return std::move(file);
+	}
+
+	std::unique_ptr<IFile> WindowsApiFileSystem::CreateTemporaryFile(bool binary) const
+	{
+		UNREFERENCED_PARAMETER(binary);
+
+		auto file = std::make_unique<WindowsApiDiskFile>();
+		if (!file->CreateTemporary())
 			return nullptr;
 
 		return std::move(file);

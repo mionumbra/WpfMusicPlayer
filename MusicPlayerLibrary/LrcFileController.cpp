@@ -597,7 +597,7 @@ LrcProgressNode::LrcProgressNode(int t, const std::wstring& text_with_node)
                 auto multiples = 3 - milliseconds_str.size();
                 milliseconds *= std::floor(pow(10, multiples));
             }
-            if (milliseconds_str.size() > 4)
+            if (milliseconds_str.size() >= 4)
             {
                 auto multiples = milliseconds_str.size() - 3;
                 milliseconds /= std::floor(pow(10, multiples));
@@ -862,6 +862,8 @@ void LrcFileControllerNative::parse_lrc_file_stream(IFile* file_stream)
         while (!lyric_text.empty() && lyric_text[0] == '[')
         {
             int time_tag_end_index_multi = StringUtils::Find(lyric_text, L']');
+            if (time_tag_end_index_multi == -1)
+                throw gcnew System::InvalidOperationException("Invalid lrc time tag, aborting!");
             auto time_tag = LocaleConverterNative::GetUtf8StringFromUtf16String(
                 StringUtils::Left(lyric_text, static_cast<size_t>(time_tag_end_index_multi + 1)));
             std::smatch m;
@@ -889,7 +891,7 @@ void LrcFileControllerNative::parse_lrc_file_stream(IFile* file_stream)
                 auto multiples = 3 - milliseconds_str.size();
                 milliseconds *= std::floor(pow(10, multiples));
             }
-            if (milliseconds_str.size() > 4)
+            if (milliseconds_str.size() >= 4)
             {
                 auto multiples = milliseconds_str.size() - 3;
                 milliseconds /= std::floor(pow(10, multiples));

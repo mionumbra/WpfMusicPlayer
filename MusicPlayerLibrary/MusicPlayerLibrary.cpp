@@ -5,6 +5,7 @@
 #include <memory>
 #include <msclr/marshal_cppstd.h>
 #include <numeric>
+#include <stdexcept>
 #include "LocaleConverter.h"
 
 using namespace System::Runtime::InteropServices;
@@ -300,23 +301,16 @@ inline int MusicPlayerLibrary::MusicPlayerNative::load_audio_context(const std::
 	{
 		try
 		{
-			std::vector<uint8_t> file_data;
-			DWORD file_size = 0;
+			auto decrypted_file = GetDefaultFileSystem().CreateTemporaryFile(true);
+			if (!decrypted_file)
+				throw std::runtime_error("failed to create ncm temporary audio file");
+
 			file_stream->SeekToBegin();
-			file_size = static_cast<DWORD>(file_stream->GetLength());
-			file_data.resize(file_size);
-			file_stream->Read(file_data.data(), static_cast<UINT>(file_stream->GetLength()));
-			file_stream->SeekToBegin();
-			NcmDecryptor decryptor(file_data, audio_filename);
-			auto decryptor_result = decryptor.Decrypt();
+			NcmDecryptor decryptor(*file_stream, audio_filename);
+			auto decryptor_result = decryptor.Decrypt(*decrypted_file);
 			file_stream->Close();
-			file_stream.reset();
-			auto mem_file = GetDefaultFileSystem().CreateMemoryFile();
-			if (!mem_file)
-				return -1;
-			mem_file->Write(decryptor_result.audioData.data(), static_cast<UINT>(decryptor_result.audioData.size()));
-			mem_file->SeekToBegin();
-			file_stream = std::move(mem_file);
+			file_stream = std::move(decrypted_file);
+			file_stream->SeekToBegin();
 			download_ncm_album_art_async(decryptor_result.pictureUrl, static_cast<int>(500.f * GetSystemDpiScale()));
 		}
 		catch (std::exception& e)
@@ -327,7 +321,7 @@ inline int MusicPlayerLibrary::MusicPlayerNative::load_audio_context(const std::
 			file_stream.reset();
 			return -1;
 		}
-		// create a new memory buffer managed by file stream
+		// create a disk-backed audio stream managed by file_stream
 	}
 	return load_audio_context_from_file_stream();
 }
@@ -922,7 +916,6 @@ inline int MusicPlayerLibrary::MusicPlayerNative::initialize_audio_engine()
 
 
 	// 创建source voice
-	// TODO: customizable output rate
 	wfx.wFormatTag = WAVE_FORMAT_PCM;                     // pcm格式
 	wfx.nChannels = 2;                                    // 音频通道数
 	wfx.nSamplesPerSec = sample_rate;                           // 采样率
@@ -1079,7 +1072,7 @@ void MusicPlayerLibrary::MusicPlayerNative::audio_playback_worker_thread()
 				source_voice->GetState(&state);
 				elapsed_time = static_cast<float>(state.SamplesPlayed - base_offset) * 1.0f / static_cast<float>(wfx.nSamplesPerSec) + static_cast<float>(pts_seconds);
 				ATLTRACE("info: samples played=%lld, elapsed time=%lf\n",
-					state.SamplesPlayed, elapsed_time);
+					state.SamplesPlayed, elapsed_time.load());
 
 				UINT32 raw = *reinterpret_cast<UINT32*>(&elapsed_time);
 				managed_music_player->ProcessEvent(WM_PLAYER_TIME_CHANGE, raw, 0);
@@ -1346,7 +1339,7 @@ void MusicPlayerLibrary::MusicPlayerNative::audio_decode_worker_thread()
 
 		if (playback_state.load() == audio_playback_state_init
 			&& is_pause) {
-			ATLTRACE("info: resume from pause, pts_seconds=%lf\n", pts_seconds);
+			ATLTRACE("info: resume from pause, pts_seconds=%lf\n", pts_seconds.load());
 			if (av_seek_frame(format_context, -1, static_cast<int64_t>(pts_seconds * AV_TIME_BASE), AVSEEK_FLAG_ANY) < 0) {
 				ATLTRACE("err: resume failed\n");
 				playback_state.store(audio_playback_state_stopped);
@@ -1371,12 +1364,7 @@ void MusicPlayerLibrary::MusicPlayerNative::audio_decode_worker_thread()
 				continue; // 跳过非音频流包
 			}
 		}
-
-		if (packet->stream_index != audio_stream_index) {
-			notify_frame_underrun();
-			av_packet_unref(packet);
-			continue; // skip non-audio packet
-		}
+		// is_eof后，不单独检查packet->stream_index。此时此值无意义。
 		
 		if (is_eof && !decoder_flushed) {
 			// 发送空包以排空解码器缓存
@@ -1514,6 +1502,18 @@ void MusicPlayerLibrary::MusicPlayerNative::audio_decode_worker_thread()
 	}
 }
 
+void MusicPlayerLibrary::MusicPlayerNative::handle_worker_exception(System::Exception^ exception, const char* worker_name)
+{
+	ATLTRACE("err: audio %s worker failed\n", worker_name);
+	playback_state.store(audio_playback_state_stopped);
+	user_request_stop.store(true);
+	decoder_is_running = false;
+	notify_all_frame_notifications();
+
+	if (managed_music_player)
+		managed_music_player->ProcessError(exception);
+}
+
 
 
 void MusicPlayerLibrary::MusicPlayerNative::init_decoder_thread() {
@@ -1528,7 +1528,28 @@ void MusicPlayerLibrary::MusicPlayerNative::init_decoder_thread() {
 			SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
 			AvSetMmThreadCharacteristics(L"Pro Audio", xaudio2_thread_task_index);
 			decoder_is_running = true;
-			audio_decode_worker_thread();
+			try
+			{
+				audio_decode_worker_thread();
+			}
+			catch (System::Exception^ exception)
+			{
+				handle_worker_exception(exception, "decoder");
+				return;
+			}
+			catch (const std::exception& exception)
+			{
+				std::string message = StringUtils::FormatString(
+					"Unhandled native exception in decoder worker: %s",
+					exception.what());
+				handle_worker_exception(gcnew System::InvalidOperationException(gcnew String(message.c_str())), "decoder");
+				return;
+			}
+			catch (...)
+			{
+				handle_worker_exception(gcnew System::InvalidOperationException("Unhandled unknown exception in decoder worker."), "decoder");
+				return;
+			}
 			decoder_is_running = false;
 		});
 	ATLTRACE("info: decoder thread created\n");
@@ -1557,7 +1578,25 @@ inline void MusicPlayerLibrary::MusicPlayerNative::start_audio_playback()
 			SetThreadExecutionState(ES_SYSTEM_REQUIRED | ES_AWAYMODE_REQUIRED);
 			SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
 			AvSetMmThreadCharacteristics(L"Pro Audio", xaudio2_thread_task_index);
-			audio_playback_worker_thread();
+			try
+			{
+				audio_playback_worker_thread();
+			}
+			catch (System::Exception^ exception)
+			{
+				handle_worker_exception(exception, "playback");
+			}
+			catch (const std::exception& exception)
+			{
+				std::string message = StringUtils::FormatString(
+					"Unhandled native exception in playback worker: %s",
+					exception.what());
+				handle_worker_exception(gcnew System::InvalidOperationException(gcnew String(message.c_str())), "playback");
+			}
+			catch (...)
+			{
+				handle_worker_exception(gcnew System::InvalidOperationException("Unhandled unknown exception in playback worker."), "playback");
+			}
 		});
 	ATLTRACE("info: player thread created\n");
 	// notify decoder to start decoding
@@ -2241,6 +2280,20 @@ void MusicPlayerLibrary::MusicPlayer::ProcessEvent(MessageType event_type, WPARA
 		gcnew System::Threading::WaitCallback(this, &MusicPlayer::ProcessEventCore), state);
 }
 
+void MusicPlayerLibrary::MusicPlayer::ProcessError(System::Exception^ exception)
+{
+	if (!native_handle)
+		return;
+
+	ProcessEventState^ state = gcnew ProcessEventState();
+	state->EventType = WM_PLAYER_ERROR;
+	state->WParam = IntPtr::Zero;
+	state->LParam = IntPtr::Zero;
+	state->Payload = exception;
+	System::Threading::ThreadPool::QueueUserWorkItem(
+		gcnew System::Threading::WaitCallback(this, &MusicPlayer::ProcessEventCore), state);
+}
+
 void MusicPlayerLibrary::MusicPlayer::ProcessEventCore(Object^ stateObj)
 {	
 	if (!native_handle)
@@ -2283,6 +2336,10 @@ void MusicPlayerLibrary::MusicPlayer::ProcessEventCore(Object^ stateObj)
 	case WM_PLAYER_DESTROY:
 		if (OnPlayerDestroy)
 			OnPlayerDestroy();
+		break;
+	case WM_PLAYER_ERROR:
+		if (OnPlayerError)
+			OnPlayerError(safe_cast<System::Exception^>(state->Payload));
 		break;
 	case WM_PLAYER_TIME_CHANGE:
 		if (OnPlayerTimeChange) {

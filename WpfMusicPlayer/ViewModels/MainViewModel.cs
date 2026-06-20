@@ -392,6 +392,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 _musicPlayer.Dispose();
                 _musicPlayer = new MusicPlayer(_sampleRate);
                 SubscribePlayerEvents();
+                _disableAutoAdvance = false;
                 _musicPlayer.OpenFile(filePath);
                 if (!_enableAutoPlay)
                 {
@@ -521,6 +522,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
         _musicPlayer.OnPlayerStart += OnStart;
         _musicPlayer.OnPlayerPause += OnPause;
         _musicPlayer.OnPlayerStop += OnStop;
+        _musicPlayer.OnPlayerError += OnPlayerError;
     }
 
     private void SubscribeSmtcEvents()
@@ -750,6 +752,25 @@ public partial class MainViewModel : ObservableObject, IDisposable
             _disableAutoAdvance = false;
             // 自然停止，重新播放时视为增加一次播放次数
             _playCountIncrementedForCurrentSong = false;
+        }, null);
+    }
+
+    private void OnPlayerError(Exception exception)
+    {
+        _logger.LogError(exception, "Native audio worker failed");
+        _disableAutoAdvance = true;
+        GCSettings.LatencyMode = _previousLatencyMode;
+
+        _syncContext.Post(_ =>
+        {
+            PlayPauseContent = PlayString;
+            _smtcService.UpdatePlaybackStatus(PlaybackState.Stopped);
+            Lyrics.OnPlaybackStopped();
+            var filePath = _currentFilePath;
+            WpfMessageBox.Show(
+                filePath is null ? exception.Message : $"{exception.Message}\n{filePath}",
+                "Error",
+                WpfMessageBoxIcon.Error);
         }, null);
     }
 
