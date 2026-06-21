@@ -5,7 +5,6 @@
 #include <vcclr.h>
 #include "FFTExecuter.h"
 #include "FileAbstractionLayer.h"
-#include "StringUtils.h"
 using namespace System;
 
 namespace MusicPlayerLibrary {
@@ -37,53 +36,6 @@ namespace MusicPlayerLibrary {
 		WM_PLAYER_ALBUM_ART_INIT = (WM_USER + 105),
 		WM_PLAYER_DESTROY = (WM_USER + 106),
 		WM_PLAYER_ERROR = (WM_USER + 107)
-	};
-
-	public struct NcmMusicMeta
-	{
-		std::wstring musicName;
-		std::vector<std::vector<std::wstring>> artist;
-		std::wstring format;
-		std::wstring album;
-		std::wstring albumPic;
-	};
-
-	public struct DecryptResult
-	{
-		std::wstring title;
-		std::wstring artist;
-		std::wstring album;
-		std::wstring ext;
-		std::wstring pictureUrl;
-		std::wstring mime;
-	};
-
-	public class NcmDecryptor
-	{
-	public:
-		NcmDecryptor(IFile& source_file, const std::wstring& filename);
-		DecryptResult Decrypt(IFile& output_file);
-
-	private:
-		IFile& m_sourceFile;
-		ULONGLONG m_fileLength = 0;
-		ULONGLONG m_offset = 0;
-		std::wstring m_filename;
-
-		NcmMusicMeta m_oriMeta;
-		std::wstring m_format;
-		std::wstring m_mime;
-
-		void EnsureSourceRange(ULONGLONG offset, ULONGLONG count, const char* message) const;
-		void SeekSource(ULONGLONG offset, const char* message);
-		void ReadSourceExact(void* buffer, UINT count, const char* message);
-		uint32_t ReadSourceUint32(const char* message);
-		uint32_t ReadSourceUint32At(ULONGLONG offset, const char* message);
-		std::vector<uint8_t> ReadSourceBytes(UINT count, const char* message);
-		std::vector<uint8_t> GetKeyData();
-		std::vector<uint8_t> GetKeyBox();
-		NcmMusicMeta GetMetaData();
-		void WriteAudio(const std::vector<uint8_t>& keyBox, IFile& output_file);
 	};
 
 	ref class MusicPlayer;

@@ -1,11 +1,14 @@
 #include "pch.h"
 
 #include "MusicPlayerLibrary.h"
+#include "NcmDecryptor.h"
+#include <cwctype>
+#include <format>
 #include <limits>
 #include <memory>
 #include <msclr/marshal_cppstd.h>
 #include <numeric>
-#include <stdexcept>
+#include <string_view>
 #include "LocaleConverter.h"
 
 using namespace System::Runtime::InteropServices;
@@ -41,6 +44,25 @@ namespace
 		const HRESULT hr = factory(&raw);
 		target.reset(raw);
 		return hr;
+	}
+
+	bool EqualsIgnoreCase(std::wstring_view left, std::wstring_view right)
+	{
+		if (left.size() != right.size())
+			return false;
+
+		for (size_t i = 0; i < left.size(); ++i)
+		{
+			if (std::towlower(left[i]) != std::towlower(right[i]))
+				return false;
+		}
+		return true;
+	}
+
+	void ToLowerInPlace(std::wstring& value)
+	{
+		for (wchar_t& ch : value)
+			ch = static_cast<wchar_t>(std::towlower(ch));
 	}
 
 	enum class ImageResizeMode
@@ -297,21 +319,15 @@ inline int MusicPlayerLibrary::MusicPlayerNative::load_audio_context(const std::
 	}
 	file_stream->SeekToBegin();
 
-	if (StringUtils::EqualsIgnoreCase(file_extension_in, L"ncm") || is_ncm)
+	if (EqualsIgnoreCase(file_extension_in, L"ncm") || is_ncm)
 	{
 		try
 		{
-			auto decrypted_file = GetDefaultFileSystem().CreateTemporaryFile(true);
-			if (!decrypted_file)
-				throw std::runtime_error("failed to create ncm temporary audio file");
-
 			file_stream->SeekToBegin();
-			NcmDecryptor decryptor(*file_stream, audio_filename);
-			auto decryptor_result = decryptor.Decrypt(*decrypted_file);
-			file_stream->Close();
-			file_stream = std::move(decrypted_file);
+			auto decryptor_result = NcmDecryptor::Open(std::move(file_stream), audio_filename);
+			file_stream = std::move(decryptor_result.audio_file);
 			file_stream->SeekToBegin();
-			download_ncm_album_art_async(decryptor_result.pictureUrl, static_cast<int>(500.f * GetSystemDpiScale()));
+			download_ncm_album_art_async(decryptor_result.metadata.pictureUrl, static_cast<int>(500.f * GetSystemDpiScale()));
 		}
 		catch (std::exception& e)
 		{
@@ -321,7 +337,7 @@ inline int MusicPlayerLibrary::MusicPlayerNative::load_audio_context(const std::
 			file_stream.reset();
 			return -1;
 		}
-		// create a disk-backed audio stream managed by file_stream
+		// file_stream now exposes decrypted audio bytes without materializing an output file.
 	}
 	return load_audio_context_from_file_stream();
 }
@@ -783,23 +799,24 @@ void MusicPlayerLibrary::MusicPlayerNative::download_ncm_album_art_async(const s
 void MusicPlayerLibrary::MusicPlayerNative::read_metadata()
 {
 	auto convert_utf8 = [](const char* utf_8_str) {
-		return StringUtils::FromUtf8Bytes(utf_8_str, strlen(utf_8_str));
+		return LocaleConverterNative::GetUtf16StringFromUtf8String(
+			utf_8_str == nullptr ? std::string() : std::string(utf_8_str));
 		};
 	auto read_metadata_iter = [&](AVDictionaryEntry* tag) {
 		std::wstring key = convert_utf8(tag->key);
 		std::wstring value = convert_utf8(tag->value);
 		ATLTRACE(L"info: key %s = %s\n", key.c_str(), value.c_str());
-		if (StringUtils::EqualsIgnoreCase(key, L"title") && song_title.empty()) {
+		if (EqualsIgnoreCase(key, L"title") && song_title.empty()) {
 			song_title = value;
 			ATLTRACE(L"info: song title: %s\n", song_title.c_str());
 		}
-		else if (StringUtils::EqualsIgnoreCase(key, L"artist") && song_artist.empty()) {
+		else if (EqualsIgnoreCase(key, L"artist") && song_artist.empty()) {
 			song_artist = value;
 			ATLTRACE(L"info: song artist: %s\n", song_artist.c_str());
 		}
 		else
 		{
-			StringUtils::ToLowerInPlace(key);
+			ToLowerInPlace(key);
 			if (key.find(L"lyric") != std::wstring::npos)
 			{
 				this->id3_string_lyric = value;
@@ -999,10 +1016,8 @@ void MusicPlayerLibrary::MusicPlayerNative::audio_playback_worker_thread()
 {
 	HRESULT hr;
 	XAUDIO2_VOICE_STATE state;
-	double decode_time_ms = 0.0;
 
 	while (true) {
-		decode_time_ms = 0.0;
 		if (!wait_frame_ready(std::chrono::milliseconds(1))) {
 			// check flag
 			int cached_sample_size = get_audio_fifo_cached_samples_size();
@@ -1104,8 +1119,8 @@ void MusicPlayerLibrary::MusicPlayerNative::audio_playback_worker_thread()
 
 		// Read XAudio2-ready PCM directly from the FIFO. The filter graph already
 		// converts to stereo/s16/sample_rate, so sample counts are in output frames.
-		uint8_t** fifo_buf = nullptr;
-		int read_samples = 0;
+		uint8_t** fifo_buf;
+		int read_samples;
 		{
 			std::lock_guard fifo_lock(audio_fifo_mutex);
 			fifo_size = get_audio_fifo_cached_samples_size();
@@ -1264,7 +1279,8 @@ void MusicPlayerLibrary::MusicPlayerNative::audio_playback_worker_thread()
 			);
 			fft_executer->SetDelayFrames(latency_ms / 16);
 		}
-		decode_time_ms = static_cast<double>(xaudio2_played_samples - prev_decode_cycle_xaudio2_played_samples) * 1000.0 / wfx.nSamplesPerSec;
+		double decode_time_ms = static_cast<double>(xaudio2_played_samples - prev_decode_cycle_xaudio2_played_samples) *
+			1000.0 / wfx.nSamplesPerSec;
 		prev_decode_cycle_xaudio2_played_samples = xaudio2_played_samples;
 		elapsed_time = static_cast<float>(static_cast<double>(xaudio2_played_samples) * 1.0 / wfx.nSamplesPerSec + this->pts_seconds);
 
@@ -1539,9 +1555,7 @@ void MusicPlayerLibrary::MusicPlayerNative::init_decoder_thread() {
 			}
 			catch (const std::exception& exception)
 			{
-				std::string message = StringUtils::FormatString(
-					"Unhandled native exception in decoder worker: %s",
-					exception.what());
+				std::string message = std::format("Unhandled native exception in decoder worker: {}", exception.what());
 				handle_worker_exception(gcnew System::InvalidOperationException(gcnew String(message.c_str())), "decoder");
 				return;
 			}
@@ -1588,9 +1602,7 @@ inline void MusicPlayerLibrary::MusicPlayerNative::start_audio_playback()
 			}
 			catch (const std::exception& exception)
 			{
-				std::string message = StringUtils::FormatString(
-					"Unhandled native exception in playback worker: %s",
-					exception.what());
+				std::string message = std::format("Unhandled native exception in playback worker: {}", exception.what());
 				handle_worker_exception(gcnew System::InvalidOperationException(gcnew String(message.c_str())), "playback");
 			}
 			catch (...)
@@ -1841,8 +1853,9 @@ void MusicPlayerLibrary::MusicPlayerNative::dialog_ffmpeg_critical_error(int err
 	char buf[1024] = { 0 };
 	av_strerror(err_code, buf, 1024);
 	std::wstring message = L"FFmpeg critical error: ";
+	std::string detail = std::format("{} (file: {}, line: {})\n", buf, file, line);
 	message += LocaleConverterNative::GetUtf16StringFromUtf8String(
-		StringUtils::FormatString("%s (file: %s, line: %d)\n", buf, file, line));
+		detail);
 	throw gcnew System::InvalidOperationException(gcnew String(message.c_str()));
 }
 
@@ -1880,12 +1893,13 @@ int MusicPlayerLibrary::MusicPlayerNative::init_av_filter_equalizer()
 		sample_rate = 48000;
 
 	std::string layout_str(256, '\0');
-	av_channel_layout_describe(&codec_context->ch_layout, layout_str.data(), static_cast<size_t>(layout_str.size()));
+	av_channel_layout_describe(&codec_context->ch_layout, layout_str.data(), layout_str.size());
 	layout_str.resize(strlen(layout_str.c_str()));
-	std::string args = StringUtils::FormatString("sample_rate=%d:sample_fmt=%s:channel_layout=%s",
+	const char* sample_fmt_name = av_get_sample_fmt_name(codec_context->sample_fmt);
+	std::string args = std::format("sample_rate={}:sample_fmt={}:channel_layout={}",
 		codec_context->sample_rate,
-		av_get_sample_fmt_name(codec_context->sample_fmt),
-		layout_str.c_str());
+		sample_fmt_name == nullptr ? "" : sample_fmt_name,
+		layout_str);
 	ATLTRACE("info: init_av_filter_equalizer, filter args: %s\n", args.c_str());
 	int ret = avfilter_graph_create_filter(&filter_context_src, avfilter_get_by_name("abuffer"),
 		"src", args.c_str(), nullptr, filter_graph);
@@ -1895,7 +1909,7 @@ int MusicPlayerLibrary::MusicPlayerNative::init_av_filter_equalizer()
 		return ret;
 	}
 
-	std::string resample_args = StringUtils::FormatString("sample_rate=%d:out_chlayout=stereo:out_sample_fmt=s16", sample_rate);
+	std::string resample_args = std::format("sample_rate={}:out_chlayout=stereo:out_sample_fmt=s16", sample_rate);
 	ret = avfilter_graph_create_filter(&resample_ctx, avfilter_get_by_name("aresample"),
 		"resample", resample_args.c_str(), nullptr, filter_graph);
 	if (ret < 0)
@@ -1922,8 +1936,8 @@ int MusicPlayerLibrary::MusicPlayerNative::init_av_filter_equalizer()
 			.gain_values = eq_bands[i],
 			.eq_context = nullptr
 		};
-		eq_graph.eq_name = StringUtils::FormatString("eq%d", i);
-		std::string arg_str = StringUtils::FormatString("f=%d:t=q:w=1:g=%d", freq_hz[i], eq_bands[i]);
+		eq_graph.eq_name = std::format("eq{}", i);
+		std::string arg_str = std::format("f={}:t=q:w=1:g={}", freq_hz[i], eq_bands[i]);
 		ATLTRACE("info: init_av_filter_equalizer, filter args: %s\n", arg_str.c_str());
 
 		ret = avfilter_graph_create_filter(&eq_graph.eq_context, avfilter_get_by_name("equalizer"),
@@ -1983,7 +1997,7 @@ int MusicPlayerLibrary::MusicPlayerNative::init_av_filter_equalizer()
 		return ret;
 	}
 	ATLTRACE("info: limiter linked\n");
-	std::string fmt_args = StringUtils::FormatString("sample_fmts=s16:sample_rates=%d:channel_layouts=stereo", sample_rate);
+	std::string fmt_args = std::format("sample_fmts=s16:sample_rates={}:channel_layouts=stereo", sample_rate);
 	ret = avfilter_graph_create_filter(&format_normalize_ctx,
 		avfilter_get_by_name("aformat"),
 		"aformat", fmt_args.c_str(), nullptr, filter_graph);
@@ -2057,12 +2071,10 @@ void MusicPlayerLibrary::MusicPlayerNative::OpenFile(const std::wstring& fileNam
 	if (load_audio_context(fileName, file_extension_in)) {
 		// AfxMessageBox(_T("err: load file failed, please check trace message!"), MB_ICONERROR);
 		throw gcnew System::InvalidOperationException("Load file failed, please re-run in terminal and check trace message!");
-		return;
 	}
 	if (initialize_audio_engine()) {
 		// AfxMessageBox(_T("err: audio engine initialize failed!"), MB_ICONERROR);
 		throw gcnew System::InvalidOperationException("Audio engine initialize failed!");
-		return;
 	};
 	managed_music_player->ProcessEvent(WM_PLAYER_FILE_INIT, 0, 0);
 	managed_music_player->ProcessEvent(WM_PLAYER_TIME_CHANGE, 0, 0);
@@ -2194,8 +2206,8 @@ void MusicPlayerLibrary::MusicPlayerNative::SetEqualizerBand(int index, int valu
 	if (this->is_av_filter_equalizer_initialized())
 	{
 		filter_graphs[index].gain_values = value;
-		std::string eq_name = StringUtils::FormatString("eq%d", index);
-		std::string gain_val = StringUtils::FormatString("%d", value);
+		std::string eq_name = std::format("eq{}", index);
+		std::string gain_val = std::format("{}", value);
 
 		avfilter_graph_send_command(filter_graph, eq_name.c_str(), "gain", gain_val.c_str(), nullptr, 0, 0);
 	}

@@ -1,13 +1,45 @@
 ﻿#include "pch.h"
 #include "LrcFileController.h"
 #include "LocaleConverter.h"
+#include <cwchar>
+#include <cwctype>
 #include <regex>
 #include <ranges>
+#include <string_view>
 
 #include <msclr/marshal_cppstd.h>
 #include <vcclr.h>
 
 using namespace MusicPlayerLibrary;
+
+namespace
+{
+std::wstring TrimWhitespace(std::wstring_view value)
+{
+    size_t first = 0;
+    while (first < value.size() && std::iswspace(value[first]) != 0)
+        ++first;
+
+    size_t last = value.size();
+    while (last > first && std::iswspace(value[last - 1]) != 0)
+        --last;
+
+    return std::wstring(value.substr(first, last - first));
+}
+
+std::wstring TrimChar(std::wstring_view value, wchar_t ch)
+{
+    size_t first = 0;
+    while (first < value.size() && value[first] == ch)
+        ++first;
+
+    size_t last = value.size();
+    while (last > first && value[last - 1] == ch)
+        --last;
+
+    return std::wstring(value.substr(first, last - first));
+}
+}
 
 template <typename T>
 static int FindVectorIndex(const std::vector<T>& values, const T& value)
@@ -282,14 +314,24 @@ LrcMultiNode::LrcMultiNode(int t, const std::vector<std::wstring>& texts,
                         assign_with_language(zh_index, LrcAuxiliaryInfoNative::Lyric);
                         assign_with_language(zh_index_2, LrcAuxiliaryInfoNative::Translation);
                     }
-                    else
-                        assign_with_language(zh_index, LrcAuxiliaryInfoNative::Lyric);
                     if (roma_index == -1)
                     {
+                        // 信任ML分类器产生的eng识别结果，假定其为歌词。
                         if (eng_index != -1)
-                            assign_with_language(eng_index, LrcAuxiliaryInfoNative::Romanization);
+                        {
+                            assign_with_language(eng_index, LrcAuxiliaryInfoNative::Lyric);
+                            assign_with_language(zh_index, LrcAuxiliaryInfoNative::Translation);
+                        }
                         else
+                        {
+                            assign_with_language(zh_index, LrcAuxiliaryInfoNative::Lyric);
                             assign_with_language(onomatopoeia_index, LrcAuxiliaryInfoNative::Romanization);
+                        }
+                    }
+                    else
+                    {
+                        assign_with_language(zh_index, LrcAuxiliaryInfoNative::Lyric);
+                        assign_with_language(roma_index, LrcAuxiliaryInfoNative::Romanization);
                     }
                 }
                 else if (eng_index != -1)
@@ -559,7 +601,6 @@ LrcProgressNode::LrcProgressNode(int t, const std::wstring& text_with_node)
     : LrcAbstractNode(t), node_count(0), end_time_ms(0)
 {
     std::wstring text = text_with_node;
-    int find_right_brace_info;
     const wchar_t right_brace_type = text[text.size() - 1];
     wchar_t left_brace_type;
     switch (right_brace_type)
@@ -568,21 +609,22 @@ LrcProgressNode::LrcProgressNode(int t, const std::wstring& text_with_node)
         case L'>': left_brace_type = L'<'; break;
         default: return;
     }
-    do
+    while (true)
     {
-        find_right_brace_info = StringUtils::Find(text, right_brace_type);
-        std::wstring node = StringUtils::Left(text, static_cast<size_t>(find_right_brace_info + 1));
-        if (node.empty())
-            continue;
-        auto node_controller_start_index = StringUtils::Find(node, left_brace_type);
-        if (node_controller_start_index == -1)
+        const size_t right_brace_index = text.find(right_brace_type);
+        if (right_brace_index == std::wstring::npos)
+            break;
+
+        std::wstring node = text.substr(0, right_brace_index + 1);
+        const size_t node_controller_start_index = node.find(left_brace_type);
+        if (node_controller_start_index == std::wstring::npos)
         {
             ATLTRACE(L"warn: invalid progress node: %s\n", node.c_str());
             break;
         }
-        auto time_stamp = StringUtils::Mid(node, static_cast<size_t>(node_controller_start_index + 1));
+        auto time_stamp = node.substr(node_controller_start_index + 1);
         std::erase(time_stamp, right_brace_type);
-        auto lyric_text = StringUtils::Left(node, static_cast<size_t>(node_controller_start_index));
+        auto lyric_text = node.substr(0, node_controller_start_index);
         auto time_stamp_std_string = LocaleConverterNative::GetUtf8StringFromUtf16String(time_stamp);
         std::smatch m;
         if (std::regex_search(time_stamp_std_string, m, time_tag_progress_regex)
@@ -610,8 +652,8 @@ LrcProgressNode::LrcProgressNode(int t, const std::wstring& text_with_node)
             });
             node_count++;
         }
-        text = StringUtils::Mid(text, static_cast<size_t>(find_right_brace_info + 1));
-    } while (find_right_brace_info != -1);
+        text.erase(0, right_brace_index + 1);
+    }
 }
 
 float LrcProgressNode::get_lrc_percentage(float current_timestamp) const
@@ -775,19 +817,20 @@ void LrcFileControllerNative::parse_lrc_file_stream(IFile* file_stream)
     std::vector<CachedTimeLine> time_lines;
     
     // 逐行解析
-    int start = 0, flag_decoding_metadata = 1;
+    size_t start = 0;
+    int flag_decoding_metadata = 1;
     std::stack<std::wstring> lyrics_in_ms;
     int recorded_ms = 0;
 
-    while (static_cast<size_t>(start) < file_content_w.size())
+    while (start < file_content_w.size())
     {
-        int end = StringUtils::Find(file_content_w, L'\n', static_cast<size_t>(start));
-        if (end == -1)
+        size_t end = file_content_w.find(L'\n', start);
+        if (end == std::wstring::npos)
         {
-            end = static_cast<int>(file_content_w.size());
+            end = file_content_w.size();
             // 因为现在缓存所有歌词行，所以不需要设置is_lrc_end flag
         }
-        std::wstring line = StringUtils::Trim(StringUtils::Mid(file_content_w, static_cast<size_t>(start), static_cast<size_t>(end - start)));
+        std::wstring line = TrimWhitespace(std::wstring_view(file_content_w).substr(start, end - start));
         if (line.empty())
         {
             start = end + 1;
@@ -799,13 +842,13 @@ void LrcFileControllerNative::parse_lrc_file_stream(IFile* file_stream)
             start = end + 1;
             continue;
         }
-        auto line_start_index = StringUtils::Find(line, L'[');
+        const size_t line_start_index = line.find(L'[');
         // 剔除行开头的不合法字符
-        if (line_start_index != -1 && line_start_index != 0)
+        if (line_start_index != std::wstring::npos && line_start_index != 0)
         {
             ATLTRACE(L"warn: invalid lrc format, ignoring start character: %s\n",
-                StringUtils::Left(line, static_cast<size_t>(line_start_index)).c_str());
-            line = StringUtils::Right(line, line.size() - static_cast<size_t>(line_start_index));
+                line.substr(0, line_start_index).c_str());
+            line.erase(0, line_start_index);
         }
 
         // fix: moving decode_metadata as a lambda
@@ -826,7 +869,7 @@ void LrcFileControllerNative::parse_lrc_file_stream(IFile* file_stream)
                 meta.by = get_metadata_value(line);
                 break;
             case LrcMetadataTypeNative::Offset:
-                offset = StringUtils::ToIntOrZero(get_metadata_value(line));
+                offset = static_cast<int>(std::wcstol(get_metadata_value(line).c_str(), nullptr, 10));
                 break;
             case LrcMetadataTypeNative::Author:
                 meta.author = get_metadata_value(line);
@@ -861,11 +904,11 @@ void LrcFileControllerNative::parse_lrc_file_stream(IFile* file_stream)
         std::vector<int> time_stamps;
         while (!lyric_text.empty() && lyric_text[0] == '[')
         {
-            int time_tag_end_index_multi = StringUtils::Find(lyric_text, L']');
-            if (time_tag_end_index_multi == -1)
+            const size_t time_tag_end_index_multi = lyric_text.find(L']');
+            if (time_tag_end_index_multi == std::wstring::npos)
                 throw gcnew System::InvalidOperationException("Invalid lrc time tag, aborting!");
             auto time_tag = LocaleConverterNative::GetUtf8StringFromUtf16String(
-                StringUtils::Left(lyric_text, static_cast<size_t>(time_tag_end_index_multi + 1)));
+                lyric_text.substr(0, time_tag_end_index_multi + 1));
             std::smatch m;
             bool is_malformed_time_tag = true;
             if (std::regex_search(time_tag, m, time_tag_regex))
@@ -877,9 +920,9 @@ void LrcFileControllerNative::parse_lrc_file_stream(IFile* file_stream)
                 // malformed time tag
                 // guess: metadata tag?
                 // fix issue #12
-                auto metadata_substr = StringUtils::Left(lyric_text, static_cast<size_t>(time_tag_end_index_multi + 1));
+                auto metadata_substr = lyric_text.substr(0, time_tag_end_index_multi + 1);
                 decode_metadata(metadata_substr, metadata, lrc_offset_ms);
-                lyric_text = StringUtils::Trim(StringUtils::Mid(lyric_text, static_cast<size_t>(time_tag_end_index_multi + 1)));
+                lyric_text = TrimWhitespace(std::wstring_view(lyric_text).substr(time_tag_end_index_multi + 1));
                 continue;
             }
             int minutes = std::stoi(m[1].str());
@@ -899,7 +942,7 @@ void LrcFileControllerNative::parse_lrc_file_stream(IFile* file_stream)
             int total_ms_multi = minutes * 60000 + seconds * 1000 + milliseconds;
             if (total_ms_multi < 0) total_ms_multi = 0;
             time_stamps.push_back(total_ms_multi);
-            lyric_text = StringUtils::Trim(StringUtils::Mid(lyric_text, static_cast<size_t>(time_tag_end_index_multi + 1)));
+            lyric_text = TrimWhitespace(std::wstring_view(lyric_text).substr(time_tag_end_index_multi + 1));
         }
         if (time_stamps.empty())
             throw gcnew System::InvalidOperationException("Invalid lrc time tag, aborting!");
@@ -1117,13 +1160,13 @@ LrcMetadataTypeNative LrcFileControllerNative::get_metadata_type(const std::wstr
         return LrcMetadataTypeNative::Error;
     }
     // 逐字歌词有可能每个单位后都带有时间戳
-    if (StringUtils::Find(str, L']') != static_cast<int>(str.size()) - 1)
+    if (str.find(L']') != str.size() - 1)
         return LrcMetadataTypeNative::Error;
-    int metadata_end_index = StringUtils::Find(str, L':', 1);
-    if (metadata_end_index == -1)
+    const size_t metadata_end_index = str.find(L':', 1);
+    if (metadata_end_index == std::wstring::npos)
         return LrcMetadataTypeNative::Error;
 
-    switch (std::wstring metadata_type_str = StringUtils::Mid(StringUtils::Left(str, static_cast<size_t>(metadata_end_index)), 1);
+    switch (std::wstring metadata_type_str = str.substr(1, metadata_end_index - 1);
         wide_string_hash_fnv_64bit_int(metadata_type_str))
     {
     case 0x645d220c: return LrcMetadataTypeNative::Artist;
@@ -1153,8 +1196,11 @@ int LrcFileControllerNative::wide_string_hash_fnv_64bit_int(const std::wstring& 
 
 std::wstring LrcFileControllerNative::get_metadata_value(const std::wstring& str)
 {
-    int metadata_end_index = StringUtils::Find(str, L':', 1);
-    return StringUtils::Trim(StringUtils::Trim(StringUtils::Mid(str, static_cast<size_t>(metadata_end_index + 1)), L']'));
+    const size_t metadata_end_index = str.find(L':', 1);
+    if (metadata_end_index == std::wstring::npos)
+        return {};
+
+    return TrimWhitespace(TrimChar(std::wstring_view(str).substr(metadata_end_index + 1), L']'));
 }
 
 // ============================================================
@@ -1210,7 +1256,7 @@ void LrcFileController::ParseLrcStream(System::String^ lrcString)
 {
     check_if_null();
     pin_ptr<const wchar_t> wch = PtrToStringChars(lrcString);
-    const std::string utf8Str = StringUtils::ToUtf8(std::wstring_view(wch));
+    const std::string utf8Str = LocaleConverterNative::GetUtf8StringFromUtf16String(std::wstring(wch));
 	auto mem_file = GetDefaultFileSystem().CreateMemoryFile();
 	if (!mem_file)
 		return;
