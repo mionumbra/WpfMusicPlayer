@@ -69,6 +69,7 @@ namespace MusicPlayerLibrary {
 		std::atomic<float> length = 0.0f;
 		std::atomic_bool is_pause = false;
 		std::atomic_bool decoder_is_running = false;
+		std::atomic_bool equalizer_is_running = false;
 		int fifo_audio_channels = 0;
 		AVSampleFormat fifo_audio_sample_fmt = AV_SAMPLE_FMT_NONE;
 		int fifo_sample_rate = 0;
@@ -76,8 +77,16 @@ namespace MusicPlayerLibrary {
 		std::wstring song_title = {};
 		std::wstring song_artist = {};
 
+		std::mutex decoded_frame_queue_mutex;
+		std::condition_variable decoded_frame_queue_cv;
+		std::deque<AVFrame*> decoded_frame_queue;
+		int decoded_frame_queue_samples = 0;
+		bool decoded_frame_queue_eof = false;
+		bool decoded_frame_queue_abort = false;
+
 		std::mutex audio_fifo_mutex;
 		std::mutex audio_playback_mutex;
+		std::mutex filter_graph_mutex;
 		std::mutex frame_event_mutex;
 		std::condition_variable frame_ready_cv;
 		std::condition_variable frame_underrun_cv;
@@ -92,6 +101,7 @@ namespace MusicPlayerLibrary {
 		std::atomic_int playback_state;
 		std::jthread audio_player_worker_thread;
 		std::jthread audio_decoder_worker_thread;
+		std::jthread audio_equalizer_worker_thread;
 		std::jthread album_art_worker_thread;
 
 		std::list<XAUDIO2_BUFFER*> xaudio2_playing_buffers = {};
@@ -139,10 +149,14 @@ namespace MusicPlayerLibrary {
 		void notify_all_frame_notifications();
 		void audio_playback_worker_thread();
 		void audio_decode_worker_thread();
+		void audio_equalize_worker_thread();
 		void handle_worker_exception(System::Exception^ exception, const char* worker_name);
 		void start_audio_playback();
+		void init_equalizer_thread();
 		void stop_audio_decode(int mode = 0);
+		void stop_audio_equalizer();
 		void stop_audio_playback(int mode);
+		bool is_audio_pipeline_running();
 
 		int initialize_audio_fifo(AVSampleFormat sample_fmt, int channels, int nb_samples);
 		int resize_audio_fifo(int nb_samples);
@@ -152,6 +166,13 @@ namespace MusicPlayerLibrary {
 		void reset_audio_fifo();
 		int get_audio_fifo_cached_samples_size();
 		void uninitialize_audio_fifo();
+		int get_audio_fifo_low_watermark();
+		int get_audio_fifo_high_watermark();
+		int get_decoded_frame_queue_high_watermark();
+		bool queue_decoded_frame(AVFrame* decoded_frame);
+		AVFrame* pop_decoded_frame();
+		void signal_decoded_frame_queue_eof();
+		void reset_decoded_frame_queue(bool abort_waiters = false);
 
 		// XAudio2 helper function
 		const char* get_backend_implement_version();
