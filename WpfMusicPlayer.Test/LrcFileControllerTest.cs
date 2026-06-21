@@ -464,6 +464,16 @@ public sealed class LrcFileControllerTest
         });
     }
 
+    [TestMethod]
+    public void ParseLrcStream_UnclosedOpeningBracket_Throws()
+    {
+        const string lrc = "[00:01.000 lyric without closing bracket";
+        Assert.ThrowsExactly<InvalidOperationException>(() =>
+        {
+            using var ctrl = CreateFromStream(lrc);
+        });
+    }
+
     #endregion
     
     #region Dispose

@@ -1,12 +1,16 @@
 ﻿#include "pch.h"
-#include "MusicPlayerLibrary.h"
+#include "NcmDecryptor.h"
 #include "LocaleConverter.h"
 
 #include <openssl/evp.h>
 #include <cpp-base64/base64.h>
 #include <rapidjson/document.h>
 #include <rapidjson/error/en.h>
+#include <algorithm>
 #include <limits>
+#include <memory>
+#include <stdexcept>
+#include <utility>
 
 static const uint8_t CORE_KEY[16] = {
     0x68, 0x7a, 0x48, 0x52, 0x41, 0x6d, 0x73, 0x6f,
@@ -19,6 +23,7 @@ static const uint8_t META_KEY[16] = {
 static const uint8_t MAGIC_HEADER[8] = {
     0x43, 0x54, 0x45, 0x4e, 0x46, 0x44, 0x41, 0x4d
 };
+static constexpr ULONGLONG SeekFailure = static_cast<ULONGLONG>(-1);
 
 static bool BytesHasPrefix(const uint8_t* buf, const uint8_t* prefix, size_t len)
 {
@@ -87,6 +92,229 @@ static std::wstring Utf8StringToWideString(const std::string& input)
     return Utf8BytesToWideString(input.data(), input.size());
 }
 
+namespace
+{
+    class NcmDecryptedAudioFile final : public MusicPlayerLibrary::IFile
+    {
+    public:
+        NcmDecryptedAudioFile(
+            std::unique_ptr<MusicPlayerLibrary::IFile> source_file,
+            ULONGLONG audio_offset,
+            ULONGLONG audio_length,
+            std::vector<uint8_t> key_box)
+            : source_file_(std::move(source_file)),
+            audio_offset_(audio_offset),
+            audio_length_(audio_length),
+            key_box_(std::move(key_box))
+        {
+            if (!source_file_)
+                throw std::runtime_error("invalid ncm source file");
+            if (key_box_.size() != 256)
+                throw std::runtime_error("invalid ncm key box");
+        }
+
+        ~NcmDecryptedAudioFile() override
+        {
+            Close();
+        }
+
+        UINT Read(void* buffer, UINT count) override
+        {
+            if (!source_file_ || buffer == nullptr || count == 0 || position_ >= audio_length_)
+                return 0;
+
+            const ULONGLONG bytes_to_read_64 =
+                (std::min)(static_cast<ULONGLONG>(count), audio_length_ - position_);
+            const UINT bytes_to_read = static_cast<UINT>(bytes_to_read_64);
+            const ULONGLONG source_position = audio_offset_ + position_;
+            if (source_position < audio_offset_
+                || source_position > static_cast<ULONGLONG>((std::numeric_limits<LONGLONG>::max)()))
+            {
+                ATLTRACE("err: ncm decrypted audio source position overflow\n");
+                return 0;
+            }
+
+            const ULONGLONG actual_position =
+                source_file_->Seek(static_cast<LONGLONG>(source_position), MusicPlayerLibrary::FileSeekOrigin::Begin);
+            if (actual_position == SeekFailure || actual_position != source_position)
+            {
+                ATLTRACE("err: seek ncm audio source failed\n");
+                return 0;
+            }
+
+            auto* bytes = static_cast<uint8_t*>(buffer);
+            const UINT bytes_read = source_file_->Read(bytes, bytes_to_read);
+            for (UINT i = 0; i < bytes_read; ++i)
+                bytes[i] ^= key_box_[(position_ + i) & 0xff];
+
+            position_ += bytes_read;
+            return bytes_read;
+        }
+
+        void Write(const void* buffer, UINT count) override
+        {
+            UNREFERENCED_PARAMETER(buffer);
+            UNREFERENCED_PARAMETER(count);
+            ATLTRACE("err: ncm decrypted audio file is read-only\n");
+        }
+
+        ULONGLONG Seek(LONGLONG offset, MusicPlayerLibrary::FileSeekOrigin origin) override
+        {
+            ULONGLONG base_position;
+            switch (origin)
+            {
+            case MusicPlayerLibrary::FileSeekOrigin::Begin:
+                base_position = 0;
+                break;
+            case MusicPlayerLibrary::FileSeekOrigin::Current:
+                base_position = position_;
+                break;
+            case MusicPlayerLibrary::FileSeekOrigin::End:
+                base_position = audio_length_;
+                break;
+            default:
+                base_position = 0;
+                break;
+            }
+
+            ULONGLONG new_position;
+            if (offset < 0)
+            {
+                const ULONGLONG distance = static_cast<ULONGLONG>(-(offset + 1)) + 1;
+                if (distance > base_position)
+                {
+                    ATLTRACE("err: ncm decrypted audio seek before begin\n");
+                    return SeekFailure;
+                }
+                new_position = base_position - distance;
+            }
+            else
+            {
+                const ULONGLONG distance = static_cast<ULONGLONG>(offset);
+                if (base_position > (std::numeric_limits<ULONGLONG>::max)() - distance)
+                {
+                    ATLTRACE("err: ncm decrypted audio seek position overflow\n");
+                    return SeekFailure;
+                }
+                new_position = base_position + distance;
+            }
+
+            position_ = new_position;
+            return position_;
+        }
+
+        void SeekToBegin() override
+        {
+            position_ = 0;
+        }
+
+        ULONGLONG GetLength() const override
+        {
+            return audio_length_;
+        }
+
+        ULONGLONG GetPosition() const override
+        {
+            return position_;
+        }
+
+        void Close() override
+        {
+            if (source_file_)
+            {
+                source_file_->Close();
+                source_file_.reset();
+            }
+            key_box_.clear();
+            audio_offset_ = 0;
+            audio_length_ = 0;
+            position_ = 0;
+        }
+
+        bool GetReadBuffer(void** buffer_start, void** buffer_end) override
+        {
+            if (buffer_start)
+                *buffer_start = nullptr;
+            if (buffer_end)
+                *buffer_end = nullptr;
+            return false;
+        }
+
+    private:
+        std::unique_ptr<IFile> source_file_;
+        ULONGLONG audio_offset_ = 0;
+        ULONGLONG audio_length_ = 0;
+        ULONGLONG position_ = 0;
+        std::vector<uint8_t> key_box_;
+    };
+}
+
+void MusicPlayerLibrary::NcmDecryptor::EnsureSourceRange(ULONGLONG offset, ULONGLONG count, const char* message) const
+{
+    if (offset > m_fileLength || count > m_fileLength - offset)
+        throw std::runtime_error(message);
+}
+
+void MusicPlayerLibrary::NcmDecryptor::SeekSource(ULONGLONG offset, const char* message)
+{
+    if (offset > static_cast<ULONGLONG>((std::numeric_limits<LONGLONG>::max)()))
+        throw std::runtime_error(message);
+
+    const ULONGLONG position = m_sourceFile.Seek(static_cast<LONGLONG>(offset), FileSeekOrigin::Begin);
+    if (position == SeekFailure || position != offset)
+        throw std::runtime_error(message);
+}
+
+void MusicPlayerLibrary::NcmDecryptor::ReadSourceExact(void* buffer, UINT count, const char* message)
+{
+    if (count == 0)
+        return;
+    if (buffer == nullptr)
+        throw std::runtime_error(message);
+
+    auto* bytes = static_cast<uint8_t*>(buffer);
+    UINT total_read = 0;
+    while (total_read < count)
+    {
+        const UINT bytes_read = m_sourceFile.Read(bytes + total_read, count - total_read);
+        if (bytes_read == 0)
+            throw std::runtime_error(message);
+        total_read += bytes_read;
+    }
+}
+
+uint32_t MusicPlayerLibrary::NcmDecryptor::ReadSourceUint32(const char* message)
+{
+    EnsureSourceRange(m_offset, 4, message);
+    uint8_t bytes[4] = {};
+    SeekSource(m_offset, message);
+    ReadSourceExact(bytes, sizeof(bytes), message);
+    m_offset += sizeof(bytes);
+    return ReadLEUint32(bytes);
+}
+
+uint32_t MusicPlayerLibrary::NcmDecryptor::ReadSourceUint32At(ULONGLONG offset, const char* message)
+{
+    EnsureSourceRange(offset, 4, message);
+    uint8_t bytes[4] = {};
+    SeekSource(offset, message);
+    ReadSourceExact(bytes, sizeof(bytes), message);
+    return ReadLEUint32(bytes);
+}
+
+std::vector<uint8_t> MusicPlayerLibrary::NcmDecryptor::ReadSourceBytes(UINT count, const char* message)
+{
+    EnsureSourceRange(m_offset, count, message);
+    std::vector<uint8_t> bytes(count);
+    if (count > 0)
+    {
+        SeekSource(m_offset, message);
+        ReadSourceExact(bytes.data(), count, message);
+    }
+    m_offset += count;
+    return bytes;
+}
+
 static std::wstring JsonStringToWideString(const rapidjson::Value& value)
 {
     if (!value.IsString())
@@ -109,20 +337,43 @@ static std::wstring JsonNumberToWideString(const rapidjson::Value& value)
     return Utf8StringToWideString(number);
 }
 
-MusicPlayerLibrary::NcmDecryptor::NcmDecryptor(const std::vector<uint8_t>& data, const std::wstring& filename)
-    : m_raw(data), m_filename(filename) {
-    if (m_raw.size() < 8)
-        throw std::runtime_error("ncm file too small");
-    if (!BytesHasPrefix(m_raw.data(), MAGIC_HEADER, 8))
+MusicPlayerLibrary::NcmDecryptor::NcmDecryptor(IFile& source_file, const std::wstring& filename)
+    : m_sourceFile(source_file), m_fileLength(source_file.GetLength()), m_filename(filename) {
+    EnsureSourceRange(0, 8, "ncm file too small");
+
+    uint8_t header[8] = {};
+    SeekSource(0, "failed to read ncm header");
+    ReadSourceExact(header, sizeof(header), "failed to read ncm header");
+    if (!BytesHasPrefix(header, MAGIC_HEADER, 8))
         throw std::runtime_error("此ncm文件已损坏");
     m_offset = 10;
 }
 
-MusicPlayerLibrary::DecryptResult MusicPlayerLibrary::NcmDecryptor::Decrypt()
+MusicPlayerLibrary::NcmOpenResult MusicPlayerLibrary::NcmDecryptor::Open(
+    std::unique_ptr<IFile> source_file,
+    const std::wstring& filename)
 {
-    auto keyBox = GetKeyBox();
-    m_oriMeta = GetMetaData();
-    m_audio = GetAudio(keyBox);
+    if (!source_file)
+        throw std::runtime_error("invalid ncm source file");
+
+    NcmDecryptor decryptor(*source_file, filename);
+    auto keyBox = decryptor.GetKeyBox();
+    decryptor.m_oriMeta = decryptor.GetMetaData();
+    const ULONGLONG audioOffset = decryptor.GetAudioOffset();
+    const ULONGLONG audioLength = decryptor.m_fileLength - audioOffset;
+
+    NcmOpenResult openResult;
+    openResult.metadata = decryptor.BuildDecryptResult();
+    openResult.audio_file = std::make_unique<NcmDecryptedAudioFile>(
+        std::move(source_file),
+        audioOffset,
+        audioLength,
+        std::move(keyBox));
+    return openResult;
+}
+
+MusicPlayerLibrary::DecryptResult MusicPlayerLibrary::NcmDecryptor::BuildDecryptResult()
+{
     if (!m_oriMeta.format.empty())
         m_format = m_oriMeta.format;
     else
@@ -149,22 +400,15 @@ MusicPlayerLibrary::DecryptResult MusicPlayerLibrary::NcmDecryptor::Decrypt()
         }
     }
     res.artist = artistJoined;
-    res.audioData = m_audio;
     return res;
 }
 
 std::vector<uint8_t> MusicPlayerLibrary::NcmDecryptor::GetKeyData()
 {
-    if (m_offset + 4 > m_raw.size())
-        throw std::runtime_error("invalid ncm key length");
-    uint32_t keyLen = ReadLEUint32(&m_raw[m_offset]);
-    m_offset += 4;
-    if (m_offset + keyLen > m_raw.size())
-        throw std::runtime_error("invalid ncm key area");
-    std::vector<uint8_t> cipherText(keyLen);
-    for (uint32_t i = 0; i < keyLen; ++i)
-        cipherText[i] = m_raw[m_offset + i] ^ 0x64;
-    m_offset += keyLen;
+    uint32_t keyLen = ReadSourceUint32("invalid ncm key length");
+    std::vector<uint8_t> cipherText = ReadSourceBytes(keyLen, "invalid ncm key area");
+    for (auto& byte : cipherText)
+        byte ^= 0x64;
     auto plain = Aes128EcbDecrypt(cipherText, CORE_KEY);
     if (plain.size() <= 17)
         throw std::runtime_error("key data too short");
@@ -200,18 +444,12 @@ std::vector<uint8_t> MusicPlayerLibrary::NcmDecryptor::GetKeyBox()
 
 MusicPlayerLibrary::NcmMusicMeta MusicPlayerLibrary::NcmDecryptor::GetMetaData()
 {
-    if (m_offset + 4 > m_raw.size())
-        throw std::runtime_error("invalid meta length");
-    uint32_t metaDataLen = ReadLEUint32(&m_raw[m_offset]);
-    m_offset += 4;
+    uint32_t metaDataLen = ReadSourceUint32("invalid meta length");
     if (metaDataLen == 0)
         return NcmMusicMeta{};
-    if (m_offset + metaDataLen > m_raw.size())
-        throw std::runtime_error("invalid meta area");
-    std::vector<uint8_t> metaData(metaDataLen);
-    for (uint32_t i = 0; i < metaDataLen; ++i)
-        metaData[i] = m_raw[m_offset + i] ^ 0x63;
-    m_offset += metaDataLen;
+    std::vector<uint8_t> metaData = ReadSourceBytes(metaDataLen, "invalid meta area");
+    for (auto& byte : metaData)
+        byte ^= 0x63;
     if (metaData.size() <= 22)
         throw std::runtime_error("meta data too short");
     std::string base64Str(metaData.begin() + 22, metaData.end());
@@ -313,17 +551,14 @@ MusicPlayerLibrary::NcmMusicMeta MusicPlayerLibrary::NcmDecryptor::GetMetaData()
     return result;
 }
 
-std::vector<uint8_t> MusicPlayerLibrary::NcmDecryptor::GetAudio(const std::vector<uint8_t>& keyBox)
+ULONGLONG MusicPlayerLibrary::NcmDecryptor::GetAudioOffset()
 {
-    if (m_offset + 9 > m_raw.size())
-        throw std::runtime_error("invalid audio offset");
-    uint32_t dataLen = ReadLEUint32(&m_raw[m_offset + 5]);
-    size_t newOffset = m_offset + static_cast<size_t>(dataLen) + 13;
-    if (newOffset > m_raw.size())
+    EnsureSourceRange(m_offset, 9, "invalid audio offset");
+    uint32_t dataLen = ReadSourceUint32At(m_offset + 5, "invalid audio offset");
+    constexpr ULONGLONG AudioHeaderSize = 13;
+    if (AudioHeaderSize > m_fileLength - m_offset
+        || static_cast<ULONGLONG>(dataLen) > m_fileLength - m_offset - AudioHeaderSize)
         throw std::runtime_error("audio offset out of range");
-    m_offset = newOffset;
-    std::vector audio(m_raw.begin() + m_offset, m_raw.end());
-    for (size_t i = 0; i < audio.size(); ++i)
-        audio[i] ^= keyBox[i & 0xff];
-    return audio;
+    m_offset += static_cast<ULONGLONG>(dataLen) + AudioHeaderSize;
+    return m_offset;
 }

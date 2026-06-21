@@ -5,7 +5,6 @@
 #include <vcclr.h>
 #include "FFTExecuter.h"
 #include "FileAbstractionLayer.h"
-#include "StringUtils.h"
 using namespace System;
 
 namespace MusicPlayerLibrary {
@@ -35,49 +34,8 @@ namespace MusicPlayerLibrary {
 		WM_PLAYER_PAUSE = (WM_USER + 103),
 		WM_PLAYER_STOP = (WM_USER + 104),
 		WM_PLAYER_ALBUM_ART_INIT = (WM_USER + 105),
-		WM_PLAYER_DESTROY = (WM_USER + 106)
-	};
-
-	public struct NcmMusicMeta
-	{
-		std::wstring musicName;
-		std::vector<std::vector<std::wstring>> artist;
-		std::wstring format;
-		std::wstring album;
-		std::wstring albumPic;
-	};
-
-	public struct DecryptResult
-	{
-		std::wstring title;
-		std::wstring artist;
-		std::wstring album;
-		std::wstring ext;
-		std::wstring pictureUrl;
-		std::vector<uint8_t> audioData;
-		std::wstring mime;
-	};
-
-	public class NcmDecryptor
-	{
-	public:
-		NcmDecryptor(const std::vector<uint8_t>& data, const std::wstring& filename);
-		DecryptResult Decrypt();
-
-	private:
-		const std::vector<uint8_t>& m_raw;
-		size_t m_offset = 0;
-		std::wstring m_filename;
-
-		NcmMusicMeta m_oriMeta;
-		std::vector<uint8_t> m_audio;
-		std::wstring m_format;
-		std::wstring m_mime;
-
-		std::vector<uint8_t> GetKeyData();
-		std::vector<uint8_t> GetKeyBox();
-		NcmMusicMeta GetMetaData();
-		std::vector<uint8_t> GetAudio(const std::vector<uint8_t>& keyBox);
+		WM_PLAYER_DESTROY = (WM_USER + 106),
+		WM_PLAYER_ERROR = (WM_USER + 107)
 	};
 
 	ref class MusicPlayer;
@@ -95,19 +53,22 @@ namespace MusicPlayerLibrary {
 		AVFrame* frame = nullptr;
 		AVFrame* filt_frame = nullptr;
 		// 音频流编号
-		unsigned audio_stream_index = static_cast<unsigned>(-1); // inf
+		// fix: audio_stream_index can < 0;
+		// using unsigned cause it to overflow, as a very huge number
+		// crashing the audio engine.
+		int audio_stream_index = -1;
 		AVIOContext* avio_context = nullptr;
 		unsigned char* buffer = nullptr;
 
 		std::wstring file_extension;
 		std::unique_ptr<IFile> file_stream;
-		bool file_stream_end = false;
+		std::atomic_bool file_stream_end = false;
 		std::atomic_bool user_request_stop = false;
-		double pts_seconds = 0.0;
-		float elapsed_time = 0.0;
-		float length = 0.0f;
-		bool is_pause = false;
-		bool decoder_is_running = false;
+		std::atomic<double> pts_seconds = 0.0;
+		std::atomic<float> elapsed_time = 0.0;
+		std::atomic<float> length = 0.0f;
+		std::atomic_bool is_pause = false;
+		std::atomic_bool decoder_is_running = false;
 		int fifo_audio_channels = 0;
 		AVSampleFormat fifo_audio_sample_fmt = AV_SAMPLE_FMT_NONE;
 		int fifo_sample_rate = 0;
@@ -178,6 +139,7 @@ namespace MusicPlayerLibrary {
 		void notify_all_frame_notifications();
 		void audio_playback_worker_thread();
 		void audio_decode_worker_thread();
+		void handle_worker_exception(System::Exception^ exception, const char* worker_name);
 		void start_audio_playback();
 		void stop_audio_decode(int mode = 0);
 		void stop_audio_playback(int mode);
@@ -274,6 +236,7 @@ namespace MusicPlayerLibrary {
 	public delegate void PlayerStopDelegate();
 	public delegate void PlayerTimeChangeDelegate(float time);
 	public delegate void PlayerDestroyDelegate();
+	public delegate void PlayerErrorDelegate(System::Exception^ exception);
 
 	public ref class MusicPlayer:
 		System::ICloneable, System::IDisposable
@@ -288,6 +251,7 @@ namespace MusicPlayerLibrary {
 		property PlayerStopDelegate^ OnPlayerStop;
 		property PlayerTimeChangeDelegate^ OnPlayerTimeChange;
 		property PlayerDestroyDelegate^ OnPlayerDestroy;
+		property PlayerErrorDelegate^ OnPlayerError;
 	public:
 		MusicPlayer();
 		MusicPlayer(int sample_rate);
@@ -301,6 +265,7 @@ namespace MusicPlayerLibrary {
 			MessageType EventType;
 			IntPtr WParam;
 			IntPtr LParam;
+			Object^ Payload;
 		};
 		void ProcessEventCore(Object^ state);
 
@@ -313,6 +278,7 @@ namespace MusicPlayerLibrary {
 		* Invoke or similar mechanism to avoid cross-thread operation exceptions.
 		*/
 		void ProcessEvent(MessageType event_type, WPARAM wParam, LPARAM lParam);
+		void ProcessError(System::Exception^ exception);
 
 		bool IsInitialized();
 		bool IsPlaying();
@@ -352,6 +318,7 @@ namespace MusicPlayerLibrary {
 			OnPlayerStop = nullptr;
 			OnPlayerTimeChange = nullptr;
 			OnPlayerDestroy = nullptr;
+			OnPlayerError = nullptr;
 		}
 	};
 

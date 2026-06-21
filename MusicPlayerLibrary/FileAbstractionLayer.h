@@ -38,6 +38,7 @@ namespace MusicPlayerLibrary {
 
 		virtual bool FileExists(const std::wstring& file_path) const = 0;
 		virtual std::unique_ptr<IFile> OpenReadFile(const std::wstring& file_path, bool share_deny_write, bool binary) const = 0;
+		virtual std::unique_ptr<IFile> CreateTemporaryFile(bool binary) const = 0;
 		virtual std::unique_ptr<IFile> CreateMemoryFile() const = 0;
 	};
 
@@ -51,6 +52,7 @@ namespace MusicPlayerLibrary {
 	public:
 		bool FileExists(const std::wstring& file_path) const override;
 		std::unique_ptr<IFile> OpenReadFile(const std::wstring& file_path, bool share_deny_write, bool binary) const override;
+		std::unique_ptr<IFile> CreateTemporaryFile(bool binary) const override;
 		std::unique_ptr<IFile> CreateMemoryFile() const override;
 	};
 

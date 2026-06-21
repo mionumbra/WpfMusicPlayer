@@ -2,7 +2,6 @@
 
 #include "pch.h"
 #include "FileAbstractionLayer.h"
-#include "StringUtils.h"
 
 #include <dlib/svm_threaded.h>
 #include <dlib/dnn.h>

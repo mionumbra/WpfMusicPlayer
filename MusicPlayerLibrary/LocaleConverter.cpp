@@ -5,6 +5,8 @@
 #include <uchardet/uchardet.h>
 #include <msclr/marshal_cppstd.h>
 
+#include <limits>
+
 std::string MusicPlayerLibrary::LocaleConverterNative::GetUtf8StringFromBytesNative(const char* input, size_t size)
 {
     if (!input || size == 0) return {};
@@ -60,12 +62,36 @@ std::string MusicPlayerLibrary::LocaleConverterNative::GetUtf8StringFromBytesNat
 
 std::wstring MusicPlayerLibrary::LocaleConverterNative::GetUtf16StringFromUtf8String(const std::string& input)
 {
-    return StringUtils::FromUtf8Bytes(input.data(), input.size());
+    if (input.empty())
+        return {};
+    if (input.size() > static_cast<size_t>((std::numeric_limits<int>::max)()))
+        return {};
+
+    const int input_size = static_cast<int>(input.size());
+    const int wide_length = MultiByteToWideChar(CP_UTF8, 0, input.data(), input_size, nullptr, 0);
+    if (wide_length <= 0)
+        return {};
+
+    std::wstring output(static_cast<size_t>(wide_length), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, input.data(), input_size, output.data(), wide_length);
+    return output;
 }
 
 std::string MusicPlayerLibrary::LocaleConverterNative::GetUtf8StringFromUtf16String(const std::wstring& input)
 {
-    return StringUtils::ToUtf8(input);
+    if (input.empty())
+        return {};
+    if (input.size() > static_cast<size_t>((std::numeric_limits<int>::max)()))
+        return {};
+
+    const int input_size = static_cast<int>(input.size());
+    const int utf8_length = WideCharToMultiByte(CP_UTF8, 0, input.data(), input_size, nullptr, 0, nullptr, nullptr);
+    if (utf8_length <= 0)
+        return {};
+
+    std::string output(static_cast<size_t>(utf8_length), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, input.data(), input_size, output.data(), utf8_length, nullptr, nullptr);
+    return output;
 }
 
 System::String^ MusicPlayerLibrary::LocaleConverter::GetSystemStringFromBytes(array<byte>^ input)
