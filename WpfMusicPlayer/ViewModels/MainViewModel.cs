@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using MusicPlayerLibrary;
 using System.IO;
+using System.Reflection;
 using System.Runtime; 
 using System.Security.Cryptography;
 using System.Windows.Input;
@@ -49,7 +50,6 @@ public partial class MainViewModel : ObservableObject, IDisposable
     private const string PauseString = "\uE769";
     private const string PlayString = "\uF5B0";
 
-
     public MainViewModel(
         IConfigProvider configProvider,
         IFileDialogService fileDialogService,
@@ -88,6 +88,17 @@ public partial class MainViewModel : ObservableObject, IDisposable
         CurrentBackgroundMode = configProvider.GetConfig().UI.Background;
         _sampleRate = 48000; // Studio quality
         _musicPlayer = new MusicPlayer(_sampleRate);
+        
+        var info = Assembly
+            .GetExecutingAssembly()
+            .GetCustomAttributes<AssemblyInformationalVersionAttribute>()
+            .First();
+
+        var full = info.InformationalVersion;
+        var parts = full.Split('+');
+
+        Version = parts[0];
+        CommitId = parts.Length > 1 ? parts[1][..7] : "N/A";
 
         SubscribePlayerEvents();
         SubscribeSmtcEvents();
@@ -318,6 +329,10 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
     [ObservableProperty]
     public partial ActiveView ActiveView { get; set; }
+
+    public string Version { get; }
+
+    public string CommitId { get; }
 
     public SettingsViewModel Settings { get; }
 
