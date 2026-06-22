@@ -534,10 +534,10 @@ LrcLanguageHelper::extract_song_features(const std::vector<LrcLanguageHelper::La
     feat(idx++) = count[0] > 0 && (count[1] > 0 || count[2] > 0 || count[3] > 0);
 
     // 是否包含罗马音（1维）
-    feat(idx++) = count[5] > 0;
+    feat(idx++) = count[6] > 0;
 
     // 是否包含粤拼（1维）
-    feat(idx) = count[4] > 0;
+    feat(idx) = count[5] > 0;
 
     return feat;
 }
