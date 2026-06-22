@@ -9,8 +9,8 @@
 using line_sample_type = dlib::matrix<double, 0, 1>;
 using song_sample_type = dlib::matrix<double>;
 
-constexpr int NUM_CLASSES = 7;
-constexpr int NUM_TYPES = 12;
+constexpr int NUM_CLASSES = 8;
+constexpr int NUM_TYPES = 14;
 
 using line_net_type = dlib::loss_multiclass_log<
 	dlib::fc<NUM_CLASSES,
@@ -52,7 +52,7 @@ class LrcLanguageHelper
 public:
 	enum class LanguageType
 	{
-		zh, en, jp, kr, jyut, roma, onomatopoeia
+		zh, latin, jp, kr, ru, jyut, roma, onomatopoeia
 	};
 	
 	enum class LanguageClassification
@@ -60,10 +60,12 @@ public:
 		zh_only,
 		jp_only,
 		kr_only,
-		en_only,
+		ru_only,
+		latin_only,
 		jp_zh_trans,
 		jp_roma,
-		en_zh_trans,
+		latin_zh_trans,
+		ru_zh_trans,
 		kr_zh_trans,
 		kr_roma,
 		zh_jyut,
@@ -290,7 +292,7 @@ struct LrcLanguageInfo {
 * internal helper of CLrcManagerWnd, perform lyric management
 */
 class LrcFileControllerNative {
-	LrcLanguageHelper::LanguageClassification main_classification = LrcLanguageHelper::LanguageClassification::en_only;
+	LrcLanguageHelper::LanguageClassification main_classification = LrcLanguageHelper::LanguageClassification::latin_only;
 	std::vector<LrcAbstractNode*> lrc_nodes;
 	int time_stamp_ms = 0, lrc_offset_ms = 0;
 	size_t cur_lrc_node_index = 0;

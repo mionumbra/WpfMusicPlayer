@@ -97,7 +97,7 @@ LrcMultiNode::LrcMultiNode(int t, const std::vector<std::wstring>& texts,
     {
         aux_infos.push_back(LrcAuxiliaryInfoNative::Ignored);
     }
-    int jp_index = -1, kr_index = -1, eng_index = -1, zh_index = -1, jyut_index = -1, roma_index = -1, onomatopoeia_index = -1;
+    int jp_index = -1, kr_index = -1, latin_index = -1, zh_index = -1, ru_index = -1, jyut_index = -1, roma_index = -1, onomatopoeia_index = -1;
     using LC = LrcLanguageHelper::LanguageClassification;
     if (recommend_slot.size() == texts.size())
     {
@@ -107,8 +107,9 @@ LrcMultiNode::LrcMultiNode(int t, const std::vector<std::wstring>& texts,
             {
             case LrcLanguageHelper::LanguageType::jp: if (jp_index == -1) jp_index = i; break;
             case LrcLanguageHelper::LanguageType::kr: if (kr_index == -1) kr_index = i; break;
-            case LrcLanguageHelper::LanguageType::en: if (eng_index == -1) eng_index = i; break;
+            case LrcLanguageHelper::LanguageType::latin: if (latin_index == -1) latin_index = i; break;
             case LrcLanguageHelper::LanguageType::zh: if (zh_index == -1) zh_index = i; break;
+            case LrcLanguageHelper::LanguageType::ru: if (ru_index == -1) ru_index = i; break;
             case LrcLanguageHelper::LanguageType::jyut: if (jyut_index == -1) jyut_index = i; break;
             case LrcLanguageHelper::LanguageType::roma: if (roma_index == -1) roma_index = i; break;
             default: if (onomatopoeia_index == -1) onomatopoeia_index = i; break;
@@ -123,7 +124,8 @@ LrcMultiNode::LrcMultiNode(int t, const std::vector<std::wstring>& texts,
         }
         jp_index = FindVectorIndex(lang_types, LrcLanguageHelper::LanguageType::jp), 
         kr_index = FindVectorIndex(lang_types, LrcLanguageHelper::LanguageType::kr),
-        eng_index = FindVectorIndex(lang_types, LrcLanguageHelper::LanguageType::en),
+        latin_index = FindVectorIndex(lang_types, LrcLanguageHelper::LanguageType::latin),
+        ru_index = FindVectorIndex(lang_types, LrcLanguageHelper::LanguageType::ru),
         zh_index = FindVectorIndex(lang_types, LrcLanguageHelper::LanguageType::zh),
         jyut_index = FindVectorIndex(lang_types, LrcLanguageHelper::LanguageType::jyut),
         roma_index = FindVectorIndex(lang_types, LrcLanguageHelper::LanguageType::roma),
@@ -135,9 +137,9 @@ LrcMultiNode::LrcMultiNode(int t, const std::vector<std::wstring>& texts,
     };
     switch (classification)
     {
-    case LC::en_only:
+    case LC::latin_only:
         {
-            assign_with_language(eng_index, LrcAuxiliaryInfoNative::Lyric);
+            assign_with_language(latin_index, LrcAuxiliaryInfoNative::Lyric);
             break;
         }
     case LC::jp_only:
@@ -155,14 +157,19 @@ LrcMultiNode::LrcMultiNode(int t, const std::vector<std::wstring>& texts,
             assign_with_language(kr_index, LrcAuxiliaryInfoNative::Lyric); 
             break;
         }
+    case LC::ru_only:
+        {
+            assign_with_language(ru_index, LrcAuxiliaryInfoNative::Lyric);
+            break;
+        }
     case LC::zh_jyut:
         {
             assign_with_language(zh_index, LrcAuxiliaryInfoNative::Lyric);
             assign_with_language(jyut_index, LrcAuxiliaryInfoNative::Romanization);
             if (jyut_index == -1)
             {
-                if (eng_index != -1)
-                    assign_with_language(eng_index, LrcAuxiliaryInfoNative::Romanization);
+                if (latin_index != -1)
+                    assign_with_language(latin_index, LrcAuxiliaryInfoNative::Romanization);
                 if (roma_index != -1)
                     assign_with_language(roma_index, LrcAuxiliaryInfoNative::Romanization);
                 else
@@ -184,9 +191,9 @@ LrcMultiNode::LrcMultiNode(int t, const std::vector<std::wstring>& texts,
                 {
                     assign_with_language(zh_index, LrcAuxiliaryInfoNative::Lyric);
                 }
-                else if (eng_index != -1)
+                else if (latin_index != -1)
                 {
-                    assign_with_language(eng_index, LrcAuxiliaryInfoNative::Lyric);
+                    assign_with_language(latin_index, LrcAuxiliaryInfoNative::Lyric);
                 }
             }
             break;
@@ -201,24 +208,43 @@ LrcMultiNode::LrcMultiNode(int t, const std::vector<std::wstring>& texts,
                 {
                     assign_with_language(zh_index, LrcAuxiliaryInfoNative::Lyric);
                 }
-                else if (eng_index != -1)
+                else if (latin_index != -1)
                 {
-                    assign_with_language(eng_index, LrcAuxiliaryInfoNative::Lyric);
+                    assign_with_language(latin_index, LrcAuxiliaryInfoNative::Lyric);
                 }
             }
             break;
         }
-    case LC::en_zh_trans:
+    case LC::latin_zh_trans:
         {
-            assign_with_language(eng_index, LrcAuxiliaryInfoNative::Lyric);
+            assign_with_language(latin_index, LrcAuxiliaryInfoNative::Lyric);
             assign_with_language(zh_index, LrcAuxiliaryInfoNative::Translation);
-            if (eng_index == -1)
+            if (latin_index == -1)
             {
                 if (jp_index != -1)
                     assign_with_language(jp_index, LrcAuxiliaryInfoNative::Lyric);
                 else if (kr_index != -1)
                     assign_with_language(kr_index, LrcAuxiliaryInfoNative::Lyric);
                 else if (jyut_index != -1)
+                    assign_with_language(jyut_index, LrcAuxiliaryInfoNative::Lyric);
+                else
+                    assign_with_language(onomatopoeia_index, LrcAuxiliaryInfoNative::Lyric);
+            }
+            break;
+        }
+    case LC::ru_zh_trans:
+        {
+            assign_with_language(ru_index, LrcAuxiliaryInfoNative::Lyric);
+            assign_with_language(zh_index, LrcAuxiliaryInfoNative::Translation);
+            if (ru_index == -1)
+            {
+                if (jp_index != -1)
+                    assign_with_language(jp_index, LrcAuxiliaryInfoNative::Lyric);
+                else if (kr_index != -1)
+                    assign_with_language(kr_index, LrcAuxiliaryInfoNative::Lyric);
+                else if (jyut_index != -1)
+                    assign_with_language(jyut_index, LrcAuxiliaryInfoNative::Lyric);
+                else if (latin_index != -1)
                     assign_with_language(jyut_index, LrcAuxiliaryInfoNative::Lyric);
                 else
                     assign_with_language(onomatopoeia_index, LrcAuxiliaryInfoNative::Lyric);
@@ -246,9 +272,9 @@ LrcMultiNode::LrcMultiNode(int t, const std::vector<std::wstring>& texts,
                         assign_with_language(zh_index, LrcAuxiliaryInfoNative::Lyric);
                         assign_with_language(zh_index_2, LrcAuxiliaryInfoNative::Translation);
                     }
-                    else if (eng_index != -1)
+                    else if (latin_index != -1)
                     {
-                        assign_with_language(eng_index, LrcAuxiliaryInfoNative::Lyric);
+                        assign_with_language(latin_index, LrcAuxiliaryInfoNative::Lyric);
                         assign_with_language(zh_index, LrcAuxiliaryInfoNative::Translation);
                     }
                     else if (onomatopoeia_index != -1)
@@ -260,9 +286,9 @@ LrcMultiNode::LrcMultiNode(int t, const std::vector<std::wstring>& texts,
                         assign_with_language(zh_index, LrcAuxiliaryInfoNative::Lyric);
                     }
                 }
-                else if (eng_index != -1)
+                else if (latin_index != -1)
                 {
-                    assign_with_language(eng_index, LrcAuxiliaryInfoNative::Lyric);
+                    assign_with_language(latin_index, LrcAuxiliaryInfoNative::Lyric);
                 }
                 else
                 {
@@ -281,9 +307,9 @@ LrcMultiNode::LrcMultiNode(int t, const std::vector<std::wstring>& texts,
                 {
                     assign_with_language(zh_index, LrcAuxiliaryInfoNative::Lyric);
                 }
-                else if (eng_index != -1)
+                else if (latin_index != -1)
                 {
-                    assign_with_language(eng_index, LrcAuxiliaryInfoNative::Lyric);
+                    assign_with_language(latin_index, LrcAuxiliaryInfoNative::Lyric);
                 }
                 else
                 {
@@ -317,9 +343,9 @@ LrcMultiNode::LrcMultiNode(int t, const std::vector<std::wstring>& texts,
                     if (roma_index == -1)
                     {
                         // 信任ML分类器产生的eng识别结果，假定其为歌词。
-                        if (eng_index != -1)
+                        if (latin_index != -1)
                         {
-                            assign_with_language(eng_index, LrcAuxiliaryInfoNative::Lyric);
+                            assign_with_language(latin_index, LrcAuxiliaryInfoNative::Lyric);
                             assign_with_language(zh_index, LrcAuxiliaryInfoNative::Translation);
                         }
                         else
@@ -334,16 +360,16 @@ LrcMultiNode::LrcMultiNode(int t, const std::vector<std::wstring>& texts,
                         assign_with_language(roma_index, LrcAuxiliaryInfoNative::Romanization);
                     }
                 }
-                else if (eng_index != -1)
+                else if (latin_index != -1)
                 {
-                    assign_with_language(eng_index, LrcAuxiliaryInfoNative::Lyric);
+                    assign_with_language(latin_index, LrcAuxiliaryInfoNative::Lyric);
                     assign_with_language(onomatopoeia_index, LrcAuxiliaryInfoNative::Romanization);
                 }
             }
             else if (roma_index == -1)
             {
-                if (eng_index != -1)
-                    assign_with_language(eng_index, LrcAuxiliaryInfoNative::Romanization);
+                if (latin_index != -1)
+                    assign_with_language(latin_index, LrcAuxiliaryInfoNative::Romanization);
                 else
                     assign_with_language(onomatopoeia_index, LrcAuxiliaryInfoNative::Romanization);
             }
@@ -360,9 +386,9 @@ LrcMultiNode::LrcMultiNode(int t, const std::vector<std::wstring>& texts,
                 {
                     assign_with_language(zh_index, LrcAuxiliaryInfoNative::Lyric);
                 }
-                else if (eng_index != -1)
+                else if (latin_index != -1)
                 {
-                    assign_with_language(eng_index, LrcAuxiliaryInfoNative::Lyric);
+                    assign_with_language(latin_index, LrcAuxiliaryInfoNative::Lyric);
                 }
             }
             if (roma_index == -1)
@@ -387,9 +413,10 @@ std::string LrcLanguageHelper::lyric_type_to_std_string(LanguageType type)
     switch (type)
     {
     case LanguageType::zh: return "zh";
-    case LanguageType::en: return "en";
+    case LanguageType::latin: return "latin";
     case LanguageType::jp: return "jp";
     case LanguageType::kr: return "kr";
+    case LanguageType::ru: return "ru";
     case LanguageType::jyut: return "jyut";
     case LanguageType::roma: return "roma";
     default: return "onomatopoeia";
@@ -429,10 +456,11 @@ LrcLanguageHelper::detect_line_language_type(const std::wstring& input)
     case 0: return LanguageType::zh;
     case 1: return LanguageType::jp;
     case 2: return LanguageType::kr;
-    case 3: return LanguageType::en;
-    case 4: return LanguageType::jyut;
-    case 5: return LanguageType::roma;
-    case 6: default: return LanguageType::onomatopoeia;
+    case 3: return LanguageType::latin;
+    case 4: return LanguageType::ru;
+    case 5: return LanguageType::jyut;
+    case 6: return LanguageType::roma;
+    case 7: default: return LanguageType::onomatopoeia;
     }
 }
 
@@ -440,8 +468,8 @@ song_sample_type
 LrcLanguageHelper::extract_song_features(const std::vector<LrcLanguageHelper::LanguageType>& seq)
 {
     using LT = LrcLanguageHelper::LanguageType;
-    const int LANGS = 7; // zh jp kr en jyut roma ono
-    song_sample_type feat(67, 1); 
+    const int LANGS = 8; // zh jp kr en jyut roma ono
+    song_sample_type feat(84, 1); 
     feat = 0;
 
     // 语言计数
@@ -451,25 +479,26 @@ LrcLanguageHelper::extract_song_features(const std::vector<LrcLanguageHelper::La
         if (s == LT::zh) count[0]++;
         else if (s == LT::jp) count[1]++;
         else if (s == LT::kr) count[2]++;
-        else if (s == LT::en) count[3]++;
-        else if (s == LT::jyut) count[4]++;
-        else if (s == LT::roma) count[5]++;
-        else count[6]++; // onomatopoeia
+        else if (s == LT::latin) count[3]++;
+        else if (s == LT::ru) count[4]++;
+        else if (s == LT::jyut) count[5]++;
+        else if (s == LT::roma) count[6]++;
+        else count[7]++; // onomatopoeia
         
     }
 
     int idx = 0;
 
-    // 语言计数（7维）
+    // 语言计数（8维）
     for (int i = 0; i < LANGS; i++)
         feat(idx++) = count[i];
 
-    // 语言比例（7维）
+    // 语言比例（8维）
     double total = seq.size();
     for (int i = 0; i < LANGS; i++)
         feat(idx++) = count[i] / total;
 
-    // bigram矩阵（49维）
+    // bigram矩阵（64维）
     std::vector trans(LANGS, std::vector(LANGS, 0));
     for (size_t i = 1; i < seq.size(); i++)
     {
@@ -480,10 +509,11 @@ LrcLanguageHelper::extract_song_features(const std::vector<LrcLanguageHelper::La
             if (s == LT::zh) return 0;
             if (s == LT::jp) return 1;
             if (s == LT::kr) return 2;
-            if (s == LT::en) return 3;
-            if (s == LT::jyut) return 4;
-            if (s == LT::roma) return 5;
-            return 6;
+            if (s == LT::latin) return 3;
+            if (s == LT::ru) return 4;
+            if (s == LT::jyut) return 5;
+            if (s == LT::roma) return 6;
+            return 7;
         };
 
         trans[id(prev)][id(curr)]++;
@@ -525,15 +555,17 @@ LrcLanguageHelper::LanguageClassification LrcLanguageHelper::detect_song_languag
         {LanguageClassification::zh_only, 0},
         {LanguageClassification::jp_only, 1},
         {LanguageClassification::kr_only, 2},
-        {LanguageClassification::en_only, 3},
-        {LanguageClassification::jp_zh_trans, 4},
-        {LanguageClassification::jp_roma, 5},
-        {LanguageClassification::en_zh_trans, 6},
-        {LanguageClassification::kr_zh_trans, 7},
-        {LanguageClassification::kr_roma, 8},
-        {LanguageClassification::zh_jyut, 9},
-        {LanguageClassification::jp_zh_trans_roma, 10},
-        {LanguageClassification::kr_zh_trans_roma, 11}
+        {LanguageClassification::latin_only, 3},
+        {LanguageClassification::ru_only, 4},
+        {LanguageClassification::jp_zh_trans, 5},
+        {LanguageClassification::jp_roma, 6},
+        {LanguageClassification::latin_zh_trans, 7},
+        {LanguageClassification::ru_zh_trans, 8},
+        {LanguageClassification::kr_zh_trans, 9},
+        {LanguageClassification::kr_roma, 10},
+        {LanguageClassification::zh_jyut, 11},
+        {LanguageClassification::jp_zh_trans_roma, 12},
+        {LanguageClassification::kr_zh_trans_roma, 13}
     };
     
     auto it = std::ranges::find_if(table, [reasoning_result](const std::pair<LanguageClassification, unsigned long>& key) -> bool {
@@ -541,7 +573,7 @@ LrcLanguageHelper::LanguageClassification LrcLanguageHelper::detect_song_languag
     });
     if (it != table.end())
         return it->first;
-    return LanguageClassification::en_only;
+    return LanguageClassification::latin_only;
 }
 
 auto LrcLanguageHelper::detect_language_slot(

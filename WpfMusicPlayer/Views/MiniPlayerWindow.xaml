@@ -1,0 +1,294 @@
+<Window x:Class="WpfMusicPlayer.Views.MiniPlayerWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:vm="clr-namespace:WpfMusicPlayer.ViewModels"
+        xmlns:helpers="clr-namespace:WpfMusicPlayer.Helpers"
+        mc:Ignorable="d"
+        d:DataContext="{d:DesignInstance Type=vm:MainViewModel}"
+        Title="WpfMusicPlayer Mini"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        Background="Transparent"
+        ShowInTaskbar="False"
+        ResizeMode="NoResize"
+        Topmost="True"
+        Width="344" Height="56"
+        WindowStartupLocation="Manual">
+
+    <Window.Resources>
+        <helpers:KaraokeClipConverter x:Key="KaraokeClipConverter"/>
+
+        <Style x:Key="MiniIconButtonStyle" TargetType="Button">
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Padding" Value="0"/>
+            <Setter Property="Focusable" Value="False"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Bg"
+                                Background="{TemplateBinding Background}"
+                                CornerRadius="3">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bg" Property="Background" Value="#22FFFFFF"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="Bg" Property="Background" Value="#36FFFFFF"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="Bg" Property="Opacity" Value="0.45"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="MiniProgressStyle" TargetType="ProgressBar">
+            <Setter Property="Height" Value="2"/>
+            <Setter Property="Foreground" Value="#FF80D0FF"/>
+            <Setter Property="Background" Value="#66FFFFFF"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ProgressBar">
+                        <Grid ClipToBounds="True">
+                            <Border x:Name="PART_Track"
+                                    Background="{TemplateBinding Background}"/>
+                            <Border x:Name="PART_Indicator"
+                                    HorizontalAlignment="Left"
+                                    Background="{TemplateBinding Foreground}"/>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+
+    <Border x:Name="RootBorder"
+            Background="#CC7C6D74"
+            CornerRadius="2"
+            ClipToBounds="True"
+            MouseLeftButtonDown="RootBorder_MouseLeftButtonDown">
+        <Grid>
+            <Image Source="{Binding AlbumCoverImage}"
+                   Stretch="UniformToFill"
+                   Opacity="0.75"
+                   Margin="-26">
+                <Image.Effect>
+                    <BlurEffect Radius="20" KernelType="Gaussian"/>
+                </Image.Effect>
+            </Image>
+
+            <Border Background="#9070636B"/>
+
+            <Grid Margin="4,4,4,5">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="48"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="28"/>
+                </Grid.ColumnDefinitions>
+
+                <Border Grid.Column="0" Background="#55333333">
+                    <Grid>
+                        <Image Source="{Binding AlbumCoverImage}" Stretch="UniformToFill"/>
+                        <TextBlock Text="&#xE8D6;"
+                                   FontFamily="Segoe MDL2 Assets"
+                                   FontSize="18"
+                                   Foreground="#60FFFFFF"
+                                   HorizontalAlignment="Center"
+                                   VerticalAlignment="Center">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="Visibility" Value="Collapsed"/>
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding AlbumCoverImage}" Value="{x:Null}">
+                                            <Setter Property="Visibility" Value="Visible"/>
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                        </TextBlock>
+                    </Grid>
+                </Border>
+
+                <Grid Grid.Column="1" Margin="8,0,4,0">
+                    <Grid x:Name="InfoLayer">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="23"/>
+                            <RowDefinition Height="20"/>
+                        </Grid.RowDefinitions>
+
+                        <Grid Grid.Row="0" ClipToBounds="True" VerticalAlignment="Center">
+                            <helpers:MarqueeContainer IsUnbounded="True">
+                                <TextBlock FontSize="13"
+                                           Foreground="White"
+                                           TextTrimming="None"
+                                           TextWrapping="NoWrap"
+                                           VerticalAlignment="Center"
+                                           helpers:AutoMarqueeBehavior.IsEnabled="True"
+                                           helpers:AutoMarqueeBehavior.Speed="28"
+                                           helpers:AutoMarqueeBehavior.PauseMilliseconds="1400">
+                                    <TextBlock.Text>
+                                        <MultiBinding StringFormat="{}{0} - {1}" NotifyOnTargetUpdated="True">
+                                            <Binding Path="ArtistName"/>
+                                            <Binding Path="SongTitle"/>
+                                        </MultiBinding>
+                                    </TextBlock.Text>
+                                </TextBlock>
+                            </helpers:MarqueeContainer>
+                        </Grid>
+
+                        <Grid Grid.Row="1" ClipToBounds="True" VerticalAlignment="Center">
+                            <helpers:MarqueeContainer IsUnbounded="{Binding Lyrics.CurrentLyric.IsHighlighted, FallbackValue=False}">
+                                <Grid helpers:MarqueeBehavior.IsActive="{Binding Lyrics.CurrentLyric.IsHighlighted, FallbackValue=False}"
+                                      helpers:MarqueeBehavior.Progress="{Binding Lyrics.CurrentLyric.Progress, FallbackValue=0}"
+                                      helpers:MarqueeBehavior.IsProgressDriven="True"
+                                      HorizontalAlignment="Center">
+                                    <TextBlock Text="{Binding Lyrics.CurrentLyric.Text, FallbackValue=暂无歌词}"
+                                               FontSize="12"
+                                               Foreground="#E8FFFFFF"
+                                               TextWrapping="NoWrap"/>
+
+                                    <TextBlock Text="{Binding Lyrics.CurrentLyric.Text, FallbackValue=暂无歌词}"
+                                               FontSize="12"
+                                               Foreground="#FF85CCFF"
+                                               TextWrapping="NoWrap"
+                                               IsHitTestVisible="False">
+                                        <TextBlock.Style>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="Visibility" Value="Collapsed"/>
+                                                <Style.Triggers>
+                                                    <MultiDataTrigger>
+                                                        <MultiDataTrigger.Conditions>
+                                                            <Condition Binding="{Binding Lyrics.CurrentLyric.IsHighlighted, FallbackValue=False}" Value="True"/>
+                                                            <Condition Binding="{Binding Lyrics.CurrentLyric.IsProgressEnabled, FallbackValue=False}" Value="False"/>
+                                                        </MultiDataTrigger.Conditions>
+                                                        <Setter Property="Visibility" Value="Visible"/>
+                                                    </MultiDataTrigger>
+                                                    <MultiDataTrigger>
+                                                        <MultiDataTrigger.Conditions>
+                                                            <Condition Binding="{Binding Lyrics.CurrentLyric.IsHighlighted, FallbackValue=False}" Value="True"/>
+                                                            <Condition Binding="{Binding Lyrics.CurrentLyric.IsProgressEnabled, FallbackValue=False}" Value="True"/>
+                                                        </MultiDataTrigger.Conditions>
+                                                        <Setter Property="Visibility" Value="Visible"/>
+                                                        <Setter Property="Clip">
+                                                            <Setter.Value>
+                                                                <MultiBinding Converter="{StaticResource KaraokeClipConverter}">
+                                                                    <Binding Path="Lyrics.CurrentLyric.Progress" FallbackValue="0"/>
+                                                                    <Binding Path="ActualWidth" RelativeSource="{RelativeSource Self}"/>
+                                                                </MultiBinding>
+                                                            </Setter.Value>
+                                                        </Setter>
+                                                    </MultiDataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBlock.Style>
+                                    </TextBlock>
+                                </Grid>
+                            </helpers:MarqueeContainer>
+                        </Grid>
+
+                        <Grid.Style>
+                            <Style TargetType="Grid">
+                                <Setter Property="Opacity" Value="1"/>
+                                <Setter Property="Visibility" Value="Visible"/>
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsMouseOver, RelativeSource={RelativeSource AncestorType=Window}}" Value="True">
+                                        <Setter Property="Opacity" Value="0"/>
+                                        <Setter Property="Visibility" Value="Collapsed"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Grid.Style>
+                    </Grid>
+
+                    <Grid x:Name="HoverLayer">
+                        <StackPanel Orientation="Horizontal"
+                                    HorizontalAlignment="Center"
+                                    VerticalAlignment="Center">
+                            <Button Command="{Binding PrevSongCommand}"
+                                    Width="27" Height="38"
+                                    ToolTip="上一首"
+                                    Style="{StaticResource MiniIconButtonStyle}">
+                                <TextBlock Text="&#xE892;" FontFamily="Segoe MDL2 Assets" FontSize="15"/>
+                            </Button>
+                            <Button Command="{Binding PlayPauseCommand}"
+                                    Width="31" Height="38"
+                                    ToolTip="播放/暂停"
+                                    Style="{StaticResource MiniIconButtonStyle}">
+                                <TextBlock Text="{Binding PlayPauseContent}" FontFamily="Segoe MDL2 Assets" FontSize="17"/>
+                            </Button>
+                            <Button Command="{Binding NextSongCommand}"
+                                    Width="27" Height="38"
+                                    ToolTip="下一首"
+                                    Style="{StaticResource MiniIconButtonStyle}">
+                                <TextBlock Text="&#xE893;" FontFamily="Segoe MDL2 Assets" FontSize="15"/>
+                            </Button>
+                            <Button Command="{Binding PlayModeToggleCommand}"
+                                    Width="27" Height="38"
+                                    ToolTip="{Binding PlayModeTooltip}"
+                                    Style="{StaticResource MiniIconButtonStyle}">
+                                <TextBlock Text="{Binding PlayModeContent}" FontFamily="Segoe MDL2 Assets" FontSize="14"/>
+                            </Button>
+                            <TextBlock Foreground="White"
+                                       FontSize="11"
+                                       Margin="5,0"
+                                       VerticalAlignment="Center">
+                                <TextBlock.Text>
+                                    <MultiBinding StringFormat="{}{0}/{1}">
+                                        <Binding Path="CurrentTime"/>
+                                        <Binding Path="TotalTime"/>
+                                    </MultiBinding>
+                                </TextBlock.Text>
+                            </TextBlock>
+                            <Button Width="27" Height="38"
+                                    ToolTip="播放列表"
+                                    Click="PlaylistButton_Click"
+                                    Style="{StaticResource MiniIconButtonStyle}">
+                                <TextBlock Text="&#xE90B;" FontFamily="Segoe MDL2 Assets" FontSize="14"/>
+                            </Button>
+                        </StackPanel>
+
+                        <Grid.Style>
+                            <Style TargetType="Grid">
+                                <Setter Property="Opacity" Value="0"/>
+                                <Setter Property="Visibility" Value="Collapsed"/>
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsMouseOver, RelativeSource={RelativeSource AncestorType=Window}}" Value="True">
+                                        <Setter Property="Opacity" Value="1"/>
+                                        <Setter Property="Visibility" Value="Visible"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Grid.Style>
+                    </Grid>
+                </Grid>
+
+                <Button Grid.Column="2"
+                        Width="28" Height="42"
+                        ToolTip="还原"
+                        Click="RestoreButton_Click"
+                        Style="{StaticResource MiniIconButtonStyle}">
+                    <TextBlock Text="&#xE923;"
+                               FontFamily="Segoe MDL2 Assets"
+                               FontSize="15"
+                               Foreground="White"/>
+                </Button>
+            </Grid>
+
+            <ProgressBar VerticalAlignment="Bottom"
+                         Maximum="{Binding ProgressMaximum}"
+                         Value="{Binding ProgressValue}"
+                         Style="{StaticResource MiniProgressStyle}"/>
+        </Grid>
+    </Border>
+</Window>

@@ -18,11 +18,24 @@ public partial class LyricsViewModel(ILogger<LyricsViewModel> logger, IFileDialo
     public event Action<int>? UpdateCurrentLyricOffsetRequested;
 
     private float _currentLyricDuration;
+    private static readonly LyricLineViewModel EmptyLyric = new("暂无歌词");
 
     public ObservableCollection<LyricLineViewModel> Lyrics { get; } = [];
 
     [ObservableProperty]
     public partial int CurrentLyricIndex { get; private set; } = -1;
+
+    public LyricLineViewModel CurrentLyric
+    {
+        get
+        {
+            var idx = CurrentLyricIndex;
+            if (idx >= 0 && idx < Lyrics.Count)
+                return Lyrics[idx];
+
+            return EmptyLyric;
+        }
+    }
 
     [ObservableProperty]
     public partial bool IsTranslationVisible { get; set; } = true;
@@ -62,6 +75,7 @@ public partial class LyricsViewModel(ILogger<LyricsViewModel> logger, IFileDialo
         _currentLyricDuration = 0;
         Lyrics.Clear();
         CurrentLyricIndex = -1;
+        OnPropertyChanged(nameof(CurrentLyric));
         HasTranslationAvailable = false;
         HasRomanjiAvailable = false;
     }
@@ -83,10 +97,12 @@ public partial class LyricsViewModel(ILogger<LyricsViewModel> logger, IFileDialo
             Lyrics[CurrentLyricIndex].IsHighlighted = true;
         }
 
-        if (CurrentLyricIndex >= 0 && CurrentLyricIndex < Lyrics.Count
-            && Lyrics[CurrentLyricIndex].IsProgressEnabled)
+        if (CurrentLyricIndex >= 0 && CurrentLyricIndex < Lyrics.Count)
         {
-            Lyrics[CurrentLyricIndex].Progress = _lrcFileController.GetLrcPercentage(CurrentLyricIndex);
+            var current = Lyrics[CurrentLyricIndex];
+            current.Progress = current.IsProgressEnabled
+                ? _lrcFileController.GetLrcPercentage(CurrentLyricIndex)
+                : CalculateLinearLyricProgress(CurrentLyricIndex, time);
         }
     }
 
@@ -97,10 +113,12 @@ public partial class LyricsViewModel(ILogger<LyricsViewModel> logger, IFileDialo
         Lyrics[CurrentLyricIndex].Progress = 0;
         CurrentLyricIndex = 0;
         Lyrics[CurrentLyricIndex].IsHighlighted = true;
-        if (_lrcFileController != null && CurrentLyricIndex >= 0 && CurrentLyricIndex < Lyrics.Count
-            && Lyrics[CurrentLyricIndex].IsProgressEnabled)
+        if (_lrcFileController != null && CurrentLyricIndex >= 0 && CurrentLyricIndex < Lyrics.Count)
         {
-            Lyrics[CurrentLyricIndex].Progress = _lrcFileController.GetLrcPercentage(CurrentLyricIndex);
+            var current = Lyrics[CurrentLyricIndex];
+            current.Progress = current.IsProgressEnabled
+                ? _lrcFileController.GetLrcPercentage(CurrentLyricIndex)
+                : 0;
         }
     }
 
@@ -109,6 +127,7 @@ public partial class LyricsViewModel(ILogger<LyricsViewModel> logger, IFileDialo
         logger.LogInformation("LoadLyrics: loading lyrics for {FilePath}", filePath);
         Lyrics.Clear();
         CurrentLyricIndex = -1;
+        OnPropertyChanged(nameof(CurrentLyric));
         HasTranslationAvailable = false;
         HasRomanjiAvailable = false;
         _currentLyricDuration = songDuration;
@@ -164,6 +183,32 @@ public partial class LyricsViewModel(ILogger<LyricsViewModel> logger, IFileDialo
         _lrcFileController = null;
         logger.LogInformation("LoadLyrics: no lyrics found");
         Lyrics.Add(new LyricLineViewModel("暂无歌词"));
+    }
+
+    partial void OnCurrentLyricIndexChanged(int value)
+    {
+        OnPropertyChanged(nameof(CurrentLyric));
+    }
+
+    private double CalculateLinearLyricProgress(int index, float currentTimeSec)
+    {
+        if (index < 0 || index >= Lyrics.Count) return 0;
+
+        var startMs = Lyrics[index].TimeMs;
+        if (startMs < 0) return 0;
+
+        var endMs = (int)Math.Round(_currentLyricDuration * 1000);
+        for (var i = index + 1; i < Lyrics.Count; i++)
+        {
+            if (Lyrics[i].TimeMs <= startMs) continue;
+            endMs = Lyrics[i].TimeMs;
+            break;
+        }
+
+        if (endMs <= startMs) return 1;
+
+        var elapsedMs = currentTimeSec * 1000 - startMs;
+        return Math.Clamp(elapsedMs / (endMs - startMs), 0, 1);
     }
 
     private void ParseAndAddLocalLyric(string content, float songDuration, int offsetMs)

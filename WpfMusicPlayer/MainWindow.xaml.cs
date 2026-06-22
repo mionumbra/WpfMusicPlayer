@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Forms;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
@@ -10,6 +11,9 @@ using WpfMusicPlayer.Services.Abstractions;
 using WpfMusicPlayer.ViewModels;
 using WpfMusicPlayer.Views;
 using static WpfMusicPlayer.Models.ConfigData;
+using DataFormats = System.Windows.DataFormats;
+using DragEventArgs = System.Windows.DragEventArgs;
+using ListBox = System.Windows.Controls.ListBox;
 
 namespace WpfMusicPlayer
 {
@@ -28,6 +32,11 @@ namespace WpfMusicPlayer
         private DecodingDialog? _decodingDialog;
         private readonly DispatcherTimer _spectrumTimer;
         private DesktopLyricWindow? _desktopLyricWindow;
+        private MiniPlayerWindow? _miniPlayerWindow;
+        private bool _isHidingToTray;
+        private bool _isClosing;
+        private bool _hasDesktopLyricStateBeforeMiniPlayer;
+        private bool _wasDesktopLyricVisibleBeforeMiniPlayer;
 
         public MainWindow(MainViewModel viewModel, ISmtcService smtcService)
         {
@@ -248,10 +257,12 @@ namespace WpfMusicPlayer
             }
 
             _spectrumTimer.Stop();
+            _isClosing = true;
             ViewModel.PropertyChanged -= ViewModel_PropertyChanged;
             ViewModel.Lyrics.PropertyChanged -= LyricsPropertyChanged;
             ViewModel.DesktopLyric.PropertyChanged -= DesktopLyricPropertyChanged;
             _desktopLyricWindow?.Close();
+            _miniPlayerWindow?.Close();
             _decodingDialog?.Close();
             _decodingDialog = null;
             ViewModel.OnWindowClosed();
@@ -803,7 +814,7 @@ namespace WpfMusicPlayer
                     break;
                 case 1: // About
                     WpfMessageBox.Show(
-                        "今日は魔法にかかったメイド\nささやかな晴れ舞台", // 大爱MIMI！
+                        $"Version: {ViewModel.Version}\nCommit: {ViewModel.CommitId}",
                         "关于 WpfMusicPlayer...",
                         WpfMessageBoxIcon.Information);
                     break;
@@ -812,8 +823,148 @@ namespace WpfMusicPlayer
 
         private void HideApplicationButton_Click(object sender, RoutedEventArgs e)
         {
-            ViewModel.DesktopTrayIcon.EnableTaskbarIcon();
+            ShowMiniPlayer();
+        }
+
+        private void MainWindow_StateChanged(object sender, EventArgs e)
+        {
+            if (WindowState == WindowState.Minimized && !_isHidingToTray)
+                HideMainWindowToTray();
+        }
+
+        private void HideMainWindowToTray()
+        {
+            _isHidingToTray = true;
+            try
+            {
+                ViewModel.DesktopTrayIcon.EnableTaskbarIcon();
+                WindowState = WindowState.Normal;
+                Hide();
+                _miniPlayerWindow?.Hide();
+            }
+            finally
+            {
+                _isHidingToTray = false;
+            }
+        }
+
+        private void ShowMiniPlayer()
+        {
+            if (_miniPlayerWindow == null)
+            {
+                _miniPlayerWindow = new MiniPlayerWindow(ViewModel);
+                _miniPlayerWindow.RestoreRequested += MiniPlayerWindow_RestoreRequested;
+                _miniPlayerWindow.Closed += MiniPlayerWindow_Closed;
+            }
+
+            PositionMiniPlayer(_miniPlayerWindow);
+            HideDesktopLyricForMiniPlayer();
+            ViewModel.DesktopTrayIcon.DisableTaskbarIcon();
+            _miniPlayerWindow.Show();
+            _miniPlayerWindow.Activate();
             Hide();
         }
+
+        private void MiniPlayerWindow_RestoreRequested(object? sender, EventArgs e)
+        {
+            var miniPlayer = _miniPlayerWindow;
+            miniPlayer?.Hide();
+            RestoreMainWindowFromMiniPlayer(miniPlayer);
+        }
+
+        private void MiniPlayerWindow_Closed(object? sender, EventArgs e)
+        {
+            var closedMiniPlayer = sender as Window ?? _miniPlayerWindow;
+            if (_miniPlayerWindow != null)
+            {
+                _miniPlayerWindow.RestoreRequested -= MiniPlayerWindow_RestoreRequested;
+                _miniPlayerWindow.Closed -= MiniPlayerWindow_Closed;
+                _miniPlayerWindow = null;
+            }
+
+            if (!_isClosing && !IsVisible)
+                RestoreMainWindowFromMiniPlayer(closedMiniPlayer);
+        }
+
+        private void RestoreMainWindowFromMiniPlayer(Window? miniPlayer)
+        {
+            ViewModel.DesktopTrayIcon.DisableTaskbarIcon();
+            if (miniPlayer != null)
+                PositionMainWindowFromMiniPlayer(miniPlayer);
+
+            Show();
+            WindowState = WindowState.Normal;
+            Activate();
+            RestoreDesktopLyricAfterMiniPlayer();
+        }
+
+        private void PositionMiniPlayer(Window miniPlayer)
+        {
+            var screenBounds = GetVirtualScreenBounds();
+            var left = Left + Math.Max(0, (ActualWidth - miniPlayer.Width) / 2);
+            var top = Top + Math.Max(0, (ActualHeight - miniPlayer.Height) / 2);
+
+            miniPlayer.Left = ClampWindowCoordinate(left, screenBounds.Left, screenBounds.Right - miniPlayer.Width);
+            miniPlayer.Top = ClampWindowCoordinate(top, screenBounds.Top, screenBounds.Bottom - miniPlayer.Height);
+        }
+
+        private void PositionMainWindowFromMiniPlayer(Window miniPlayer)
+        {
+            var screenBounds = GetVirtualScreenBounds();
+            var mainSize = GetMainWindowPlacementSize();
+            var left = miniPlayer.Left - Math.Max(0, (mainSize.Width - miniPlayer.Width) / 2);
+            var top = miniPlayer.Top - Math.Max(0, (mainSize.Height - miniPlayer.Height) / 2);
+
+            WindowState = WindowState.Normal;
+            Left = ClampWindowCoordinate(left, screenBounds.Left, screenBounds.Right - mainSize.Width);
+            Top = ClampWindowCoordinate(top, screenBounds.Top, screenBounds.Bottom - mainSize.Height);
+        }
+
+        private Size GetMainWindowPlacementSize()
+        {
+            var width = WindowState == WindowState.Normal ? ActualWidth : RestoreBounds.Width;
+            var height = WindowState == WindowState.Normal ? ActualHeight : RestoreBounds.Height;
+
+            if (width <= 0 || double.IsNaN(width))
+                width = !double.IsNaN(Width) && Width > 0 ? Width : MinWidth;
+            if (height <= 0 || double.IsNaN(height))
+                height = !double.IsNaN(Height) && Height > 0 ? Height : MinHeight;
+
+            return new Size(width, height);
+        }
+
+        private static Rect GetVirtualScreenBounds()
+            => new(
+                SystemParameters.VirtualScreenLeft,
+                SystemParameters.VirtualScreenTop,
+                SystemParameters.VirtualScreenWidth,
+                SystemParameters.VirtualScreenHeight);
+
+        private static double ClampWindowCoordinate(double value, double min, double max)
+            => max < min ? min : Math.Clamp(value, min, max);
+
+        private void HideDesktopLyricForMiniPlayer()
+        {
+            if (_hasDesktopLyricStateBeforeMiniPlayer) return;
+
+            _wasDesktopLyricVisibleBeforeMiniPlayer = ViewModel.DesktopLyric.IsDesktopLyricVisible;
+            _hasDesktopLyricStateBeforeMiniPlayer = true;
+
+            if (_wasDesktopLyricVisibleBeforeMiniPlayer)
+                ViewModel.DesktopLyric.IsDesktopLyricVisible = false;
+        }
+
+        private void RestoreDesktopLyricAfterMiniPlayer()
+        {
+            if (!_hasDesktopLyricStateBeforeMiniPlayer) return;
+
+            var shouldRestore = _wasDesktopLyricVisibleBeforeMiniPlayer;
+            _hasDesktopLyricStateBeforeMiniPlayer = false;
+            _wasDesktopLyricVisibleBeforeMiniPlayer = false;
+
+            if (shouldRestore)
+                ViewModel.DesktopLyric.IsDesktopLyricVisible = true;
+        }
+
     }
 }
