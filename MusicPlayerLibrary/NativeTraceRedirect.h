@@ -5,15 +5,15 @@
 #include <string>
 #include <vcclr.h>
 
-class AtlTraceRedirect
+class NativeTraceRedirect
 {
 public:
-    explicit AtlTraceRedirect(System::Object^ logger);
+    explicit NativeTraceRedirect(System::Object^ logger);
 
-    ~AtlTraceRedirect();
+    ~NativeTraceRedirect();
 
-    AtlTraceRedirect(const AtlTraceRedirect&) = delete;
-    AtlTraceRedirect& operator=(const AtlTraceRedirect&) = delete;
+    NativeTraceRedirect(const NativeTraceRedirect&) = delete;
+    NativeTraceRedirect& operator=(const NativeTraceRedirect&) = delete;
 
     void Enable();
     void Disable();
@@ -30,8 +30,8 @@ public:
     void Trace(const wchar_t* format, ...);
     void Trace(const char* format, ...);
 
-    static AtlTraceRedirect* GetAtlTraceRedirector();
-    static void SetAtlTraceRedirector(AtlTraceRedirect*);
+    static NativeTraceRedirect* GetTraceRedirector();
+    static void SetTraceRedirector(NativeTraceRedirect*);
 
 private:
     [[nodiscard]] std::string query_time_stamp() const;
@@ -47,25 +47,25 @@ private:
     bool info_enable;
     std::mutex file_mut;
 
-    static AtlTraceRedirect* global_atl_trace_redirector;
+    static NativeTraceRedirect* global_trace_redirector;
 };
 
-#define ATLTRACE_REDIRECT_EX(redirector, fmt, ...) \
+#define NATIVE_TRACE_REDIRECT_EX(redirector, fmt, ...) \
     do { \
         if ((redirector) != nullptr) { \
             (redirector)->TraceEx(__FILE__, __LINE__, fmt, __VA_ARGS__); \
         } \
     } while(0)
 
-#define ATLTRACE_REDIRECT(redirector, fmt, ...) \
+#define NATIVE_TRACE_REDIRECT(redirector, fmt, ...) \
     do { \
         if ((redirector) != nullptr) { \
             (redirector)->Trace(fmt, __VA_ARGS__); \
         } \
     } while(0)
-#if defined(ATLTRACE_REDIRECT_ENABLED)
-#if defined(ATLTRACE)
-#undef ATLTRACE
+#if defined(NATIVE_TRACE_REDIRECT_ENABLED)
+#if defined(NATIVE_TRACE)
+#undef NATIVE_TRACE
 #endif
-#define ATLTRACE(fmt, ...) ATLTRACE_REDIRECT_EX(AtlTraceRedirect::GetAtlTraceRedirector(), fmt, __VA_ARGS__)
+#define NATIVE_TRACE(fmt, ...) NATIVE_TRACE_REDIRECT_EX(NativeTraceRedirect::GetTraceRedirector(), fmt, __VA_ARGS__)
 #endif

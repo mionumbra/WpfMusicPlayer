@@ -371,8 +371,8 @@ public partial class MainViewModel : ObservableObject, IDisposable
         _ => "顺序播放"
     };
 
-    public List<string> ExtensionList =>
-        _fileDialogService.MscExtList;
+    public IReadOnlyList<string> ExtensionList =>
+        _fileDialogService.MusicFileExtensions;
 
     // for RebootApplication to build command line args
     public bool IsMusicPlaying => _musicPlayer.IsPlaying();

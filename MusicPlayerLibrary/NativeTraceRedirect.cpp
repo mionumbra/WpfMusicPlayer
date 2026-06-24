@@ -1,15 +1,15 @@
 #include "pch.h"
-#include "AtlTraceRedirect.h"
+#include "NativeTraceRedirect.h"
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
 #include <ctime>
 #include <string>
 
-AtlTraceRedirect* AtlTraceRedirect::global_atl_trace_redirector;
+NativeTraceRedirect* NativeTraceRedirect::global_trace_redirector;
 
 
-AtlTraceRedirect::AtlTraceRedirect(System::Object^ loggerObj)
+NativeTraceRedirect::NativeTraceRedirect(System::Object^ loggerObj)
     : logger(loggerObj)
     , enable_redirect(true)
     , timestamp_enable(true)
@@ -17,11 +17,11 @@ AtlTraceRedirect::AtlTraceRedirect(System::Object^ loggerObj)
 {
 }
 
-AtlTraceRedirect::~AtlTraceRedirect()
+NativeTraceRedirect::~NativeTraceRedirect()
 {
 }
 
-void AtlTraceRedirect::Enable()
+void NativeTraceRedirect::Enable()
 {
     if (!System::Object::ReferenceEquals(logger, nullptr))
     {
@@ -29,16 +29,16 @@ void AtlTraceRedirect::Enable()
     }
 }
 
-void AtlTraceRedirect::Disable()
+void NativeTraceRedirect::Disable()
 {
     enable_redirect = false;
 }
 
-void AtlTraceRedirect::flush_stream()
+void NativeTraceRedirect::flush_stream()
 {
 }
 
-std::string AtlTraceRedirect::query_time_stamp() const
+std::string NativeTraceRedirect::query_time_stamp() const
 {
     auto now = std::chrono::system_clock::now();
     auto now_time_t = std::chrono::system_clock::to_time_t(now);
@@ -61,7 +61,7 @@ std::string AtlTraceRedirect::query_time_stamp() const
     return buffer;
 }
 
-void AtlTraceRedirect::write_log(const char* file_name_full, int line_num, const char* message)
+void NativeTraceRedirect::write_log(const char* file_name_full, int line_num, const char* message)
 {
     if (!enable_redirect || System::Object::ReferenceEquals(logger, nullptr) || message == nullptr)
         return;
@@ -114,7 +114,7 @@ void AtlTraceRedirect::write_log(const char* file_name_full, int line_num, const
     }
 }
 
-std::string AtlTraceRedirect::format_message_va(const wchar_t* format, va_list args)
+std::string NativeTraceRedirect::format_message_va(const wchar_t* format, va_list args)
 {
     if (format == nullptr)
         return {};
@@ -139,7 +139,7 @@ std::string AtlTraceRedirect::format_message_va(const wchar_t* format, va_list a
     return result;
 }
 
-std::string AtlTraceRedirect::format_message_va(const char* format, va_list args)
+std::string NativeTraceRedirect::format_message_va(const char* format, va_list args)
 {
     if (format == nullptr)
         return {};
@@ -157,7 +157,7 @@ std::string AtlTraceRedirect::format_message_va(const char* format, va_list args
     return result;
 }
 
-void AtlTraceRedirect::TraceEx(const char* file_name, int line_num, const wchar_t* format, ...)
+void NativeTraceRedirect::TraceEx(const char* file_name, int line_num, const wchar_t* format, ...)
 {
     if (!enable_redirect || format == nullptr)
         return;
@@ -170,7 +170,7 @@ void AtlTraceRedirect::TraceEx(const char* file_name, int line_num, const wchar_
     write_log(file_name, line_num, message.c_str());
 }
 
-void AtlTraceRedirect::TraceEx(const char* file_name, int line_num, const char* format, ...)
+void NativeTraceRedirect::TraceEx(const char* file_name, int line_num, const char* format, ...)
 {
     if (!enable_redirect || format == nullptr)
         return;
@@ -183,7 +183,7 @@ void AtlTraceRedirect::TraceEx(const char* file_name, int line_num, const char* 
     write_log(file_name, line_num, message.c_str());
 }
 
-void AtlTraceRedirect::Trace(const wchar_t* format, ...)
+void NativeTraceRedirect::Trace(const wchar_t* format, ...)
 {
     if (!enable_redirect || format == nullptr)
         return;
@@ -196,7 +196,7 @@ void AtlTraceRedirect::Trace(const wchar_t* format, ...)
     write_log(nullptr, -1, message.c_str());
 }
 
-void AtlTraceRedirect::Trace(const char* format, ...)
+void NativeTraceRedirect::Trace(const char* format, ...)
 {
     if (!enable_redirect || format == nullptr)
         return;
@@ -209,12 +209,12 @@ void AtlTraceRedirect::Trace(const char* format, ...)
     write_log(nullptr, -1, message.c_str());
 }
 
-AtlTraceRedirect* AtlTraceRedirect::GetAtlTraceRedirector()
+NativeTraceRedirect* NativeTraceRedirect::GetTraceRedirector()
 {
-    return global_atl_trace_redirector;
+    return global_trace_redirector;
 }
 
-void AtlTraceRedirect::SetAtlTraceRedirector(AtlTraceRedirect* redirector)
+void NativeTraceRedirect::SetTraceRedirector(NativeTraceRedirect* redirector)
 {
-    global_atl_trace_redirector = redirector;
+    global_trace_redirector = redirector;
 }

@@ -1,8 +1,7 @@
 ﻿#include "pch.h"
 #include "LrcFileController.h"
 #include "LocaleConverter.h"
-#include <cwchar>
-#include <cwctype>
+#include <cctype>
 #include <regex>
 #include <ranges>
 #include <string_view>
@@ -10,24 +9,28 @@
 #include <msclr/marshal_cppstd.h>
 #include <vcclr.h>
 
+#include <rapidjson/stringbuffer.h>
+#include <rapidjson/writer.h>
+#include <rapidjson/prettywriter.h>
+
 using namespace MusicPlayerLibrary;
 
 namespace
 {
-std::wstring TrimWhitespace(std::wstring_view value)
+std::string TrimWhitespace(std::string_view value)
 {
     size_t first = 0;
-    while (first < value.size() && std::iswspace(value[first]) != 0)
+    while (first < value.size() && std::isspace(static_cast<unsigned char>(value[first])) != 0)
         ++first;
 
     size_t last = value.size();
-    while (last > first && std::iswspace(value[last - 1]) != 0)
+    while (last > first && std::isspace(static_cast<unsigned char>(value[last - 1])) != 0)
         --last;
 
-    return std::wstring(value.substr(first, last - first));
+    return std::string(value.substr(first, last - first));
 }
 
-std::wstring TrimChar(std::wstring_view value, wchar_t ch)
+std::string TrimChar(std::string_view value, char ch)
 {
     size_t first = 0;
     while (first < value.size() && value[first] == ch)
@@ -37,7 +40,233 @@ std::wstring TrimChar(std::wstring_view value, wchar_t ch)
     while (last > first && value[last - 1] == ch)
         --last;
 
-    return std::wstring(value.substr(first, last - first));
+    return std::string(value.substr(first, last - first));
+}
+
+template <typename TWriter>
+void WriteUtf8String(TWriter& writer, const std::string& value)
+{
+    writer.String(value.data(), static_cast<rapidjson::SizeType>(value.size()));
+}
+
+const char* AuxInfoToRole(LrcAuxiliaryInfoNative info)
+{
+    switch (info)
+    {
+    case LrcAuxiliaryInfoNative::Lyric: return "lyric";
+    case LrcAuxiliaryInfoNative::Translation: return "translation";
+    case LrcAuxiliaryInfoNative::Romanization: return "romanization";
+    case LrcAuxiliaryInfoNative::Ignored:
+    default: return "ignored";
+    }
+}
+
+const char* LanguageTypeToString(LrcLanguageHelper::LanguageType type)
+{
+    switch (type)
+    {
+    case LrcLanguageHelper::LanguageType::zh: return "zh";
+    case LrcLanguageHelper::LanguageType::latin: return "latin";
+    case LrcLanguageHelper::LanguageType::jp: return "jp";
+    case LrcLanguageHelper::LanguageType::kr: return "kr";
+    case LrcLanguageHelper::LanguageType::ru: return "ru";
+    case LrcLanguageHelper::LanguageType::jyut: return "jyut";
+    case LrcLanguageHelper::LanguageType::roma: return "roma";
+    case LrcLanguageHelper::LanguageType::onomatopoeia:
+    default: return "onomatopoeia";
+    }
+}
+
+template <typename TWriter>
+void WriteMetadataField(TWriter& writer, const char* key, const std::string& value)
+{
+    if (value.empty())
+        return;
+
+    writer.Key(key);
+    WriteUtf8String(writer, value);
+}
+
+constexpr double InlineSlashTranslationRatioThreshold = 0.5;
+constexpr std::string_view HalfWidthLeftParenthesis = "(";
+constexpr std::string_view HalfWidthRightParenthesis = ")";
+constexpr std::string_view FullWidthLeftParenthesis = "\xEF\xBC\x88";
+constexpr std::string_view FullWidthRightParenthesis = "\xEF\xBC\x89";
+constexpr std::string_view FullWidthColon = "\xEF\xBC\x9A";
+constexpr std::string_view TranslationMarker = "\xE7\xBF\xBB\xE8\xAF\x91";
+
+bool StartsWith(std::string_view value, std::string_view prefix)
+{
+    return value.size() >= prefix.size() && value.substr(0, prefix.size()) == prefix;
+}
+
+bool EndsWith(std::string_view value, std::string_view suffix)
+{
+    return value.size() >= suffix.size() && value.substr(value.size() - suffix.size()) == suffix;
+}
+
+bool TryReadParenthesisToken(std::string_view value, size_t position, bool& is_left, size_t& token_size)
+{
+    const std::string_view remaining = value.substr(position);
+    if (StartsWith(remaining, FullWidthLeftParenthesis))
+    {
+        is_left = true;
+        token_size = FullWidthLeftParenthesis.size();
+        return true;
+    }
+    if (StartsWith(remaining, FullWidthRightParenthesis))
+    {
+        is_left = false;
+        token_size = FullWidthRightParenthesis.size();
+        return true;
+    }
+    if (StartsWith(remaining, HalfWidthLeftParenthesis))
+    {
+        is_left = true;
+        token_size = HalfWidthLeftParenthesis.size();
+        return true;
+    }
+    if (StartsWith(remaining, HalfWidthRightParenthesis))
+    {
+        is_left = false;
+        token_size = HalfWidthRightParenthesis.size();
+        return true;
+    }
+
+    return false;
+}
+
+size_t FindMatchingParenthesisClose(std::string_view value, size_t open_position)
+{
+    bool is_left = false;
+    size_t token_size = 0;
+    if (!TryReadParenthesisToken(value, open_position, is_left, token_size) || !is_left)
+        return std::string_view::npos;
+
+    int depth = 0;
+    for (size_t position = open_position; position < value.size();)
+    {
+        if (!TryReadParenthesisToken(value, position, is_left, token_size))
+        {
+            ++position;
+            continue;
+        }
+
+        if (is_left)
+        {
+            ++depth;
+        }
+        else
+        {
+            --depth;
+            if (depth == 0)
+                return position;
+            if (depth < 0)
+                return std::string_view::npos;
+        }
+
+        position += token_size;
+    }
+
+    return std::string_view::npos;
+}
+
+bool TrySplitSlashInlineTranslation(const std::string& text, std::string& original, std::string& translation)
+{
+    constexpr std::string_view delimiter = " / ";
+    const size_t delimiter_pos = text.find(delimiter);
+    if (delimiter_pos == std::string::npos)
+        return false;
+
+    original = TrimWhitespace(std::string_view(text).substr(0, delimiter_pos));
+    translation = TrimWhitespace(std::string_view(text).substr(delimiter_pos + delimiter.size()));
+    return !original.empty() && !translation.empty();
+}
+
+bool TrySplitBracketInlineTranslation(const std::string& text, std::string& original, std::string& translation)
+{
+    const std::string trimmed_text = TrimWhitespace(text);
+    for (size_t position = 0; position < trimmed_text.size();)
+    {
+        bool is_left = false;
+        size_t left_size = 0;
+        if (!TryReadParenthesisToken(trimmed_text, position, is_left, left_size))
+        {
+            ++position;
+            continue;
+        }
+        if (!is_left)
+        {
+            position += left_size;
+            continue;
+        }
+
+        const size_t close_position = FindMatchingParenthesisClose(trimmed_text, position);
+        if (close_position == std::string_view::npos)
+        {
+            position += left_size;
+            continue;
+        }
+
+        bool close_is_left = false;
+        size_t close_size = 0;
+        if (!TryReadParenthesisToken(trimmed_text, close_position, close_is_left, close_size)
+            || close_is_left
+            || close_position + close_size != trimmed_text.size())
+        {
+            position += left_size;
+            continue;
+        }
+
+        original = TrimWhitespace(std::string_view(trimmed_text).substr(0, position));
+        if (original.empty())
+        {
+            position += left_size;
+            continue;
+        }
+
+        std::string inner = TrimWhitespace(std::string_view(trimmed_text).substr(
+            position + left_size,
+            close_position - position - left_size));
+        if (!StartsWith(inner, TranslationMarker))
+        {
+            position += left_size;
+            continue;
+        }
+
+        std::string after_marker = TrimWhitespace(std::string_view(inner).substr(TranslationMarker.size()));
+        size_t colon_size = 0;
+        if (StartsWith(after_marker, ":"))
+            colon_size = 1;
+        else if (StartsWith(after_marker, FullWidthColon))
+            colon_size = FullWidthColon.size();
+        else
+        {
+            position += left_size;
+            continue;
+        }
+
+        translation = TrimWhitespace(std::string_view(after_marker).substr(colon_size));
+        if (!translation.empty())
+            return true;
+
+        position += left_size;
+    }
+
+    return false;
+}
+
+std::vector<std::string> SplitInlineTranslationText(const std::string& text, bool slash_translation_enabled)
+{
+    std::string original;
+    std::string translation;
+    if (TrySplitBracketInlineTranslation(text, original, translation)
+        || (slash_translation_enabled && TrySplitSlashInlineTranslation(text, original, translation)))
+    {
+        return { original, translation };
+    }
+
+    return { text };
 }
 }
 
@@ -53,9 +282,9 @@ static int FindVectorIndex(const std::vector<T>& values, const T& value)
 static std::regex time_tag_regex(R"(\[\s*(\d{1,2})\s*[:.]\s*(\d{1,2})(?:\s*[:.]\s*(\d{1,4}))?\s*\])");
 static std::regex time_tag_progress_regex(R"(\s*(\d{1,2})\s*[:.]\s*(\d{1,2})(?:\s*[:.]\s*(\d{1,4}))?\s*)");
 
-std::wstring SplitLrcForProgressMultiNode1(const std::wstring& text) 
+std::string SplitLrcForProgressMultiNode1(const std::string& text) 
 {
-    std::wstring new_text;
+    std::string new_text;
     bool is_pressed = false;
     for (size_t j = 0; j < text.size(); ++j)
     {
@@ -77,9 +306,9 @@ std::wstring SplitLrcForProgressMultiNode1(const std::wstring& text)
     return new_text;
 }
 
-std::vector<std::wstring> SplitLrcForProgressMultiNode2(const std::vector<std::wstring>& texts)
+std::vector<std::string> SplitLrcForProgressMultiNode2(const std::vector<std::string>& texts)
 {
-    std::vector<std::wstring> strs;
+    std::vector<std::string> strs;
     strs.reserve(texts.size());
     for (const auto& text : texts)
     {
@@ -88,7 +317,7 @@ std::vector<std::wstring> SplitLrcForProgressMultiNode2(const std::vector<std::w
     return strs;
 }
 
-LrcMultiNode::LrcMultiNode(int t, const std::vector<std::wstring>& texts, 
+LrcMultiNode::LrcMultiNode(int t, const std::vector<std::string>& texts, 
     LrcLanguageHelper::LanguageClassification classification,
     std::vector<LrcLanguageHelper::LanguageType> recommend_slot) :
     LrcAbstractNode(t), str_count(static_cast<int>(texts.size())), lrc_texts(texts)
@@ -101,6 +330,7 @@ LrcMultiNode::LrcMultiNode(int t, const std::vector<std::wstring>& texts,
     using LC = LrcLanguageHelper::LanguageClassification;
     if (recommend_slot.size() == texts.size())
     {
+        lang_types = recommend_slot;
         for (int i = 0; i < static_cast<int>(recommend_slot.size()); ++i)
         {
             switch (recommend_slot[i])
@@ -294,6 +524,11 @@ LrcMultiNode::LrcMultiNode(int t, const std::vector<std::wstring>& texts,
                 {
                     assign_with_language(onomatopoeia_index, LrcAuxiliaryInfoNative::Lyric);
                 }
+            } 
+            else if (zh_index == -1)
+            {
+                if (latin_index != -1)
+                    assign_with_language(latin_index, LrcAuxiliaryInfoNative::Translation);
             }
             break;
         }
@@ -423,10 +658,9 @@ std::string LrcLanguageHelper::lyric_type_to_std_string(LanguageType type)
     }
 }
 
-std::vector<double> LrcLanguageHelper::extract_line_features(const std::wstring& text_utf16,
+std::vector<double> LrcLanguageHelper::extract_line_features(const std::string& text,
                                                              const std::unordered_map<std::string, int>& vocab)
 {
-    std::string text = LocaleConverterNative::GetUtf8StringFromUtf16String(text_utf16);
     std::vector x(vocab.size(), 0.0);
 
     for (size_t i = 0; i < text.size(); ++i)
@@ -444,7 +678,7 @@ std::vector<double> LrcLanguageHelper::extract_line_features(const std::wstring&
 }
 
 LrcLanguageHelper::LanguageType
-LrcLanguageHelper::detect_line_language_type(const std::wstring& input)
+LrcLanguageHelper::detect_line_language_type(const std::string& input)
 {
     auto feat = extract_line_features(input, line_vocab_reasoning);
     line_sample_type m(feat.size());
@@ -619,7 +853,7 @@ auto LrcLanguageHelper::detect_language_slot(
         best_slot_debug_str += lyric_type_to_std_string(slot) + " ";
     }
     best_slot_debug_str += "]";
-    ATLTRACE("info: detect slot type = %s", best_slot_debug_str.c_str());
+    NATIVE_TRACE("info: detect slot type = %s", best_slot_debug_str.c_str());
     return best_slot_type;
 }
 
@@ -629,37 +863,53 @@ LrcLanguageHelper& LrcLanguageHelper::GetSingleton()
     return helper_instance;
 }
 
-LrcProgressNode::LrcProgressNode(int t, const std::wstring& text_with_node)
-    : LrcAbstractNode(t), node_count(0), end_time_ms(0)
+LrcLanguageHelper::LanguageType LrcAbstractNode::get_language_type(int index) const
 {
-    std::wstring text = text_with_node;
-    const wchar_t right_brace_type = text[text.size() - 1];
-    wchar_t left_brace_type;
+    std::string text;
+    if (get_lrc_str_at(index, text) != 0)
+        return LrcLanguageHelper::LanguageType::onomatopoeia;
+
+    return LrcLanguageHelper::GetSingleton().detect_line_language_type(text);
+}
+
+LrcLanguageHelper::LanguageType LrcMultiNode::get_language_type(int index) const
+{
+    if (index >= 0 && static_cast<size_t>(index) < lang_types.size())
+        return lang_types[index];
+
+    return LrcAbstractNode::get_language_type(index);
+}
+
+LrcProgressNode::LrcProgressNode(int t, const std::string& text_with_node, int controller_line_index)
+    : LrcAbstractNode(t), node_count(0), end_time_ms(0), controller_line_index(controller_line_index)
+{
+    std::string text = text_with_node;
+    const char right_brace_type = text[text.size() - 1];
+    char left_brace_type;
     switch (right_brace_type)
     {
-        case L']': left_brace_type = L'['; break;
-        case L'>': left_brace_type = L'<'; break;
+        case ']': left_brace_type = '['; break;
+        case '>': left_brace_type = '<'; break;
         default: return;
     }
     while (true)
     {
         const size_t right_brace_index = text.find(right_brace_type);
-        if (right_brace_index == std::wstring::npos)
+        if (right_brace_index == std::string::npos)
             break;
 
-        std::wstring node = text.substr(0, right_brace_index + 1);
+        std::string node = text.substr(0, right_brace_index + 1);
         const size_t node_controller_start_index = node.find(left_brace_type);
-        if (node_controller_start_index == std::wstring::npos)
+        if (node_controller_start_index == std::string::npos)
         {
-            ATLTRACE(L"warn: invalid progress node: %s\n", node.c_str());
+            NATIVE_TRACE("warn: invalid progress node: %s\n", node.c_str());
             break;
         }
         auto time_stamp = node.substr(node_controller_start_index + 1);
         std::erase(time_stamp, right_brace_type);
         auto lyric_text = node.substr(0, node_controller_start_index);
-        auto time_stamp_std_string = LocaleConverterNative::GetUtf8StringFromUtf16String(time_stamp);
         std::smatch m;
-        if (std::regex_search(time_stamp_std_string, m, time_tag_progress_regex)
+        if (std::regex_search(time_stamp, m, time_tag_progress_regex)
             && m.size() == 4)
         {
             int minutes = std::stoi(m[1].str());
@@ -688,48 +938,61 @@ LrcProgressNode::LrcProgressNode(int t, const std::wstring& text_with_node)
     }
 }
 
-float LrcProgressNode::get_lrc_percentage(float current_timestamp) const
+int LrcProgressNode::get_intrinsic_end_time_ms() const
 {
-    auto base = nodes.size();
-    if (base == 0) return 1.0f;
+    if (end_time_ms > 0)
+        return end_time_ms;
 
-    const int timestamp_in_ms = static_cast<int>(current_timestamp * 1000);
-    if (timestamp_in_ms >= nodes[base - 1].time_ms)
-    {
-        return 1.0f;
-    }
-    if (timestamp_in_ms < time_ms)
-    {
-        return 0.0f;
-    }
+    if (!nodes.empty())
+        return nodes.back().time_ms;
 
-    int index;
-    float percentage_in_node = 0.0f, distance = 0.0f, percentage = 0.0f;
-    for (index = 0; index < base; ++index)
-    {
-        if (timestamp_in_ms < nodes[index].time_ms) break;
-    }
-
-    if (index != 0)
-    {
-        distance = static_cast<float>(nodes[index].time_ms - nodes[index - 1].time_ms);
-        percentage_in_node = static_cast<float>(timestamp_in_ms - nodes[index - 1].time_ms) / distance;
-    }
-    else
-    {
-        // time_ms->start
-        distance = static_cast<float>(nodes[0].time_ms - time_ms);
-        if (distance > 0)
-            percentage_in_node = static_cast<float>(timestamp_in_ms - time_ms) / distance;
-        else
-            percentage_in_node = 1.0f;
-    }
-
-    percentage = static_cast<float>(index) / base + (percentage_in_node / base);
-    return percentage;
+    return time_ms;
 }
 
-int SelectBestControllerLine(const std::vector<std::wstring>& str_arr)
+int LrcProgressNode::get_controller_node_count(int line_index) const
+{
+    if (line_index != controller_line_index)
+        return 0;
+
+    int count = 0;
+    for (const auto& node : nodes)
+    {
+        if (!node.node_text.empty())
+            ++count;
+    }
+    return count;
+}
+
+int LrcProgressNode::get_controller_node_at(
+    int line_index,
+    int node_index,
+    int& start_time_ms,
+    int& end_time_ms,
+    std::string& out_str) const
+{
+    if (line_index != controller_line_index || node_index < 0)
+        return -1;
+
+    int visible_index = 0;
+    for (int i = 0; i < static_cast<int>(nodes.size()); ++i)
+    {
+        if (nodes[i].node_text.empty())
+            continue;
+
+        if (visible_index == node_index)
+        {
+            start_time_ms = i == 0 ? time_ms : nodes[i - 1].time_ms;
+            end_time_ms = nodes[i].time_ms;
+            out_str = nodes[i].node_text;
+            return 0;
+        }
+        ++visible_index;
+    }
+
+    return -1;
+}
+
+int SelectBestControllerLine(const std::vector<std::string>& str_arr)
 {
     // 控制点越多，该行为控制行的置信度越高
     std::vector controller_bucket(str_arr.size(), 0);
@@ -761,42 +1024,29 @@ int SelectBestControllerLine(const std::vector<std::wstring>& str_arr)
 }
 
 LrcProgressMultiNode::LrcProgressMultiNode
-    (int t, const std::vector<std::wstring>& str_arr_2, 
+    (int t, const std::vector<std::string>& str_arr_2, 
         LrcLanguageHelper::LanguageClassification classification, 
         std::vector<LrcLanguageHelper::LanguageType> recommend_slot):
     LrcAbstractNode(t),
     LrcMultiNode(t, SplitLrcForProgressMultiNode2(str_arr_2), classification, recommend_slot),
-    LrcProgressNode(t, str_arr_2[SelectBestControllerLine(str_arr_2)]) { }
+    LrcProgressNode(t, str_arr_2[SelectBestControllerLine(str_arr_2)], SelectBestControllerLine(str_arr_2)) { }
 
 LrcFileControllerNative::~LrcFileControllerNative()
 {
     clear_lrc_nodes();
 }
 
-void LrcFileControllerNative::parse_lrc_file(const std::wstring& file_path)
-{
-    clear_lrc_nodes();
-	if (file_path.empty()
-		|| file_path.find(L".lrc") == std::wstring::npos
-		|| !GetDefaultFileSystem().FileExists(file_path))
-		return;
-	auto file = GetDefaultFileSystem().OpenReadFile(file_path, false, true);
-	if (!file)
-	{
-		return;
-	}
-	parse_lrc_file_stream(file.get());
-}
-
 LrcAbstractNode* LrcNodeFactory::CreateLrcNode(
-    int time_ms, const std::vector<std::wstring>& lrc_texts, 
+    int time_ms, const std::vector<std::string>& lrc_texts, 
     LrcLanguageHelper::LanguageClassification classification,
     std::vector<LrcLanguageHelper::LanguageType> recommend_slot)
 {
-    auto ifLrcContainsControllerNode = [](const std::wstring& lrc_text)
+    auto ifLrcContainsControllerNode = [](const std::string& lrc_text)
         {
+            if (lrc_text.empty())
+                return false;
             const auto last_index = lrc_text.size() - 1;
-            return !lrc_text.empty() &&
+            return
                 (lrc_text[last_index] == ']' || lrc_text[last_index] == '>');
         };
     if (lrc_texts.size() == 1) {
@@ -823,7 +1073,9 @@ void LrcFileControllerNative::parse_lrc_file_stream(IFile* file_stream)
         return;
     }
     clear_lrc_nodes();
-    std::string file_content_a;
+    metadata = {};
+    lrc_offset_ms = 0;
+    std::string file_content_bytes;
     const int buf_size = 4096;
     char buffer[buf_size];
     UINT bytes_read = 0;
@@ -831,38 +1083,37 @@ void LrcFileControllerNative::parse_lrc_file_stream(IFile* file_stream)
     {
         bytes_read = file_stream->Read(buffer, buf_size - 1);
         buffer[bytes_read] = '\0';
-        file_content_a.append(buffer, bytes_read);
+        file_content_bytes.append(buffer, bytes_read);
     }
     while (bytes_read > 0);
+    const std::string file_content_utf8 =
+        LocaleConverterNative::GetUtf8StringFromBytesNative(file_content_bytes.data(), file_content_bytes.size());
 
-    // 转换为宽字符
-    std::wstring file_content_w = LocaleConverterNative::GetUtf16StringFromUtf8String(file_content_a);
-    
     // fix issue #12
     // 关于歌词文件/歌曲内嵌歌词内出现时间tag非强制有序的翻译歌词时程序的错误/闪退问题
     // struct definition: caching each line for strong_ordering sort
     struct CachedTimeLine
     {
         int time_stamp_ms;
-        std::wstring text;
+        std::string text;
     };
     std::vector<CachedTimeLine> time_lines;
     
     // 逐行解析
     size_t start = 0;
     int flag_decoding_metadata = 1;
-    std::stack<std::wstring> lyrics_in_ms;
+    std::stack<std::string> lyrics_in_ms;
     int recorded_ms = 0;
 
-    while (start < file_content_w.size())
+    while (start < file_content_utf8.size())
     {
-        size_t end = file_content_w.find(L'\n', start);
-        if (end == std::wstring::npos)
+        size_t end = file_content_utf8.find('\n', start);
+        if (end == std::string::npos)
         {
-            end = file_content_w.size();
+            end = file_content_utf8.size();
             // 因为现在缓存所有歌词行，所以不需要设置is_lrc_end flag
         }
-        std::wstring line = TrimWhitespace(std::wstring_view(file_content_w).substr(start, end - start));
+        std::string line = TrimWhitespace(std::string_view(file_content_utf8).substr(start, end - start));
         if (line.empty())
         {
             start = end + 1;
@@ -870,21 +1121,21 @@ void LrcFileControllerNative::parse_lrc_file_stream(IFile* file_stream)
         }
         if (line[0] == '{')
         {
-            ATLTRACE("warn: invalid ncm extension found, ignoring\n");
+            NATIVE_TRACE("warn: invalid ncm extension found, ignoring\n");
             start = end + 1;
             continue;
         }
-        const size_t line_start_index = line.find(L'[');
+        const size_t line_start_index = line.find('[');
         // 剔除行开头的不合法字符
-        if (line_start_index != std::wstring::npos && line_start_index != 0)
+        if (line_start_index != std::string::npos && line_start_index != 0)
         {
-            ATLTRACE(L"warn: invalid lrc format, ignoring start character: %s\n",
+            NATIVE_TRACE("warn: invalid lrc format, ignoring start character: %s\n",
                 line.substr(0, line_start_index).c_str());
             line.erase(0, line_start_index);
         }
 
         // fix: moving decode_metadata as a lambda
-        auto decode_metadata = [](const std::wstring& line, decltype(metadata)& meta, int& offset) -> int {
+        auto decode_metadata = [](const std::string& line, decltype(metadata)& meta, int& offset) -> int {
             // 走metadata解析，不遵守标准lrc解码
             switch (get_metadata_type(line))
             {
@@ -901,7 +1152,7 @@ void LrcFileControllerNative::parse_lrc_file_stream(IFile* file_stream)
                 meta.by = get_metadata_value(line);
                 break;
             case LrcMetadataTypeNative::Offset:
-                offset = static_cast<int>(std::wcstol(get_metadata_value(line).c_str(), nullptr, 10));
+                offset = static_cast<int>(std::strtol(get_metadata_value(line).c_str(), nullptr, 10));
                 break;
             case LrcMetadataTypeNative::Author:
                 meta.author = get_metadata_value(line);
@@ -931,16 +1182,15 @@ void LrcFileControllerNative::parse_lrc_file_stream(IFile* file_stream)
             throw gcnew System::InvalidOperationException("Invalid lrc line, aborting!");
         }
 
-        std::wstring lyric_text = line;
+        std::string lyric_text = line;
         // 处理同一行多个时间戳的问题
         std::vector<int> time_stamps;
         while (!lyric_text.empty() && lyric_text[0] == '[')
         {
-            const size_t time_tag_end_index_multi = lyric_text.find(L']');
-            if (time_tag_end_index_multi == std::wstring::npos)
+            const size_t time_tag_end_index_multi = lyric_text.find(']');
+            if (time_tag_end_index_multi == std::string::npos)
                 throw gcnew System::InvalidOperationException("Invalid lrc time tag, aborting!");
-            auto time_tag = LocaleConverterNative::GetUtf8StringFromUtf16String(
-                lyric_text.substr(0, time_tag_end_index_multi + 1));
+            auto time_tag = lyric_text.substr(0, time_tag_end_index_multi + 1);
             std::smatch m;
             bool is_malformed_time_tag = true;
             if (std::regex_search(time_tag, m, time_tag_regex))
@@ -954,7 +1204,7 @@ void LrcFileControllerNative::parse_lrc_file_stream(IFile* file_stream)
                 // fix issue #12
                 auto metadata_substr = lyric_text.substr(0, time_tag_end_index_multi + 1);
                 decode_metadata(metadata_substr, metadata, lrc_offset_ms);
-                lyric_text = TrimWhitespace(std::wstring_view(lyric_text).substr(time_tag_end_index_multi + 1));
+                lyric_text = TrimWhitespace(std::string_view(lyric_text).substr(time_tag_end_index_multi + 1));
                 continue;
             }
             int minutes = std::stoi(m[1].str());
@@ -974,7 +1224,7 @@ void LrcFileControllerNative::parse_lrc_file_stream(IFile* file_stream)
             int total_ms_multi = minutes * 60000 + seconds * 1000 + milliseconds;
             if (total_ms_multi < 0) total_ms_multi = 0;
             time_stamps.push_back(total_ms_multi);
-            lyric_text = TrimWhitespace(std::wstring_view(lyric_text).substr(time_tag_end_index_multi + 1));
+            lyric_text = TrimWhitespace(std::string_view(lyric_text).substr(time_tag_end_index_multi + 1));
         }
         if (time_stamps.empty())
             throw gcnew System::InvalidOperationException("Invalid lrc time tag, aborting!");
@@ -996,6 +1246,33 @@ void LrcFileControllerNative::parse_lrc_file_stream(IFile* file_stream)
                              {
                                  return a.time_stamp_ms < b.time_stamp_ms;
                              });
+    int slash_inline_translation_count = 0;
+    for (const auto& line : time_lines)
+    {
+        std::string original;
+        std::string translation;
+        if (TrySplitSlashInlineTranslation(line.text, original, translation))
+            ++slash_inline_translation_count;
+    }
+    const bool slash_translation_enabled =
+        !time_lines.empty()
+        && static_cast<double>(slash_inline_translation_count) / static_cast<double>(time_lines.size())
+            > InlineSlashTranslationRatioThreshold;
+    std::vector<CachedTimeLine> expanded_time_lines;
+    expanded_time_lines.reserve(time_lines.size() + slash_inline_translation_count);
+    bool has_inline_translation = false;
+    for (const auto& line : time_lines)
+    {
+        const auto split_texts = SplitInlineTranslationText(line.text, slash_translation_enabled);
+        if (split_texts.size() > 1)
+            has_inline_translation = true;
+
+        for (const auto& split_text : split_texts)
+            expanded_time_lines.push_back({ line.time_stamp_ms, split_text });
+    }
+    if (has_inline_translation)
+        time_lines = std::move(expanded_time_lines);
+
     std::vector<std::vector<LrcLanguageHelper::LanguageType>> lang_types_node_seq;
     std::vector<LrcLanguageHelper::LanguageType> lang_types;
     if (time_lines.empty())
@@ -1019,12 +1296,12 @@ void LrcFileControllerNative::parse_lrc_file_stream(IFile* file_stream)
         for (const auto& single_line_tag : multi_line_tag)
             lang_types.push_back(single_line_tag);
     auto classification = detector_instance.detect_song_language_classification(lang_types);
-    ATLTRACE("info: detected classification = %d\n", classification);
+    NATIVE_TRACE("info: detected classification = %d\n", classification);
     auto slot_type = detector_instance.detect_language_slot(lang_types_node_seq);
     
-    auto pump_stack = [&](bool is_lrc_ended)
+    auto pump_stack = [&]()
     {
-        std::vector<std::wstring> lrc_texts;
+        std::vector<std::string> lrc_texts;
         while (!lyrics_in_ms.empty())
         {
             lrc_texts.push_back(lyrics_in_ms.top());
@@ -1040,15 +1317,7 @@ void LrcFileControllerNative::parse_lrc_file_stream(IFile* file_stream)
             {
                 lrc_nodes[lrc_nodes.size() - 1]->set_lrc_end_timestamp(recorded_ms);
             }
-            if (is_lrc_ended)
-            {
-                node->set_lrc_end_timestamp(std::floor(this->song_duration_sec * 1000));
-            }
             lrc_nodes.push_back(node);
-            if (node->is_translation_enabled())
-                this->set_auxiliary_info_enabled(LrcAuxiliaryInfoNative::Translation);
-            if (node->is_romanization_enabled())
-                this->set_auxiliary_info_enabled(LrcAuxiliaryInfoNative::Romanization);
         }
         else
         {
@@ -1065,16 +1334,14 @@ void LrcFileControllerNative::parse_lrc_file_stream(IFile* file_stream)
         {
             // 新的时间戳，先处理之前的歌词
             if (!lyrics_in_ms.empty())
-                pump_stack(false);
+                pump_stack();
             recorded_ms = total_ms;
         }
         lyrics_in_ms.push(time_lines[i].text);
     }
     // 处理最后一组
     if (!lyrics_in_ms.empty())
-        pump_stack(true);
-
-    cur_lrc_node_index = 0;
+        pump_stack();
 }
 
 void LrcFileControllerNative::clear_lrc_nodes()
@@ -1086,185 +1353,182 @@ void LrcFileControllerNative::clear_lrc_nodes()
     lrc_nodes.clear();
 }
 
-void LrcFileControllerNative::set_time_stamp(int time_stamp_ms_in)
+std::string LrcFileControllerNative::to_intermediate_json(bool pretty) const
 {
-    time_stamp_ms_in -= lrc_offset_ms;
-    if (time_stamp_ms_in < time_stamp_ms)
+    rapidjson::StringBuffer buffer;
+    auto write_json = [&](auto& writer)
     {
-        // reverse query, set index to zero
-        cur_lrc_node_index = 0;
-    }
-    bool found = false;
-    for (size_t i = cur_lrc_node_index; i < lrc_nodes.size(); i++)
-    {
-        if (lrc_nodes[i]->get_time_ms() > time_stamp_ms_in)
+        writer.StartObject();
+        writer.Key("format_version");
+        writer.Int(1);
+        writer.Key("offset");
+        writer.Int(lrc_offset_ms);
+        writer.Key("metadata");
+        writer.StartObject();
+        WriteMetadataField(writer, "artist", metadata.artist);
+        WriteMetadataField(writer, "album", metadata.album);
+        WriteMetadataField(writer, "author", metadata.author);
+        WriteMetadataField(writer, "by", metadata.by);
+        WriteMetadataField(writer, "title", metadata.title);
+        writer.EndObject();
+        writer.Key("lyric_lines");
+        writer.StartArray();
+        for (int i = 0; i < static_cast<int>(lrc_nodes.size()); ++i)
         {
-            cur_lrc_node_index = i == 0 ? 0 : i - 1;
-            found = true;
-            break;
+            const auto* node = lrc_nodes[i];
+            const int start_ms = node->get_time_ms();
+            int end_ms = start_ms;
+            if (i + 1 < static_cast<int>(lrc_nodes.size()))
+            {
+                end_ms = lrc_nodes[i + 1]->get_time_ms();
+            }
+            else
+            {
+                end_ms = std::max(start_ms, node->get_intrinsic_end_time_ms());
+            }
+
+            writer.StartObject();
+            writer.Key("time_start_ms");
+            writer.Int(start_ms);
+            writer.Key("time_end_ms");
+            writer.Int(end_ms);
+            writer.Key("lines");
+            writer.StartArray();
+
+            const int line_count = node->get_lrc_str_count();
+            for (int line_index = 0; line_index < line_count; ++line_index)
+            {
+                std::string text;
+                node->get_lrc_str_at(line_index, text);
+                const auto aux_info = node->get_auxiliary_info(line_index);
+                const auto language = node->get_language_type(line_index);
+                const auto language_str = LanguageTypeToString(language);
+                const int controller_node_count = node->get_controller_node_count(line_index);
+
+                writer.StartObject();
+                writer.Key("role");
+                writer.String(AuxInfoToRole(aux_info));
+                if (aux_info == LrcAuxiliaryInfoNative::Romanization)
+                {
+                    if (language == LrcLanguageHelper::LanguageType::jyut)
+                    {
+                        writer.Key("scheme");
+                        writer.String("jyutping");
+                    }
+                    else if (language == LrcLanguageHelper::LanguageType::roma)
+                    {
+                        writer.Key("scheme");
+                        writer.String("romaji");
+                    }
+                }
+                if (controller_node_count > 0)
+                {
+                    writer.Key("sync");
+                    writer.String("controller_nodes");
+                    writer.Key("language");
+                    writer.String(language_str);
+                    writer.Key("controller_nodes");
+                    writer.StartArray();
+                    for (int node_index = 0; node_index < controller_node_count; ++node_index)
+                    {
+                        int controller_start_ms = 0;
+                        int controller_end_ms = 0;
+                        std::string controller_text;
+                        node->get_controller_node_at(
+                            line_index,
+                            node_index,
+                            controller_start_ms,
+                            controller_end_ms,
+                            controller_text);
+
+                        writer.StartObject();
+                        writer.Key("time_start_ms");
+                        writer.Int(controller_start_ms);
+                        writer.Key("time_end_ms");
+                        writer.Int(controller_end_ms);
+                        writer.Key("text");
+                        WriteUtf8String(writer, controller_text);
+                        writer.EndObject();
+                    }
+
+                    writer.EndArray();
+                }
+                else
+                {
+                    writer.Key("language");
+                    writer.String(language_str);
+                    writer.Key("text");
+                    WriteUtf8String(writer, text);
+                }
+
+                writer.EndObject();
+            }
+
+            writer.EndArray();
+            writer.EndObject();
         }
-    }
-    if (!found)
+
+        writer.EndArray();
+        writer.EndObject();
+    };
+
+    if (pretty)
     {
-        cur_lrc_node_index = lrc_nodes.size() - 1;
+        rapidjson::PrettyWriter writer(buffer);
+        write_json(writer);
     }
-    time_stamp_ms = time_stamp_ms_in + lrc_offset_ms;
-}
-
-void LrcFileControllerNative::time_stamp_increase(int ms)
-{
-    time_stamp_ms += ms;
-    set_time_stamp(time_stamp_ms);
-}
-
-bool LrcFileControllerNative::valid() const
-{
-    return !lrc_nodes.empty() && song_duration_sec >= 0;
-}
-
-int LrcFileControllerNative::get_current_lrc_lines_count() const
-{
-    return lrc_nodes[cur_lrc_node_index]->get_lrc_str_count();
-}
-
-int LrcFileControllerNative::get_current_lrc_line_at(int index, std::wstring& out_str) const
-{
-    return lrc_nodes[cur_lrc_node_index]->get_lrc_str_at(index, out_str);
-}
-
-int LrcFileControllerNative::get_lrc_line_at(int lrc_node_index, int index, std::wstring& out_str) const
-{
-    if (lrc_node_index < 0 || static_cast<size_t>(lrc_node_index) >= lrc_nodes.size())
-        throw gcnew System::ArgumentOutOfRangeException("lrc_node_index out of range");
-    return lrc_nodes[lrc_node_index]->get_lrc_str_at(index, out_str);
-}
-
-int LrcFileControllerNative::get_current_lrc_line_aux_index(LrcAuxiliaryInfoNative info) const
-{
-    return lrc_nodes[cur_lrc_node_index]->get_auxiliary_info_at(info);
-}
-
-int LrcFileControllerNative::get_lrc_line_aux_index(int lrc_node_index, LrcAuxiliaryInfoNative info) const
-{
-    if(lrc_node_index < 0 || static_cast<size_t>(lrc_node_index) >= lrc_nodes.size())
-        throw gcnew System::ArgumentOutOfRangeException("lrc_node_index out of range");
-    return lrc_nodes[lrc_node_index]->get_auxiliary_info_at(info);
-}
-
-int MusicPlayerLibrary::LrcFileControllerNative::get_metadata_info(LrcMetadataTypeNative metadata_type, std::wstring& out_str) const
-{
-    switch (metadata_type) {
-    case LrcMetadataTypeNative::Album:
-        out_str = metadata.album;
-        break;
-    case LrcMetadataTypeNative::Artist:
-        out_str = metadata.artist;
-        break;
-    case LrcMetadataTypeNative::Title:
-        out_str = metadata.title;
-        break;
-    case LrcMetadataTypeNative::By:
-        out_str = metadata.by;
-        break;
-    case LrcMetadataTypeNative::Author:
-        out_str = metadata.author;
-        break;
-    default:
-        return -1;
+    else
+    {
+        rapidjson::Writer writer(buffer);
+        write_json(writer);
     }
-    return 0;
+
+    return { buffer.GetString(), buffer.GetSize() };
 }
 
-LrcLanguageInfo MusicPlayerLibrary::LrcFileControllerNative::scan_lrc_main_language_type()
-{
-    return LrcLanguageInfo();
-}
-
-void MusicPlayerLibrary::LrcFileControllerNative::correct_lrc_language_info(LrcLanguageInfo info)
-{
-
-}
-
-LrcMetadataTypeNative LrcFileControllerNative::get_metadata_type(const std::wstring& str)
+LrcMetadataTypeNative LrcFileControllerNative::get_metadata_type(const std::string& str)
 {
     if (str.empty() || str.size() < 3 || str[0] != '[')
     {
         return LrcMetadataTypeNative::Error;
     }
     // 逐字歌词有可能每个单位后都带有时间戳
-    if (str.find(L']') != str.size() - 1)
+    if (str.find(']') != str.size() - 1)
         return LrcMetadataTypeNative::Error;
-    const size_t metadata_end_index = str.find(L':', 1);
-    if (metadata_end_index == std::wstring::npos)
+    const size_t metadata_end_index = str.find(':', 1);
+    if (metadata_end_index == std::string::npos)
         return LrcMetadataTypeNative::Error;
 
-    switch (std::wstring metadata_type_str = str.substr(1, metadata_end_index - 1);
-        wide_string_hash_fnv_64bit_int(metadata_type_str))
-    {
-    case 0x645d220c: return LrcMetadataTypeNative::Artist;
-    case 0x63d58dce: return LrcMetadataTypeNative::Album;
-    case 0x0387b4f0: return LrcMetadataTypeNative::Title;
-    case 0x27a9be4e: return LrcMetadataTypeNative::By;
-    case 0x4f6518ce: return LrcMetadataTypeNative::Offset;
-    case 0x642cb63f: return LrcMetadataTypeNative::Author;
-    default: return LrcMetadataTypeNative::Ignored;
-    }
+    const std::string metadata_type_str = str.substr(1, metadata_end_index - 1);
+    if (metadata_type_str == "ar" || metadata_type_str == "artist")
+        return LrcMetadataTypeNative::Artist;
+    if (metadata_type_str == "al" || metadata_type_str == "album")
+        return LrcMetadataTypeNative::Album;
+    if (metadata_type_str == "ti" || metadata_type_str == "title")
+        return LrcMetadataTypeNative::Title;
+    if (metadata_type_str == "by")
+        return LrcMetadataTypeNative::By;
+    if (metadata_type_str == "offset")
+        return LrcMetadataTypeNative::Offset;
+    if (metadata_type_str == "au" || metadata_type_str == "author")
+        return LrcMetadataTypeNative::Author;
+    return LrcMetadataTypeNative::Ignored;
 }
 
-int LrcFileControllerNative::wide_string_hash_fnv_64bit_int(const std::wstring& str)
+std::string LrcFileControllerNative::get_metadata_value(const std::string& str)
 {
-    const wchar_t* p = str.data();
-    const size_t len = str.size();
-    unsigned long long h = 14695981039346656037ull; // fnv offset basis
-    const unsigned char* bytes = reinterpret_cast<const unsigned char*>(p); // NOLINT(*-use-auto)
-    const size_t count = len * sizeof(wchar_t);
-    for (size_t i = 0; i < count; ++i)
-    {
-        h ^= bytes[i];
-        h *= 1099511628211ull; // fnv prime
-    }
-    return static_cast<int>(h % 0x7fffffffull); // switch-case requires int
-}
-
-std::wstring LrcFileControllerNative::get_metadata_value(const std::wstring& str)
-{
-    const size_t metadata_end_index = str.find(L':', 1);
-    if (metadata_end_index == std::wstring::npos)
+    const size_t metadata_end_index = str.find(':', 1);
+    if (metadata_end_index == std::string::npos)
         return {};
 
-    return TrimWhitespace(TrimChar(std::wstring_view(str).substr(metadata_end_index + 1), L']'));
+    return TrimWhitespace(TrimChar(std::string_view(str).substr(metadata_end_index + 1), ']'));
 }
 
-// ============================================================
-// Managed wrapper: LrcFileController
-// ============================================================
-
-static LrcAuxiliaryInfoNative ToNativeAuxInfo(LrcAuxiliaryInfo info)
-{
-    switch (info)
-    {
-    case LrcAuxiliaryInfo::Lyric:          return LrcAuxiliaryInfoNative::Lyric;
-    case LrcAuxiliaryInfo::Translation:    return LrcAuxiliaryInfoNative::Translation;
-    case LrcAuxiliaryInfo::Romanization:   return LrcAuxiliaryInfoNative::Romanization;
-    case LrcAuxiliaryInfo::Ignored:        return LrcAuxiliaryInfoNative::Ignored;
-    default:                               return LrcAuxiliaryInfoNative::Ignored;
-    }
-}
-
-static LrcMetadataTypeNative ToNativeMetadataType(LrcMetadataType type)
-{
-    switch (type)
-    {
-    case LrcMetadataType::Title:     return LrcMetadataTypeNative::Title;
-    case LrcMetadataType::Ignored:   return LrcMetadataTypeNative::Ignored;
-    case LrcMetadataType::Artist:    return LrcMetadataTypeNative::Artist;
-    case LrcMetadataType::Album:     return LrcMetadataTypeNative::Album;
-    case LrcMetadataType::Author:    return LrcMetadataTypeNative::Author;
-    case LrcMetadataType::By:        return LrcMetadataTypeNative::By;
-    case LrcMetadataType::Offset:    return LrcMetadataTypeNative::Offset;
-    default:                         return LrcMetadataTypeNative::Error;
-    }
-}
+/*
+ * Notice:
+ * C++ LRC Module now doesn't contain state machine.
+ * It only parses LRC files to Intermediate JSON Format.
+ */
 
 LrcFileController::LrcFileController()
 {
@@ -1277,174 +1541,19 @@ void LrcFileController::check_if_null()
         throw gcnew System::InvalidOperationException("LrcFileControllerNative is not initialized!");
 }
 
-void LrcFileController::ParseLrcFile(System::String^ filePath)
-{
-    check_if_null();
-    pin_ptr<const wchar_t> wch = PtrToStringChars(filePath);
-    native_handle->parse_lrc_file(std::wstring(wch));
-}
-
-void LrcFileController::ParseLrcStream(System::String^ lrcString)
+System::String^ LrcFileController::ParseLrcToIntermediateJson(System::String^ lrcString)
 {
     check_if_null();
     pin_ptr<const wchar_t> wch = PtrToStringChars(lrcString);
     const std::string utf8Str = LocaleConverterNative::GetUtf8StringFromUtf16String(std::wstring(wch));
-	auto mem_file = GetDefaultFileSystem().CreateMemoryFile();
-	if (!mem_file)
-		return;
-	mem_file->Write(utf8Str.data(), static_cast<UINT>(utf8Str.size()));
-	mem_file->SeekToBegin();
-	native_handle->parse_lrc_file_stream(mem_file.get());
-}
-
-void LrcFileController::ClearLrcNodes()
-{
-    check_if_null();
-    native_handle->clear_lrc_nodes();
-}
-
-void LrcFileController::SetTimeStamp(int timeStampMs)
-{
-    check_if_null();
-    native_handle->set_time_stamp(timeStampMs);
-}
-
-void LrcFileController::TimeStampIncrease(int ms)
-{
-    check_if_null();
-    native_handle->time_stamp_increase(ms);
-}
-
-void LrcFileController::SetSongDuration(float durationSec)
-{
-    check_if_null();
-    native_handle->set_song_duration(durationSec);
-}
-
-int LrcFileController::GetLrcOffset()
-{
-    check_if_null();
-    return native_handle->get_lrc_offset();
-}
-
-void LrcFileController::SetLrcOffsetExt(int offsetMs)
-{
-    check_if_null();
-    native_handle->set_lrc_offset_ext(offsetMs);
-}
-
-bool LrcFileController::Valid()
-{
-    check_if_null();
-    return native_handle->valid();
-}
-
-int LrcFileController::GetCurrentTimeStamp()
-{
-    check_if_null();
-    return native_handle->get_current_time_stamp();
-}
-
-int LrcFileController::GetCurrentLrcLinesCount()
-{
-    check_if_null();
-    return native_handle->get_current_lrc_lines_count();
-}
-
-int LrcFileController::GetCurrentLrcNodeIndex()
-{
-    check_if_null();
-    return native_handle->get_current_lrc_node_index();
-}
-
-int LrcFileController::GetLrcNodeCount()
-{
-    check_if_null();
-    return native_handle->get_lrc_node_count();
-}
-
-int LrcFileController::GetLrcNodeTimeMs(int index)
-{
-    check_if_null();
-    return native_handle->get_lrc_node_time_ms(index);
-}
-
-System::String^ LrcFileController::GetCurrentLrcLineAt(int index)
-{
-    check_if_null();
-    std::wstring out_str;
-    int result = native_handle->get_current_lrc_line_at(index, out_str);
-    if (result != 0)
+    auto mem_file = GetDefaultFileSystem().CreateMemoryFile();
+    if (!mem_file)
         return nullptr;
-    return gcnew System::String(out_str.c_str());
-}
-
-System::String^ LrcFileController::GetLrcLineAt(int lrcNodeIndex, int index)
-{
-    check_if_null();
-    std::wstring out_str;
-    int result = native_handle->get_lrc_line_at(lrcNodeIndex, index, out_str);
-    if (result != 0)
-        return nullptr;
-    return gcnew System::String(out_str.c_str());
-}
-
-int LrcFileController::GetCurrentLrcLineAuxIndex(LrcAuxiliaryInfo info)
-{
-    check_if_null();
-    return native_handle->get_current_lrc_line_aux_index(ToNativeAuxInfo(info));
-}
-
-int LrcFileController::GetLrcLineAuxIndex(int lrcNodeIndex, LrcAuxiliaryInfo info)
-{
-    check_if_null();
-    return native_handle->get_lrc_line_aux_index(lrcNodeIndex, ToNativeAuxInfo(info));
-}
-
-System::String^ MusicPlayerLibrary::LrcFileController::GetMetadataInfo(LrcMetadataType type)
-{
-    check_if_null();
-    std::wstring out_str;
-    int result = native_handle->get_metadata_info(ToNativeMetadataType(type), out_str);
-    if (result != 0)
-        return nullptr;
-    return gcnew System::String(out_str.c_str());
-}
-
-bool LrcFileController::IsAuxiliaryInfoEnabled(LrcAuxiliaryInfo enableInfo)
-{
-    check_if_null();
-    return native_handle->is_auxiliary_info_enabled(ToNativeAuxInfo(enableInfo));
-}
-
-void LrcFileController::SetAuxiliaryInfoEnabled(LrcAuxiliaryInfo enableInfo)
-{
-    check_if_null();
-    native_handle->set_auxiliary_info_enabled(ToNativeAuxInfo(enableInfo));
-}
-
-void LrcFileController::ClearAuxiliaryInfoEnabled(LrcAuxiliaryInfo enableInfo)
-{
-    check_if_null();
-    native_handle->clear_auxiliary_info_enabled(ToNativeAuxInfo(enableInfo));
-}
-
-void LrcFileController::ResetAuxiliaryInfoEnabled()
-{
-    check_if_null();
-    native_handle->reset_auxiliary_info_enabled();
-}
-
-bool LrcFileController::IsPercentageEnabled(int index)
-{
-    check_if_null();
-    return native_handle->is_percentage_enabled(index);
-}
-
-float LrcFileController::GetLrcPercentage(int index)
-{
-    check_if_null();
-    return native_handle->get_lrc_percentage(index);
+    mem_file->Write(utf8Str.data(), static_cast<UINT>(utf8Str.size()));
+    mem_file->SeekToBegin();
+    native_handle->parse_lrc_file_stream(mem_file.get());
+    const auto json_utf8 = native_handle->to_intermediate_json();
+    return LocaleConverterNative::GetSystemStringFromUtf8String(json_utf8);
 }
 
 LrcFileController::~LrcFileController()

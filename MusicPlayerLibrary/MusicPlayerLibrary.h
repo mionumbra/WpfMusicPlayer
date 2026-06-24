@@ -1,6 +1,6 @@
 ﻿#pragma once
 
-#include "AtlTraceRedirect.h"
+#include "NativeTraceRedirect.h"
 #include <atomic>
 #include <vcclr.h>
 #include "FFTExecuter.h"
@@ -9,8 +9,8 @@ using namespace System;
 
 namespace MusicPlayerLibrary {
 
-	public ref class AtlTraceRedirectManager {
-		static AtlTraceRedirect* m_pRedirector;
+	public ref class NativeTraceRedirectManager {
+		static NativeTraceRedirect* m_pRedirector;
 		public:
 			static void Init(System::Object^ logger);
 

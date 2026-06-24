@@ -8,7 +8,7 @@ public partial class LyricLineViewModel(string text, int timeMs = -1, string? tr
 {
     public string Text { get; } = text;
 
-    public int TimeMs { get; } = timeMs;
+    public int TimeMs { get; private set; } = timeMs;
 
     public string? Translation { get; } = translation;
 
@@ -25,6 +25,13 @@ public partial class LyricLineViewModel(string text, int timeMs = -1, string? tr
 
     [ObservableProperty]
     public partial double Progress { get; set; }
+
+    public void UpdateTimeMs(int timeMs)
+    {
+        if (TimeMs == timeMs) return;
+        TimeMs = timeMs;
+        OnPropertyChanged(nameof(TimeMs));
+    }
 
     [RelayCommand]
     public void CopyLyricText()

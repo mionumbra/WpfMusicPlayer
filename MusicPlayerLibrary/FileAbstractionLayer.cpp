@@ -51,7 +51,7 @@ namespace MusicPlayerLibrary {
 				nullptr);
 			if (file_ == INVALID_HANDLE_VALUE)
 			{
-				ATLTRACE(L"err: CreateFileW failed:%ls, gle=%lu\n", file_path.c_str(), ::GetLastError());
+				NATIVE_TRACE(L"err: CreateFileW failed:%ls, gle=%lu\n", file_path.c_str(), ::GetLastError());
 				return false;
 			}
 
@@ -67,14 +67,14 @@ namespace MusicPlayerLibrary {
 			const DWORD temp_path_len = ::GetTempPathW(TempPathBufferLength, temp_path);
 			if (temp_path_len == 0 || temp_path_len >= TempPathBufferLength)
 			{
-				ATLTRACE("err: GetTempPathW failed, gle=%lu\n", ::GetLastError());
+				NATIVE_TRACE("err: GetTempPathW failed, gle=%lu\n", ::GetLastError());
 				return false;
 			}
 
 			wchar_t temp_file_path[MAX_PATH + 1] = {};
 			if (::GetTempFileNameW(temp_path, L"WMP", 0, temp_file_path) == 0)
 			{
-				ATLTRACE("err: GetTempFileNameW failed, gle=%lu\n", ::GetLastError());
+				NATIVE_TRACE("err: GetTempFileNameW failed, gle=%lu\n", ::GetLastError());
 				return false;
 			}
 
@@ -88,7 +88,7 @@ namespace MusicPlayerLibrary {
 				nullptr);
 			if (file_ == INVALID_HANDLE_VALUE)
 			{
-				ATLTRACE(L"err: CreateFileW failed:%ls, gle=%lu\n", temp_file_path, ::GetLastError());
+				NATIVE_TRACE(L"err: CreateFileW failed:%ls, gle=%lu\n", temp_file_path, ::GetLastError());
 				::DeleteFileW(temp_file_path);
 				return false;
 			}
@@ -104,7 +104,7 @@ namespace MusicPlayerLibrary {
 			DWORD bytes_read = 0;
 			if (!ReadFile(file_, buffer, count, &bytes_read, nullptr))
 			{
-				ATLTRACE("err: ReadFile failed, gle=%lu\n", ::GetLastError());
+				NATIVE_TRACE("err: ReadFile failed, gle=%lu\n", ::GetLastError());
 				return 0;
 			}
 
@@ -120,7 +120,7 @@ namespace MusicPlayerLibrary {
 			if (!WriteFile(file_, buffer, count, &bytes_written, nullptr)
 				|| bytes_written != static_cast<DWORD>(count))
 			{
-				ATLTRACE("err: WriteFile failed, gle=%lu\n", ::GetLastError());
+				NATIVE_TRACE("err: WriteFile failed, gle=%lu\n", ::GetLastError());
 			}
 		}
 
@@ -135,7 +135,7 @@ namespace MusicPlayerLibrary {
 			LARGE_INTEGER new_position = {};
 			if (!SetFilePointerEx(file_, distance, &new_position, ToWindowsSeekOrigin(origin)))
 			{
-				ATLTRACE("err: SetFilePointerEx failed, gle=%lu\n", ::GetLastError());
+				NATIVE_TRACE("err: SetFilePointerEx failed, gle=%lu\n", ::GetLastError());
 				return SeekFailure;
 			}
 
@@ -155,7 +155,7 @@ namespace MusicPlayerLibrary {
 			LARGE_INTEGER file_size = {};
 			if (!GetFileSizeEx(file_, &file_size))
 			{
-				ATLTRACE("err: GetFileSizeEx failed, gle=%lu\n", ::GetLastError());
+				NATIVE_TRACE("err: GetFileSizeEx failed, gle=%lu\n", ::GetLastError());
 				return 0;
 			}
 
@@ -171,7 +171,7 @@ namespace MusicPlayerLibrary {
 			LARGE_INTEGER position = {};
 			if (!SetFilePointerEx(file_, distance, &position, FILE_CURRENT))
 			{
-				ATLTRACE("err: SetFilePointerEx failed, gle=%lu\n", ::GetLastError());
+				NATIVE_TRACE("err: SetFilePointerEx failed, gle=%lu\n", ::GetLastError());
 				return 0;
 			}
 
@@ -225,14 +225,14 @@ namespace MusicPlayerLibrary {
 
 			if (position_ > data_.max_size())
 			{
-				ATLTRACE("err: memory file write position is too large\n");
+				NATIVE_TRACE("err: memory file write position is too large\n");
 				return;
 			}
 
 			const size_t write_position = position_;
 			if (static_cast<size_t>(count) > data_.max_size() - write_position)
 			{
-				ATLTRACE("err: memory file write size is too large\n");
+				NATIVE_TRACE("err: memory file write size is too large\n");
 				return;
 			}
 
@@ -269,7 +269,7 @@ namespace MusicPlayerLibrary {
 				const ULONGLONG distance = static_cast<ULONGLONG>(-(offset + 1)) + 1;
 				if (distance > base_position)
 				{
-					ATLTRACE("err: memory file seek before begin\n");
+					NATIVE_TRACE("err: memory file seek before begin\n");
 					return SeekFailure;
 				}
 				new_position = base_position - distance;
@@ -279,7 +279,7 @@ namespace MusicPlayerLibrary {
 				const ULONGLONG distance = static_cast<ULONGLONG>(offset);
 				if (base_position > (std::numeric_limits<ULONGLONG>::max)() - distance)
 				{
-					ATLTRACE("err: memory file seek position overflow\n");
+					NATIVE_TRACE("err: memory file seek position overflow\n");
 					return SeekFailure;
 				}
 				new_position = base_position + distance;
