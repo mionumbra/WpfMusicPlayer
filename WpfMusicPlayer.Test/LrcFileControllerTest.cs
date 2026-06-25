@@ -85,6 +85,20 @@ public sealed class LrcFileControllerTest
     }
 
     [TestMethod]
+    public void ParseLrcToIntermediateJson_LastPlainLine_ExportsNonZeroDuration()
+    {
+        const string lrc = "[00:10.00]Last line";
+
+        using var doc = ParseToJson(lrc);
+        var line = GetLyricLines(doc).Single();
+        var startMs = line.GetProperty("time_start_ms").GetInt32();
+        var endMs = line.GetProperty("time_end_ms").GetInt32();
+
+        Assert.AreEqual(10000, startMs);
+        Assert.IsGreaterThan(startMs, endMs, $"Expected last line end time to be greater than start time, got {startMs}..{endMs}.");
+    }
+
+    [TestMethod]
     public void ParseLrcToIntermediateJson_TimeFormats_NormalizesMilliseconds()
     {
         const string lrc =
@@ -471,6 +485,150 @@ public sealed class LrcFileControllerTest
 
         Assert.AreEqual(1500, metadataOffsetVm.Lyrics[0].TimeMs);
         Assert.AreEqual(1200, overrideOffsetVm.Lyrics[0].TimeMs);
+    }
+
+    [TestMethod]
+    public void LyricsViewModel_LoadLyrics_PersistsDatabaseCachedLrcAsIntermediateJson()
+    {
+        const string lrc = "[00:01.00]Stored";
+        var vm = CreateLyricsViewModel();
+        string? storedLyric = null;
+        int? storedOffset = null;
+        vm.UpdateCurrentLyricRequested += (content, offsetMs) =>
+        {
+            storedLyric = content;
+            storedOffset = offsetMs;
+        };
+
+        vm.LoadLyrics(null, lrc, null, 10f, 0, SuppliedLyricSource.DatabaseCache);
+
+        Assert.IsNotNull(storedLyric);
+        Assert.AreEqual(0, storedOffset);
+        using var doc = JsonDocument.Parse(storedLyric);
+        var line = GetLyricLines(doc).Single();
+        Assert.AreEqual("Stored", GetRoleLine(line, "lyric").GetProperty("text").GetString());
+    }
+
+    [TestMethod]
+    public void LyricsViewModel_LoadLyrics_DoesNotPersistDatabaseCachedIntermediateJson()
+    {
+        const string json = """
+                            {
+                              "format_version": 1,
+                              "offset": 0,
+                              "lyric_lines": [
+                                {
+                                  "time_start_ms": 1000,
+                                  "time_end_ms": 2000,
+                                  "lines": [
+                                    {
+                                      "role": "lyric",
+                                      "text": "Cached JSON"
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                            """;
+        var vm = CreateLyricsViewModel();
+        var writeBackRequested = false;
+        vm.UpdateCurrentLyricRequested += (_, _) => writeBackRequested = true;
+
+        vm.LoadLyrics(null, json, null, 10f, 0, SuppliedLyricSource.DatabaseCache);
+
+        Assert.IsFalse(writeBackRequested);
+        Assert.HasCount(1, vm.Lyrics);
+        Assert.AreEqual("Cached JSON", vm.Lyrics[0].Text);
+    }
+
+    [TestMethod]
+    public void LyricsViewModel_LoadLyrics_PersistsAutoLoadedLocalLrcAsIntermediateJson()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        var audioPath = Path.Combine(tempDir, "Local Song.mp3");
+        var lyricPath = Path.Combine(tempDir, "Local Song.lrc");
+        Directory.CreateDirectory(tempDir);
+        string? storedLyric = null;
+        int? storedOffset = null;
+
+        try
+        {
+            File.WriteAllText(audioPath, string.Empty, Encoding.UTF8);
+            File.WriteAllText(lyricPath, "[00:01.00]Local", Encoding.UTF8);
+            var vm = CreateLyricsViewModel();
+            vm.UpdateCurrentLyricRequested += (content, offsetMs) =>
+            {
+                storedLyric = content;
+                storedOffset = offsetMs;
+            };
+
+            vm.LoadLyrics(audioPath, null, "Local Song", 10f, 0);
+
+            Assert.IsNotNull(storedLyric);
+            Assert.AreEqual(0, storedOffset);
+            using var doc = JsonDocument.Parse(storedLyric);
+            var line = GetLyricLines(doc).Single();
+            Assert.AreEqual("Local", GetRoleLine(line, "lyric").GetProperty("text").GetString());
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir))
+                Directory.Delete(tempDir, true);
+        }
+    }
+
+    [TestMethod]
+    public void LyricsViewModel_LoadLyrics_PersistsAutoLoadedLocalIntermediateJson()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        var audioPath = Path.Combine(tempDir, "Local Json.mp3");
+        var lyricPath = Path.Combine(tempDir, "Local Json.wplrc");
+        const string json = """
+                            {
+                              "format_version": 1,
+                              "offset": 0,
+                              "lyric_lines": [
+                                {
+                                  "time_start_ms": 1000,
+                                  "time_end_ms": 2000,
+                                  "lines": [
+                                    {
+                                      "role": "lyric",
+                                      "text": "Local JSON"
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                            """;
+        Directory.CreateDirectory(tempDir);
+        string? storedLyric = null;
+        int? storedOffset = null;
+
+        try
+        {
+            File.WriteAllText(audioPath, string.Empty, Encoding.UTF8);
+            File.WriteAllText(lyricPath, json, Encoding.UTF8);
+            var vm = CreateLyricsViewModel();
+            vm.UpdateCurrentLyricRequested += (content, offsetMs) =>
+            {
+                storedLyric = content;
+                storedOffset = offsetMs;
+            };
+
+            vm.LoadLyrics(audioPath, null, "Local Json", 10f, 0);
+
+            Assert.IsNotNull(storedLyric);
+            Assert.AreEqual(0, storedOffset);
+            using var doc = JsonDocument.Parse(storedLyric);
+            var line = GetLyricLines(doc).Single();
+            Assert.AreEqual("Local JSON", GetRoleLine(line, "lyric").GetProperty("text").GetString());
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir))
+                Directory.Delete(tempDir, true);
+        }
     }
 
     [TestMethod]

@@ -128,7 +128,7 @@ public class SettingsViewModel : ObservableObject
     public AudioSettings.ChannelType[] ChannelOptions { get; } =
         Enum.GetValues<AudioSettings.ChannelType>();
 
-    public int[] SampleRateOptions { get; } = [44100, 48000, 88200, 96000, 192000];
+    public int[] SampleRateOptions { get; } = [8000, 11025, 16000, 22050, 44100, 48000, 88200, 96000, 192000];
 
     private void LoadFromConfig()
     {

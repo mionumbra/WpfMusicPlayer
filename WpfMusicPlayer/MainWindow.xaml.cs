@@ -37,6 +37,7 @@ namespace WpfMusicPlayer
         private bool _isClosing;
         private bool _hasDesktopLyricStateBeforeMiniPlayer;
         private bool _wasDesktopLyricVisibleBeforeMiniPlayer;
+        private bool _isSampleRateRestartPromptOpen;
 
         public MainWindow(MainViewModel viewModel, ISmtcService smtcService)
         {
@@ -132,6 +133,12 @@ namespace WpfMusicPlayer
                 return;
             }
 
+            if (e.PropertyName == nameof(MainViewModel.PendingSampleRate))
+            {
+                PromptRestartForSampleRateChange();
+                return;
+            }
+
             if (e.PropertyName == nameof(MainViewModel.IsDecoding))
             {
                 if (ViewModel.IsDecoding)
@@ -155,6 +162,31 @@ namespace WpfMusicPlayer
                 var oldView = _previousView;
                 _previousView = ViewModel.ActiveView;
                 AnimateViewTransition(oldView, ViewModel.ActiveView, gen);
+            }
+        }
+
+        private void PromptRestartForSampleRateChange()
+        {
+            if (!ViewModel.IsSampleRateRestartRequired || _isSampleRateRestartPromptOpen)
+                return;
+
+            _isSampleRateRestartPromptOpen = true;
+            try
+            {
+                var selection = WpfMessageBox.Show(
+                    $"采样率将在重启后切换为 {ViewModel.PendingSampleRate} Hz。是否立即重启以应用设置更改？",
+                    "应用采样率设置",
+                    WpfMessageBoxButton.OKCancel,
+                    WpfMessageBoxIcon.Information);
+
+                if (selection == WpfMessageBoxResult.OK)
+                {
+                    RebootApplicationHelper.RebootApplication();
+                }
+            }
+            finally
+            {
+                _isSampleRateRestartPromptOpen = false;
             }
         }
 

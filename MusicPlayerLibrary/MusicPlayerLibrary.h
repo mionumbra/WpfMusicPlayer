@@ -61,6 +61,7 @@ namespace MusicPlayerLibrary {
 		unsigned char* buffer = nullptr;
 
 		std::wstring file_extension;
+		bool skip_album_art_loading = false;
 		std::unique_ptr<IFile> file_stream;
 		std::atomic_bool file_stream_end = false;
 		std::atomic_bool user_request_stop = false;
@@ -73,7 +74,6 @@ namespace MusicPlayerLibrary {
 		int fifo_audio_channels = 0;
 		AVSampleFormat fifo_audio_sample_fmt = AV_SAMPLE_FMT_NONE;
 		int fifo_sample_rate = 0;
-		HBITMAP album_art = nullptr;
 		std::wstring song_title = {};
 		std::wstring song_artist = {};
 
@@ -127,14 +127,14 @@ namespace MusicPlayerLibrary {
 		static int read_func_wrapper(void* opaque, uint8_t* buf, int buf_size);
 		int64_t seek_func(int64_t offset, int whence);
 		static int64_t seek_func_wrapper(void* opaque, int64_t offset, int whence);
-		int load_audio_context(const std::wstring& audio_filename, const std::wstring& file_extension_in = {});
+		int load_audio_context(const std::wstring& audio_filename, const std::wstring& file_extension_in = {}, bool skip_album_art_loading = false);
 		int load_audio_context_from_file_stream();
 		void release_audio_context();
 		void reset_audio_context();
 		bool is_audio_context_initialized();
-		static HBITMAP download_ncm_album_art(const std::wstring& url, int scale_size = 128);
-		HBITMAP decode_id3_album_art(int stream_index, int scale_size = 128);
-		void download_ncm_album_art_async(const std::wstring& url, int scale_size);
+		static array<System::Byte>^ download_ncm_album_art(const std::wstring& url);
+		array<System::Byte>^ get_id3_album_art_stream(int stream_index);
+		void download_ncm_album_art_async(const std::wstring& url);
 		void read_metadata();
 
 		// playback area
@@ -197,6 +197,7 @@ namespace MusicPlayerLibrary {
 		AVFilterGraph* filter_graph = nullptr;
 		struct av_filter_eq_graph
 		{
+			int band_index;
 			int freq;
 			int gain_values;
 			AVFilterContext* eq_context;
@@ -223,7 +224,7 @@ namespace MusicPlayerLibrary {
 		// Interfaces
 		bool IsInitialized();
 		bool IsPlaying();
-		void OpenFile(const std::wstring& fileName, const std::wstring& file_extension_in = {});
+		void OpenFile(const std::wstring& fileName, const std::wstring& file_extension_in = {}, bool skip_album_art_loading = false);
 		float GetMusicTimeLength();
 		float GetCurrentMusicPosition();
 		std::wstring GetSongTitle();
@@ -251,7 +252,7 @@ namespace MusicPlayerLibrary {
 	};
 
 	public delegate void PlayerFileInitDelegate();
-	public delegate void PlayerAlbumArtInitDelegate(System::Drawing::Image^ fromDecode);
+	public delegate void PlayerAlbumArtInitDelegate(array<System::Byte>^ encodedImage);
 	public delegate void PlayerStartDelegate();
 	public delegate void PlayerPauseDelegate();
 	public delegate void PlayerStopDelegate();
@@ -299,11 +300,13 @@ namespace MusicPlayerLibrary {
 		* Invoke or similar mechanism to avoid cross-thread operation exceptions.
 		*/
 		void ProcessEvent(MessageType event_type, WPARAM wParam, LPARAM lParam);
+		void ProcessAlbumArtEvent(array<System::Byte>^ encodedImage);
 		void ProcessError(System::Exception^ exception);
 
 		bool IsInitialized();
 		bool IsPlaying();
 		void OpenFile(const System::String^ fileName);
+		void OpenFile(const System::String^ fileName, bool skipAlbumArtLoading);
 		float GetMusicTimeLength();
 		float GetCurrentMusicPosition();
 		System::String^ GetSongTitle();

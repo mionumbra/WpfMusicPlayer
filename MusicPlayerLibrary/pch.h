@@ -45,6 +45,7 @@
 #include <deque>
 #include <cstdio>
 #include <cinttypes>
+#include <cmath>
 
 #include <windows.h>
 #include <wincodec.h>

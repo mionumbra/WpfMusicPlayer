@@ -13,37 +13,29 @@
 
 using namespace System::Runtime::InteropServices;
 
-static float GetSystemDpiScale()
-{
-	HDC hdc = ::GetDC(nullptr);
-	int dpiX = GetDeviceCaps(hdc, LOGPIXELSX);
-	::ReleaseDC(nullptr, hdc);
-	return static_cast<float>(dpiX) / 96.0f;
-}
-
 namespace
 {
-	struct ComReleaser
+	constexpr int EqualizerBandCount = 10;
+	constexpr int EqualizerBandFrequenciesHz[EqualizerBandCount] = { 31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000 };
+
+	bool IsEqualizerBandSupportedBySampleRate(int sample_rate, int frequency_hz)
 	{
-		template <typename T>
-		void operator()(T* ptr) const noexcept
+		return sample_rate <= 0 || frequency_hz * 2 < sample_rate;
+	}
+
+	array<System::Byte>^ CopyImageBufferToManagedArray(const BYTE* image_data, ULONGLONG image_size)
+	{
+		if (image_data == nullptr || image_size == 0)
+			return nullptr;
+		if (image_size > static_cast<ULONGLONG>((std::numeric_limits<int>::max)()))
 		{
-			if (ptr)
-				ptr->Release();
+			NATIVE_TRACE("err: image buffer is too large for managed array\n");
+			return nullptr;
 		}
-	};
 
-	template <typename T>
-	using com_ptr = std::unique_ptr<T, ComReleaser>;
-
-	template <typename T, typename Factory>
-	HRESULT CreateComPtr(com_ptr<T>& target, Factory factory)
-	{
-		target.reset();
-		T* raw = nullptr;
-		const HRESULT hr = factory(&raw);
-		target.reset(raw);
-		return hr;
+		array<System::Byte>^ buffer = gcnew array<System::Byte>(static_cast<int>(image_size));
+		Marshal::Copy(System::IntPtr(const_cast<BYTE*>(image_data)), buffer, 0, buffer->Length);
+		return buffer;
 	}
 
 	bool EqualsIgnoreCase(std::wstring_view left, std::wstring_view right)
@@ -65,192 +57,6 @@ namespace
 			ch = static_cast<wchar_t>(std::towlower(ch));
 	}
 
-	enum class ImageResizeMode
-	{
-		Stretch,
-		CenterCrop
-	};
-
-	HBITMAP DecodeImageBufferToHBitmap(BYTE* image_data, ULONGLONG image_size, int scale_size, ImageResizeMode resize_mode)
-	{
-		if (image_data == nullptr || image_size == 0 || scale_size <= 0)
-			return nullptr;
-		if (image_size > (std::numeric_limits<DWORD>::max)())
-		{
-			NATIVE_TRACE("err: image buffer is too large for WIC stream\n");
-			return nullptr;
-		}
-
-		com_ptr<IWICImagingFactory> imaging_factory;
-		HRESULT hr = CreateComPtr(imaging_factory, [](IWICImagingFactory** out)
-			{
-				return CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
-					IID_PPV_ARGS(out));
-			});
-		if (FAILED(hr) || !imaging_factory)
-		{
-			NATIVE_TRACE("err: create WIC imaging factory failed, hr=0x%08lx\n", hr);
-			return nullptr;
-		}
-
-		com_ptr<IWICStream> iwic_stream;
-		hr = CreateComPtr(iwic_stream, [&](IWICStream** out)
-			{
-				return imaging_factory->CreateStream(out);
-			});
-		if (FAILED(hr) || !iwic_stream)
-		{
-			NATIVE_TRACE("err: create WIC stream failed, hr=0x%08lx\n", hr);
-			return nullptr;
-		}
-
-		hr = iwic_stream->InitializeFromMemory(image_data, static_cast<DWORD>(image_size));
-		if (FAILED(hr))
-		{
-			NATIVE_TRACE("err: initialize WIC stream from memory failed, hr=0x%08lx\n", hr);
-			return nullptr;
-		}
-
-		com_ptr<IWICBitmapDecoder> bitmap_decoder;
-		hr = CreateComPtr(bitmap_decoder, [&](IWICBitmapDecoder** out)
-			{
-				return imaging_factory->CreateDecoderFromStream(iwic_stream.get(), nullptr,
-					WICDecodeMetadataCacheOnLoad, out);
-			});
-		if (FAILED(hr) || !bitmap_decoder)
-		{
-			NATIVE_TRACE("err: create decoder from stream failed, hr=0x%08lx\n", hr);
-			return nullptr;
-		}
-
-		com_ptr<IWICBitmapFrameDecode> source;
-		hr = CreateComPtr(source, [&](IWICBitmapFrameDecode** out)
-			{
-				return bitmap_decoder->GetFrame(0, out);
-			});
-		if (FAILED(hr) || !source)
-		{
-			NATIVE_TRACE("err: get WIC bitmap frame failed, hr=0x%08lx\n", hr);
-			return nullptr;
-		}
-
-		com_ptr<IWICFormatConverter> iwic_format_converter;
-		hr = CreateComPtr(iwic_format_converter, [&](IWICFormatConverter** out)
-			{
-				return imaging_factory->CreateFormatConverter(out);
-			});
-		if (FAILED(hr) || !iwic_format_converter)
-		{
-			NATIVE_TRACE("err: create WIC format converter failed, hr=0x%08lx\n", hr);
-			return nullptr;
-		}
-
-		hr = iwic_format_converter->Initialize(source.get(), GUID_WICPixelFormat32bppBGRA,
-			WICBitmapDitherTypeNone, nullptr, 0.f,
-			WICBitmapPaletteTypeCustom);
-		if (FAILED(hr))
-		{
-			NATIVE_TRACE("err: initialize WIC format converter failed, hr=0x%08lx\n", hr);
-			return nullptr;
-		}
-
-		UINT width = 0;
-		UINT height = 0;
-		hr = source->GetSize(&width, &height);
-		if (FAILED(hr) || width == 0 || height == 0)
-		{
-			NATIVE_TRACE("err: get WIC bitmap size failed, hr=0x%08lx\n", hr);
-			return nullptr;
-		}
-
-		com_ptr<IWICBitmapClipper> clipper;
-		com_ptr<IWICBitmapScaler> scaler;
-		hr = CreateComPtr(scaler, [&](IWICBitmapScaler** out)
-			{
-				return imaging_factory->CreateBitmapScaler(out);
-			});
-		if (FAILED(hr) || !scaler)
-		{
-			NATIVE_TRACE("err: create WIC bitmap scaler failed, hr=0x%08lx\n", hr);
-			return nullptr;
-		}
-
-		if (resize_mode == ImageResizeMode::CenterCrop)
-		{
-			const double scale_x = static_cast<double>(scale_size) / width;
-			const double scale_y = static_cast<double>(scale_size) / height;
-			const double scale = scale_x > scale_y ? scale_x : scale_y;
-
-			const UINT crop_width = static_cast<UINT>(scale_size / scale);
-			const UINT crop_height = static_cast<UINT>(scale_size / scale);
-			const UINT crop_x = (width - crop_width) / 2;
-			const UINT crop_y = (height - crop_height) / 2;
-
-			NATIVE_TRACE("info: center crop - src(%u %u), crop(%u %u) at (%u %u)\n",
-				width, height, crop_width, crop_height, crop_x, crop_y);
-
-			hr = CreateComPtr(clipper, [&](IWICBitmapClipper** out)
-				{
-					return imaging_factory->CreateBitmapClipper(out);
-				});
-			if (FAILED(hr) || !clipper)
-			{
-				NATIVE_TRACE("err: create WIC bitmap clipper failed, hr=0x%08lx\n", hr);
-				return nullptr;
-			}
-
-			const WICRect crop_rect = { static_cast<INT>(crop_x), static_cast<INT>(crop_y),
-								  static_cast<INT>(crop_width), static_cast<INT>(crop_height) };
-			hr = clipper->Initialize(iwic_format_converter.get(), &crop_rect);
-			if (FAILED(hr))
-			{
-				NATIVE_TRACE("err: initialize WIC bitmap clipper failed, hr=0x%08lx\n", hr);
-				return nullptr;
-			}
-
-			hr = scaler->Initialize(clipper.get(), scale_size, scale_size, WICBitmapInterpolationModeFant);
-		}
-		else
-		{
-			hr = scaler->Initialize(iwic_format_converter.get(), scale_size, scale_size, WICBitmapInterpolationModeFant);
-		}
-		if (FAILED(hr))
-		{
-			NATIVE_TRACE("err: initialize WIC bitmap scaler failed, hr=0x%08lx\n", hr);
-			return nullptr;
-		}
-
-		BITMAPINFO bmi = {};
-		bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-		bmi.bmiHeader.biWidth = scale_size;
-		bmi.bmiHeader.biHeight = -scale_size; // top-down
-		bmi.bmiHeader.biPlanes = 1;
-		bmi.bmiHeader.biBitCount = 32;
-		bmi.bmiHeader.biCompression = BI_RGB;
-
-		const UINT stride = scale_size * 4;
-		const UINT buffer_size = stride * scale_size;
-		BYTE* image_bits = nullptr;
-		HDC hdc_screen = GetDC(nullptr);
-		HBITMAP bitmap = CreateDIBSection(hdc_screen, &bmi, DIB_RGB_COLORS,
-			reinterpret_cast<void**>(&image_bits), nullptr, 0);
-		ReleaseDC(nullptr, hdc_screen);
-		if (!bitmap || image_bits == nullptr)
-		{
-			NATIVE_TRACE("err: create album art DIB section failed\n");
-			return nullptr;
-		}
-
-		hr = scaler->CopyPixels(nullptr, stride, buffer_size, image_bits);
-		if (FAILED(hr))
-		{
-			NATIVE_TRACE("err: copy WIC pixels failed, hr=0x%08lx\n", hr);
-			DeleteObject(bitmap);
-			return nullptr;
-		}
-
-		return bitmap;
-	}
 }
 
 int MusicPlayerLibrary::MusicPlayerNative::read_func(uint8_t* buf, int buf_size) {
@@ -287,17 +93,18 @@ int64_t MusicPlayerLibrary::MusicPlayerNative::seek_func(int64_t offset, int whe
 
 int64_t MusicPlayerLibrary::MusicPlayerNative::seek_func_wrapper(void* opaque, int64_t offset, int whence)
 {
-	auto callObject = reinterpret_cast<MusicPlayerLibrary::MusicPlayerNative*>(opaque);
+	auto callObject = reinterpret_cast<MusicPlayerNative*>(opaque);
 	return callObject->seek_func(offset, whence);
 }
 
-inline int MusicPlayerLibrary::MusicPlayerNative::load_audio_context(const std::wstring& audio_filename, const std::wstring& file_extension_in)
+inline int MusicPlayerLibrary::MusicPlayerNative::load_audio_context(const std::wstring& audio_filename, const std::wstring& file_extension_in, bool skip_album_art_loading)
 {
 	// 打开文件流
 	// std::ios::sync_with_stdio(false);
 	file_stream = GetDefaultFileSystem().OpenReadFile(audio_filename, true, false);
 	bool is_ncm = false;
 	file_extension = file_extension_in;
+	this->skip_album_art_loading = skip_album_art_loading;
 	if (!file_stream)
 	{
 		NATIVE_TRACE("err: file not exists!\n");
@@ -327,7 +134,10 @@ inline int MusicPlayerLibrary::MusicPlayerNative::load_audio_context(const std::
 			auto decryptor_result = NcmDecryptor::Open(std::move(file_stream), audio_filename);
 			file_stream = std::move(decryptor_result.audio_file);
 			file_stream->SeekToBegin();
-			download_ncm_album_art_async(decryptor_result.metadata.pictureUrl, static_cast<int>(500.f * GetSystemDpiScale()));
+			if (!skip_album_art_loading)
+			{
+				download_ncm_album_art_async(decryptor_result.metadata.pictureUrl);
+			}
 		}
 		catch (std::exception& e)
 		{
@@ -434,14 +244,9 @@ int MusicPlayerLibrary::MusicPlayerNative::load_audio_context_from_file_stream()
 		}
 	}
 
-	if (image_stream_id != -1) {
-		album_art = decode_id3_album_art(image_stream_id, static_cast<int>(500.0f * GetSystemDpiScale()));
-	}
-
-	if (this->file_extension != L"ncm")
+	if (image_stream_id != -1 && !skip_album_art_loading && this->file_extension != L"ncm")
 	{
-		managed_music_player->ProcessEvent(WM_PLAYER_ALBUM_ART_INIT, reinterpret_cast<WPARAM>(album_art), 0);
-		album_art = nullptr; // ownership transferred to async event handler
+		managed_music_player->ProcessAlbumArtEvent(get_id3_album_art_stream(image_stream_id));
 	}
 	read_metadata();
 
@@ -520,11 +325,6 @@ int MusicPlayerLibrary::MusicPlayerNative::load_audio_context_from_file_stream()
 
 void MusicPlayerLibrary::MusicPlayerNative::release_audio_context()
 {
-	if (album_art)
-	{
-		DeleteObject(album_art);
-		album_art = nullptr;
-	}
 	if (avio_context)
 	{
 		// 释放缓冲区上下文
@@ -572,6 +372,8 @@ void MusicPlayerLibrary::MusicPlayerNative::reset_audio_context()
 	}
 	playback_state.store(audio_playback_state_init);
 	reset_audio_fifo();
+	if (fft_executer)
+		fft_executer->ResetBuffers();
 	init_decoder_thread();
 	// load_audio_context_from_file_stream();
 }
@@ -584,7 +386,7 @@ bool MusicPlayerLibrary::MusicPlayerNative::is_audio_context_initialized()
 		&& file_stream;
 }
 
-HBITMAP MusicPlayerLibrary::MusicPlayerNative::download_ncm_album_art(const std::wstring& url, int scale_size)
+array<System::Byte>^ MusicPlayerLibrary::MusicPlayerNative::download_ncm_album_art(const std::wstring& url)
 {
 	if (url.empty()) return nullptr;
 
@@ -751,28 +553,21 @@ HBITMAP MusicPlayerLibrary::MusicPlayerNative::download_ncm_album_art(const std:
 		NATIVE_TRACE("err: get album art memory buffer failed\n");
 		return nullptr;
 	}
-	HBITMAP bmp = DecodeImageBufferToHBitmap(
-		static_cast<BYTE*>(pBufStart),
-		file->GetLength(),
-		scale_size,
-		ImageResizeMode::Stretch);
-	return bmp;
+	return CopyImageBufferToManagedArray(static_cast<BYTE*>(pBufStart), file->GetLength());
 }
 
-HBITMAP MusicPlayerLibrary::MusicPlayerNative::decode_id3_album_art(const int stream_index, int scale_size)
+array<System::Byte>^ MusicPlayerLibrary::MusicPlayerNative::get_id3_album_art_stream(const int stream_index)
 {
 	if (!format_context) return nullptr;
 
 	// stream_index = attached pic
 	AVPacket pkt = format_context->streams[stream_index]->attached_pic;
-	return DecodeImageBufferToHBitmap(
+	return CopyImageBufferToManagedArray(
 		pkt.data,
-		static_cast<ULONGLONG>(pkt.size),
-		scale_size,
-		ImageResizeMode::CenterCrop);
+		static_cast<ULONGLONG>(pkt.size));
 }
 
-void MusicPlayerLibrary::MusicPlayerNative::download_ncm_album_art_async(const std::wstring& url, int scale_size)
+void MusicPlayerLibrary::MusicPlayerNative::download_ncm_album_art_async(const std::wstring& url)
 {
 	if (album_art_worker_thread.joinable())
 	{
@@ -780,21 +575,16 @@ void MusicPlayerLibrary::MusicPlayerNative::download_ncm_album_art_async(const s
 		album_art_worker_thread.join();
 	}
 
-	album_art_worker_thread = std::jthread([this, url, scale_size](std::stop_token stop_token)
+	album_art_worker_thread = std::jthread([this, url](std::stop_token stop_token)
 		{
 			if (stop_token.stop_requested())
 				return;
 
-			HBITMAP bitmap = download_ncm_album_art(url, scale_size);
+			array<System::Byte>^ imageBytes = download_ncm_album_art(url);
 			if (stop_token.stop_requested())
-			{
-				if (bitmap)
-					DeleteObject(bitmap);
 				return;
-			}
 
-			managed_music_player->ProcessEvent(WM_PLAYER_ALBUM_ART_INIT, reinterpret_cast<WPARAM>(bitmap), 0);
-			// AfxGetMainWnd()->PostMessage(WM_PLAYER_ALBUM_ART_INIT, reinterpret_cast<WPARAM>(bitmap));
+			managed_music_player->ProcessAlbumArtEvent(imageBytes);
 		});
 }
 
@@ -910,7 +700,7 @@ void MusicPlayerLibrary::MusicPlayerNative::notify_all_frame_notifications()
 
 int MusicPlayerLibrary::MusicPlayerNative::get_audio_fifo_low_watermark()
 {
-	return (std::max)(xaudio2_play_frame_size * 2, xaudio2_play_frame_size);
+	return static_cast<int>(sample_rate / 48000.00 * xaudio2_play_frame_size);
 }
 
 int MusicPlayerLibrary::MusicPlayerNative::get_audio_fifo_high_watermark()
@@ -1018,7 +808,8 @@ inline int MusicPlayerLibrary::MusicPlayerNative::initialize_audio_engine()
 	if (!codec_context)
 		return -1;
 
-	// COM init in CMFCMusicPlayerLibrary::MusicPlayerNative.cpp
+	// COM-based WIC calls replaced by libSkiaSharp in C# layer.
+	// C++ layer now only encapsulates raw picture bytes and submit payload to C# layer.
 
 	// create com obj
 	if (FAILED(XAudio2Create(&xaudio2)))
@@ -1030,8 +821,8 @@ inline int MusicPlayerLibrary::MusicPlayerNative::initialize_audio_engine()
 
 	// create mastering voice
 	if (FAILED(xaudio2->CreateMasteringVoice(&mastering_voice,
-		XAUDIO2_DEFAULT_CHANNELS,
-		XAUDIO2_DEFAULT_SAMPLERATE,
+		2,
+		sample_rate,
 		0, nullptr, nullptr,
 		AudioCategory_GameMedia))) {
 		NATIVE_TRACE("err: creating mastering voice failed\n");
@@ -1387,7 +1178,8 @@ void MusicPlayerLibrary::MusicPlayerNative::audio_playback_worker_thread()
 			int latency_ms = static_cast<int>(
 				static_cast<double>(latency_samples) * 1000.0 / wfx.nSamplesPerSec
 			);
-			fft_executer->SetDelayFrames(latency_ms / 16);
+			// Compensate XAudio2 output latency by timestamp instead of frame count.
+			fft_executer->SetOutputDelayMilliseconds(latency_ms);
 		}
 		double decode_time_ms = static_cast<double>(xaudio2_played_samples - prev_decode_cycle_xaudio2_played_samples) *
 			1000.0 / wfx.nSamplesPerSec;
@@ -1799,6 +1591,8 @@ inline void MusicPlayerLibrary::MusicPlayerNative::start_audio_playback()
 	{
 		stop_audio_playback(0);
 	}
+	if (fft_executer)
+		fft_executer->ResetBuffers();
 	user_request_stop.store(false);
 	audio_player_worker_thread = std::jthread(
 		[this] {
@@ -2112,7 +1906,7 @@ MusicPlayerLibrary::MusicPlayerNative::MusicPlayerNative() :
 		avutil_version(),
 		swresample_version());
 	NATIVE_TRACE("info: audio api backend: XAudio2 version %s\n", get_backend_implement_version());
-	eq_bands.assign(10, 0);
+	eq_bands.assign(EqualizerBandCount, 0);
 }
 
 /**
@@ -2161,25 +1955,32 @@ int MusicPlayerLibrary::MusicPlayerNative::init_av_filter_equalizer()
 	}
 	NATIVE_TRACE("info: resample filter created, param = %s\n", resample_args.c_str());
 
-	if (eq_bands.size() != 10)
+	if (eq_bands.size() != EqualizerBandCount)
 	{
 		NATIVE_TRACE("warn: invalid eq_bands size, =%d\n", static_cast<int>(eq_bands.size()));
-		eq_bands.assign(10, 0);
+		eq_bands.assign(EqualizerBandCount, 0);
 	}
 	else
 	{
 		NATIVE_TRACE("info: eq_bands already initialized, skip\n");
 	}
-	for (int i = 0; i < 10; i++)
+	for (int i = 0; i < EqualizerBandCount; i++)
 	{
-		constexpr int freq_hz[] = { 31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000 };
+		const int freq_hz = EqualizerBandFrequenciesHz[i];
+		if (!IsEqualizerBandSupportedBySampleRate(sample_rate, freq_hz))
+		{
+			NATIVE_TRACE("info: skip equalizer band %dHz for sample_rate=%d by Nyquist limit\n", freq_hz, sample_rate);
+			continue;
+		}
+
 		av_filter_eq_graph eq_graph{
-			.freq = freq_hz[i],
+			.band_index = i,
+			.freq = freq_hz,
 			.gain_values = eq_bands[i],
 			.eq_context = nullptr
 		};
 		eq_graph.eq_name = std::format("eq{}", i);
-		std::string arg_str = std::format("f={}:t=q:w=1:g={}", freq_hz[i], eq_bands[i]);
+		std::string arg_str = std::format("f={}:t=q:w=1:g={}", freq_hz, eq_bands[i]);
 		NATIVE_TRACE("info: init_av_filter_equalizer, filter args: %s\n", arg_str.c_str());
 
 		ret = avfilter_graph_create_filter(&eq_graph.eq_context, avfilter_get_by_name("equalizer"),
@@ -2213,19 +2014,17 @@ int MusicPlayerLibrary::MusicPlayerNative::init_av_filter_equalizer()
 		FFMPEG_CRITICAL_ERROR(ret);
 		return ret;
 	}
-	if ((ret = avfilter_link(volume_ctx, 0, filter_graphs[0].eq_context, 0)) < 0)
+	AVFilterContext* equalizer_tail_ctx = volume_ctx;
+	for (auto& eq_graph : filter_graphs)
 	{
-		FFMPEG_CRITICAL_ERROR(ret);
-		return ret;
-	}
-	for (int i = 0; i < 9; i++)
-	{
-		if ((ret = avfilter_link(filter_graphs[i].eq_context, 0, filter_graphs[i + 1].eq_context, 0)) < 0)
+		if ((ret = avfilter_link(equalizer_tail_ctx, 0, eq_graph.eq_context, 0)) < 0)
 		{
 			FFMPEG_CRITICAL_ERROR(ret);
 			return ret;
 		}
+		equalizer_tail_ctx = eq_graph.eq_context;
 	}
+
 	ret = avfilter_graph_create_filter(&limiter_ctx, avfilter_get_by_name("alimiter"),
 		"lim", "limit=0.70:attack=5:release=50:level=disabled", nullptr, filter_graph);
 	if (ret < 0)
@@ -2233,7 +2032,7 @@ int MusicPlayerLibrary::MusicPlayerNative::init_av_filter_equalizer()
 		FFMPEG_CRITICAL_ERROR(ret);
 		return ret;
 	}
-	if ((ret = avfilter_link(filter_graphs[9].eq_context, 0, limiter_ctx, 0)) < 0)
+	if ((ret = avfilter_link(equalizer_tail_ctx, 0, limiter_ctx, 0)) < 0)
 	{
 		FFMPEG_CRITICAL_ERROR(ret);
 		return ret;
@@ -2282,8 +2081,7 @@ int MusicPlayerLibrary::MusicPlayerNative::init_av_filter_equalizer()
 
 bool MusicPlayerLibrary::MusicPlayerNative::is_av_filter_equalizer_initialized()
 {
-	return !filter_graphs.empty()
-		&& filter_context_src && filter_context_sink;
+	return filter_context_src && filter_context_sink;
 }
 
 void MusicPlayerLibrary::MusicPlayerNative::reset_av_filter_equalizer()
@@ -2309,9 +2107,9 @@ bool MusicPlayerLibrary::MusicPlayerNative::IsPlaying()
 		playback_state.load() != audio_playback_state_init && playback_state.load() != audio_playback_state_stopped;
 }
 
-void MusicPlayerLibrary::MusicPlayerNative::OpenFile(const std::wstring& fileName, const std::wstring& file_extension_in)
+void MusicPlayerLibrary::MusicPlayerNative::OpenFile(const std::wstring& fileName, const std::wstring& file_extension_in, bool skip_album_art_loading)
 {
-	if (load_audio_context(fileName, file_extension_in)) {
+	if (load_audio_context(fileName, file_extension_in, skip_album_art_loading)) {
 		// AfxMessageBox(_T("err: load file failed, please check trace message!"), MB_ICONERROR);
 		throw gcnew System::InvalidOperationException("Load file failed, please re-run in terminal and check trace message!");
 	}
@@ -2414,6 +2212,7 @@ void MusicPlayerLibrary::MusicPlayerNative::SeekToPosition(float time, bool need
 	}
 }
 
+// 根据奈奎斯特采样定律，建议至少选择44.1kHz以上的采样率获得完整听觉体验
 void MusicPlayerLibrary::MusicPlayerNative::SetSampleRate(int sample_rate)
 {
 	if (IsInitialized()) {
@@ -2435,30 +2234,40 @@ std::wstring MusicPlayerLibrary::MusicPlayerNative::GetID3Lyric()
 
 int MusicPlayerLibrary::MusicPlayerNative::GetEqualizerBand(int index)
 {
-	if (index < 0 || index >= 10) return 0;
+	if (index < 0 || index >= EqualizerBandCount) return 0;
 	std::lock_guard graph_lock(filter_graph_mutex);
-	if (eq_bands.size() == 10)
+	if (eq_bands.size() == EqualizerBandCount)
 		return eq_bands[index];
-	if (index < static_cast<int>(filter_graphs.size()))
-		return filter_graphs[index].gain_values;
+	const auto graph = std::find_if(filter_graphs.begin(), filter_graphs.end(),
+		[index](const av_filter_eq_graph& eq_graph)
+		{
+			return eq_graph.band_index == index;
+		});
+	if (graph != filter_graphs.end())
+		return graph->gain_values;
 	return 0;
 }
 
 void MusicPlayerLibrary::MusicPlayerNative::SetEqualizerBand(int index, int value)
 {
-	if (index < 0 || index >= 10) return;
+	if (index < 0 || index >= EqualizerBandCount) return;
 	if (value < -24) value = -24;
 	else if (value > 24) value = 24;
 	std::lock_guard graph_lock(filter_graph_mutex);
-	if (eq_bands.size() == 10)
+	if (eq_bands.size() == EqualizerBandCount)
 		eq_bands[index] = value;
-	if (this->is_av_filter_equalizer_initialized() && index < static_cast<int>(filter_graphs.size()))
+
+	auto graph = std::find_if(filter_graphs.begin(), filter_graphs.end(),
+		[index](const av_filter_eq_graph& eq_graph)
+		{
+			return eq_graph.band_index == index;
+		});
+	if (this->is_av_filter_equalizer_initialized() && graph != filter_graphs.end())
 	{
-		filter_graphs[index].gain_values = value;
-		std::string eq_name = std::format("eq{}", index);
+		graph->gain_values = value;
 		std::string gain_val = std::format("{}", value);
 
-		avfilter_graph_send_command(filter_graph, eq_name.c_str(), "gain", gain_val.c_str(), nullptr, 0, 0);
+		avfilter_graph_send_command(filter_graph, graph->eq_name.c_str(), "gain", gain_val.c_str(), nullptr, 0, 0);
 	}
 }
 
@@ -2541,6 +2350,20 @@ void MusicPlayerLibrary::MusicPlayer::ProcessEvent(MessageType event_type, WPARA
 		gcnew System::Threading::WaitCallback(this, &MusicPlayer::ProcessEventCore), state);
 }
 
+void MusicPlayerLibrary::MusicPlayer::ProcessAlbumArtEvent(array<System::Byte>^ encodedImage)
+{
+	if (!native_handle)
+		return;
+
+	ProcessEventState^ state = gcnew ProcessEventState();
+	state->EventType = WM_PLAYER_ALBUM_ART_INIT;
+	state->WParam = IntPtr::Zero;
+	state->LParam = IntPtr::Zero;
+	state->Payload = encodedImage;
+	System::Threading::ThreadPool::QueueUserWorkItem(
+		gcnew System::Threading::WaitCallback(this, &MusicPlayer::ProcessEventCore), state);
+}
+
 void MusicPlayerLibrary::MusicPlayer::ProcessError(System::Exception^ exception)
 {
 	if (!native_handle)
@@ -2568,19 +2391,8 @@ void MusicPlayerLibrary::MusicPlayer::ProcessEventCore(Object^ stateObj)
 			OnPlayerFileInit();
 		break;
 	case WM_PLAYER_ALBUM_ART_INIT:
-		if (OnPlayerAlbumArtInit) {
-			if (wParam == 0) {
-				OnPlayerAlbumArtInit(nullptr);
-				break;
-			}
-			IntPtr hBitmap = static_cast<IntPtr>(static_cast<long long>(wParam));
-			System::Drawing::Image^ bitmap = System::Drawing::Image::FromHbitmap(hBitmap);
-			DeleteObject(reinterpret_cast<HBITMAP>(wParam));
-			OnPlayerAlbumArtInit(bitmap);
-		}
-		else if (wParam != 0) {
-			DeleteObject(reinterpret_cast<HBITMAP>(wParam));
-		}
+		if (OnPlayerAlbumArtInit)
+			OnPlayerAlbumArtInit(safe_cast<array<Byte>^>(state->Payload));
 		break;
 	case WM_PLAYER_START:
 		if (OnPlayerStart)
@@ -2645,6 +2457,11 @@ static bool IsValidPath(const std::wstring& path)
 
 void MusicPlayerLibrary::MusicPlayer::OpenFile(const System::String^ fileName)
 {
+	OpenFile(fileName, false);
+}
+
+void MusicPlayerLibrary::MusicPlayer::OpenFile(const System::String^ fileName, bool skipAlbumArtLoading)
+{
 	check_if_null();
 	pin_ptr<const wchar_t> wch = PtrToStringChars(fileName);
 	std::wstring nativeFileName(wch);
@@ -2654,7 +2471,7 @@ void MusicPlayerLibrary::MusicPlayer::OpenFile(const System::String^ fileName)
 	std::wstring extension = PathFindExtension(nativeFileName.c_str());
 	if (!extension.empty() && extension[0] == L'.')
 		extension.erase(0, 1);
-	native_handle->OpenFile(nativeFileName, extension);
+	native_handle->OpenFile(nativeFileName, extension, skipAlbumArtLoading);
 }
 
 float MusicPlayerLibrary::MusicPlayer::GetMusicTimeLength()

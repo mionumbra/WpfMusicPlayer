@@ -1386,6 +1386,10 @@ std::string LrcFileControllerNative::to_intermediate_json(bool pretty) const
             {
                 end_ms = std::max(start_ms, node->get_intrinsic_end_time_ms());
             }
+            if (end_ms <= start_ms)
+            {
+                end_ms = start_ms + 1;
+            }
 
             writer.StartObject();
             writer.Key("time_start_ms");

@@ -68,6 +68,7 @@ internal static class RebootApplicationHelper
         var bands = vm.Equalizer.Bands;
         for (var i = 0; i < bands.Count; i++)
         {
+            if (!bands[i].IsEnabled) continue;
             parts.Add($"--eq:{i}");
             parts.Add(bands[i].Value.ToString(CultureInfo.InvariantCulture));
         }
