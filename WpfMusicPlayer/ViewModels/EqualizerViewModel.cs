@@ -11,17 +11,19 @@ public class EqualizerPreset(string name, int[] values)
 
 public class EqualizerViewModel : ObservableObject
 {
+    private static readonly int[] FrequenciesHz = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
     private readonly Action<int, int>? _applyBand;
     private bool _suppressPresetSwitch;
+    private EqualizerPreset? _selectedPreset;
 
     public EqualizerViewModel(Action<int, int>? applyBand = null)
     {
         _applyBand = applyBand;
 
         string[] labels = ["31", "62", "125", "250", "500", "1k", "2k", "4k", "8k", "16k"];
-        for (var i = 0; i < 10; i++)
+        for (var i = 0; i < FrequenciesHz.Length; i++)
         {
-            Bands.Add(new EqualizerBandViewModel(i, labels[i], OnBandValueChanged));
+            Bands.Add(new EqualizerBandViewModel(i, FrequenciesHz[i], labels[i], OnBandValueChanged));
         }
 
         // 欢迎提交PR提供更多预设值！
@@ -43,10 +45,10 @@ public class EqualizerViewModel : ObservableObject
 
     public EqualizerPreset? SelectedPreset
     {
-        get;
+        get => _selectedPreset;
         set
         {
-            if (!SetProperty(ref field, value) || value == null) return;
+            if (!SetProperty(ref _selectedPreset, value) || value == null || _suppressPresetSwitch) return;
             ApplyPreset(value);
         }
     }
@@ -56,6 +58,7 @@ public class EqualizerViewModel : ObservableObject
         _suppressPresetSwitch = true;
         for (var i = 0; i < 10 && i < preset.Values.Length; i++)
         {
+            if (!Bands[i].IsEnabled) continue;
             Bands[i].Value = preset.Values[i];
         }
         _suppressPresetSwitch = false;
@@ -69,19 +72,31 @@ public class EqualizerViewModel : ObservableObject
 
         if (SelectedPreset != null && MatchesPreset(SelectedPreset)) return;
 
-        _suppressPresetSwitch = true;
-        SelectedPreset = null;
-        _suppressPresetSwitch = false;
+        SetSelectedPresetWithoutApplying(null);
     }
 
     private bool MatchesPreset(EqualizerPreset preset)
     {
         for (var i = 0; i < 10; i++)
         {
+            if (!Bands[i].IsEnabled) continue;
             if (Bands[i].Value != preset.Values[i]) return false;
         }
         return true;
     }
+
+    public void SetSampleRate(int sampleRate)
+    {
+        foreach (var band in Bands)
+        {
+            band.UpdateAvailability(sampleRate);
+        }
+
+        UpdateSelectedPresetFromCurrentValues();
+    }
+
+    public bool IsBandEnabled(int index) =>
+        index >= 0 && index < Bands.Count && Bands[index].IsEnabled;
 
     // 从播放器获取当前均衡器设置并更新界面
     public void SyncFromPlayer(Func<int, int> getBand)
@@ -89,16 +104,29 @@ public class EqualizerViewModel : ObservableObject
         _suppressPresetSwitch = true;
         for (var i = 0; i < 10; i++)
         {
+            if (!Bands[i].IsEnabled) continue;
             Bands[i].Value = Math.Clamp(getBand(i), -12, 12);
         }
         _suppressPresetSwitch = false;
 
+        UpdateSelectedPresetFromCurrentValues();
+    }
+
+    private void UpdateSelectedPresetFromCurrentValues()
+    {
         foreach (var preset in Presets)
         {
             if (!MatchesPreset(preset)) continue;
-            SelectedPreset = preset;
+            SetSelectedPresetWithoutApplying(preset);
             return;
         }
-        SelectedPreset = null;
+        SetSelectedPresetWithoutApplying(null);
+    }
+
+    private void SetSelectedPresetWithoutApplying(EqualizerPreset? preset)
+    {
+        _suppressPresetSwitch = true;
+        SelectedPreset = preset;
+        _suppressPresetSwitch = false;
     }
 }

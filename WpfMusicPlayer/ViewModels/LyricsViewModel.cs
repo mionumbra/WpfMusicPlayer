@@ -13,6 +13,12 @@ using WpfMusicPlayer.Services.Implementations;
 
 namespace WpfMusicPlayer.ViewModels;
 
+public enum SuppliedLyricSource
+{
+    Embedded,
+    DatabaseCache
+}
+
 public partial class LyricsViewModel(
     ILogger<LyricsViewModel> logger,
     IFileDialogService fileDialogService,
@@ -154,7 +160,13 @@ public partial class LyricsViewModel(
         Lyrics[CurrentLyricIndex].Progress = 0;
     }
 
-    public void LoadLyrics(string? filePath, string? id3Lyric, string? songTitle, float songDuration, int offsetMs)
+    public void LoadLyrics(
+        string? filePath,
+        string? suppliedLyric,
+        string? songTitle,
+        float songDuration,
+        int offsetMs,
+        SuppliedLyricSource suppliedLyricSource = SuppliedLyricSource.Embedded)
     {
         logger.LogInformation("LoadLyrics: loading lyrics for {FilePath}", filePath);
         Lyrics.Clear();
@@ -170,12 +182,20 @@ public partial class LyricsViewModel(
         _suggestedWplrcFileName = GetSuggestedWplrcFileName(filePath, songTitle);
         ExportWplrcCommand.NotifyCanExecuteChanged();
 
-        if (!string.IsNullOrEmpty(id3Lyric))
+        if (!string.IsNullOrEmpty(suppliedLyric))
         {
             try
             {
-                logger.LogInformation("LoadLyrics: found embedded ID3 lyrics");
-                ParseAndAddLocalLyric(id3Lyric, offsetMs);
+                logger.LogInformation("LoadLyrics: found stored or embedded lyrics");
+                var intermediateLyricJson = ParseAndAddLocalLyric(suppliedLyric, offsetMs);
+                if (ShouldWriteBackSuppliedLyric(suppliedLyric, suppliedLyricSource))
+                {
+                    RequestCurrentLyricWriteBack(intermediateLyricJson);
+                }
+                else
+                {
+                    logger.LogInformation("LoadLyrics: loaded intermediate lyric JSON from database cache; skipping write-back");
+                }
                 return;
             }
             catch
@@ -190,7 +210,8 @@ public partial class LyricsViewModel(
             logger.LogInformation("LoadLyrics: found best match lyric file: {LyricPath}", lyricPath);
             try
             {
-                ParseAndAddLocalLyric(lyricPath, offsetMs);
+                var intermediateLyricJson = ParseAndAddLocalLyric(lyricPath, offsetMs);
+                RequestCurrentLyricWriteBack(intermediateLyricJson);
                 return;
             }
             catch (Exception ex)
@@ -205,7 +226,8 @@ public partial class LyricsViewModel(
             logger.LogInformation("LoadLyrics: fallback to exact lyric path: {LyricPath}", exactLyricPath);
             try
             {
-                ParseAndAddLocalLyric(exactLyricPath, offsetMs);
+                var intermediateLyricJson = ParseAndAddLocalLyric(exactLyricPath, offsetMs);
+                RequestCurrentLyricWriteBack(intermediateLyricJson);
                 return;
             }
             catch (InvalidOperationException ex)
@@ -244,7 +266,7 @@ public partial class LyricsViewModel(
         return Math.Clamp(elapsedMs / (endMs - startMs), 0, 1);
     }
 
-    private void ParseAndAddLocalLyric(string content, int offsetMs)
+    private string ParseAndAddLocalLyric(string content, int offsetMs)
     {
         Lyrics.Clear();
         _lyricStates.Clear();
@@ -271,6 +293,18 @@ public partial class LyricsViewModel(
 
         _currentIntermediateLyricJson = intermediateLyricJson;
         ExportWplrcCommand.NotifyCanExecuteChanged();
+        return intermediateLyricJson;
+    }
+
+    private void RequestCurrentLyricWriteBack(string intermediateLyricJson)
+    {
+        UpdateCurrentLyricRequested?.Invoke(intermediateLyricJson, _currentLyricOffsetMs);
+    }
+
+    private static bool ShouldWriteBackSuppliedLyric(string suppliedLyric, SuppliedLyricSource source)
+    {
+        return source != SuppliedLyricSource.DatabaseCache
+            || !IntermediateLyricDocument.HasIntermediateSchema(suppliedLyric);
     }
 
     private static string? FindBestLyricFile(
@@ -365,9 +399,8 @@ public partial class LyricsViewModel(
         
         try
         {
-            var content = await ReadLyricFileForStorageAsync(path);
-            ParseAndAddLocalLyric(path, 0);
-            UpdateCurrentLyricRequested?.Invoke(content, _currentLyricOffsetMs);
+            var intermediateLyricJson = ParseAndAddLocalLyric(path, 0);
+            RequestCurrentLyricWriteBack(intermediateLyricJson);
         }
         catch (InvalidOperationException ex)
         {
@@ -427,15 +460,6 @@ public partial class LyricsViewModel(
 
         if (union.Count == 0) return 0f;
         return (float)intersection.Count / union.Count;
-    }
-
-    private static async Task<string> ReadLyricFileForStorageAsync(string path)
-    {
-        if (string.Equals(Path.GetExtension(path), ".wplrc", StringComparison.OrdinalIgnoreCase))
-            return await File.ReadAllTextAsync(path, Encoding.UTF8);
-
-        var contentBytes = await File.ReadAllBytesAsync(path);
-        return MusicPlayerLibrary.LocaleConverter.GetSystemStringFromBytes(contentBytes);
     }
 
     private bool CanExportWplrc()
