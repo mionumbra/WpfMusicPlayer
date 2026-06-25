@@ -16,7 +16,7 @@ std::string MusicPlayerLibrary::LocaleConverterNative::GetUtf8StringFromBytesNat
     uchardet_handle_data(uc_checker, input, size);
     uchardet_data_end(uc_checker);
     const char* charset = uchardet_get_charset(uc_checker);
-    ATLTRACE("info: detected charset = %s\n", charset);
+    NATIVE_TRACE("info: detected charset = %s\n", charset);
     
     // if is utf-8 or ansi...
     // ansi is a subset of UTF-8
@@ -92,6 +92,12 @@ std::string MusicPlayerLibrary::LocaleConverterNative::GetUtf8StringFromUtf16Str
     std::string output(static_cast<size_t>(utf8_length), '\0');
     WideCharToMultiByte(CP_UTF8, 0, input.data(), input_size, output.data(), utf8_length, nullptr, nullptr);
     return output;
+}
+
+System::String^ MusicPlayerLibrary::LocaleConverterNative::GetSystemStringFromUtf8String(const std::string& input)
+{
+    const std::wstring wide_string_opt = GetUtf16StringFromUtf8String(input);
+    return gcnew System::String(wide_string_opt.c_str());
 }
 
 System::String^ MusicPlayerLibrary::LocaleConverter::GetSystemStringFromBytes(array<byte>^ input)

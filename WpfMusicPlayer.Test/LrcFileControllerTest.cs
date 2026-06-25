@@ -1,4 +1,10 @@
-using MusicPlayerLibrary;
+using System.Text;
+using System.Text.Json;
+using Microsoft.Extensions.Logging.Abstractions;
+using WpfMusicPlayer.Models.Lyrics;
+using WpfMusicPlayer.Services.Abstractions;
+using WpfMusicPlayer.Services.Implementations;
+using WpfMusicPlayer.ViewModels;
 
 namespace WpfMusicPlayer.Test;
 
@@ -17,349 +23,240 @@ public sealed class LrcFileControllerTest
         [00:10.00]Third line
         """;
 
-    private static LrcFileController CreateFromStream(string lrc)
+    private static JsonDocument ParseToJson(string lrc)
     {
-        var controller = new LrcFileController();
-        controller.SetSongDuration(60f);
-        controller.ParseLrcStream(lrc);
-        return controller;
+        var parser = new LrcFileParser();
+        var json = parser.ParseToIntermediateJson(new LyricParserSource(lrc));
+        Assert.IsFalse(string.IsNullOrWhiteSpace(json));
+        return JsonDocument.Parse(json);
     }
 
-    #region Parse & Valid
-
-    [TestMethod]
-    public void ParseLrcStream_SimpleLrc_IsValid()
+    private static LyricParserFactory CreateLyricParserFactory()
     {
-        using var ctrl = CreateFromStream(SimpleLrc);
-        Assert.IsTrue(ctrl.Valid());
+        ILyricParser[] parsers = [new IntermediateLyricParser(), new LrcFileParser()];
+        return new LyricParserFactory(parsers);
     }
 
-    [TestMethod]
-    public void NewController_WithoutParsing_IsNotValid()
+    private static JsonElement[] GetLyricLines(JsonDocument doc)
     {
-        using var ctrl = new LrcFileController();
-        Assert.IsFalse(ctrl.Valid());
+        return doc.RootElement.GetProperty("lyric_lines").EnumerateArray().ToArray();
     }
 
-    [TestMethod]
-    public void ParseLrcStream_SimpleLrc_NodeCountEquals3()
+    private static JsonElement[] GetLineNodes(JsonElement lyricLine)
     {
-        using var ctrl = CreateFromStream(SimpleLrc);
-        Assert.AreEqual(3, ctrl.GetLrcNodeCount());
+        return lyricLine.GetProperty("lines").EnumerateArray().ToArray();
     }
 
-    #endregion
-
-    #region Node time
-
-    [TestMethod]
-    public void GetLrcNodeTimeMs_ReturnsCorrectTimestamps()
+    private static JsonElement GetRoleLine(JsonElement lyricLine, string role)
     {
-        using var ctrl = CreateFromStream(SimpleLrc);
+        return GetLineNodes(lyricLine).Single(line => line.GetProperty("role").GetString() == role);
+    }
 
-        Assert.AreEqual(1000, ctrl.GetLrcNodeTimeMs(0));
-        Assert.AreEqual(5500, ctrl.GetLrcNodeTimeMs(1));
-        Assert.AreEqual(10000, ctrl.GetLrcNodeTimeMs(2));
+    private static LyricsViewModel CreateLyricsViewModel()
+    {
+        return new LyricsViewModel(
+            NullLogger<LyricsViewModel>.Instance,
+            new NoopFileDialogService(),
+            CreateLyricParserFactory());
     }
 
     [TestMethod]
-    public void GetLrcNodeTimeMs_TwoDigitMilliseconds_PadsCorrectly()
+    public void ParseLrcToIntermediateJson_SimpleLrc_ExportsSortedLyricLines()
     {
-        // [00:02.05] -> 05 is 2 digits, should be treated as 050 ms
+        using var doc = ParseToJson(SimpleLrc);
+
+        var root = doc.RootElement;
+        Assert.AreEqual(1, root.GetProperty("format_version").GetInt32());
+        Assert.AreEqual(0, root.GetProperty("offset").GetInt32());
+        Assert.AreEqual("TestArtist", root.GetProperty("metadata").GetProperty("artist").GetString());
+        Assert.AreEqual("TestTitle", root.GetProperty("metadata").GetProperty("title").GetString());
+        Assert.AreEqual("TestAlbum", root.GetProperty("metadata").GetProperty("album").GetString());
+        Assert.AreEqual("TestBy", root.GetProperty("metadata").GetProperty("by").GetString());
+
+        var lines = GetLyricLines(doc);
+        Assert.HasCount(3, lines);
+        Assert.AreEqual(1000, lines[0].GetProperty("time_start_ms").GetInt32());
+        Assert.AreEqual(5500, lines[0].GetProperty("time_end_ms").GetInt32());
+        Assert.AreEqual("First line", GetRoleLine(lines[0], "lyric").GetProperty("text").GetString());
+        Assert.AreEqual(5500, lines[1].GetProperty("time_start_ms").GetInt32());
+        Assert.AreEqual("Second line", GetRoleLine(lines[1], "lyric").GetProperty("text").GetString());
+        Assert.AreEqual(10000, lines[2].GetProperty("time_start_ms").GetInt32());
+        Assert.AreEqual("Third line", GetRoleLine(lines[2], "lyric").GetProperty("text").GetString());
+    }
+
+    [TestMethod]
+    public void ParseLrcToIntermediateJson_TimeFormats_NormalizesMilliseconds()
+    {
         const string lrc =
             """
             [00:02.05]Line A
-            [00:04.10]Line B
+            [00:03.123]Line B
+            [00:04.1000]Line C
             """;
 
-        using var ctrl = CreateFromStream(lrc);
+        using var doc = ParseToJson(lrc);
+        var lines = GetLyricLines(doc);
 
-        Assert.AreEqual(2050, ctrl.GetLrcNodeTimeMs(0));
-        Assert.AreEqual(4100, ctrl.GetLrcNodeTimeMs(1));
+        Assert.HasCount(3, lines);
+        Assert.AreEqual(2050, lines[0].GetProperty("time_start_ms").GetInt32());
+        Assert.AreEqual(3123, lines[1].GetProperty("time_start_ms").GetInt32());
+        Assert.AreEqual(4100, lines[2].GetProperty("time_start_ms").GetInt32());
     }
 
     [TestMethod]
-    public void GetLrcNodeTimeMs_ThreeDigitMilliseconds()
+    public void ParseLrcToIntermediateJson_DisorderedAndMultipleTimeTags_ExportsSortedCopies()
     {
-        const string lrc =
-            """
-            [00:03.123]Hello
-            """;
+        const string lrc = "[00:05.00]B\n[00:01.00]A\n[00:03.00][00:02.00]C";
 
-        using var ctrl = CreateFromStream(lrc);
+        using var doc = ParseToJson(lrc);
+        var lines = GetLyricLines(doc);
 
-        Assert.AreEqual(3123, ctrl.GetLrcNodeTimeMs(0));
+        Assert.HasCount(4, lines);
+        Assert.AreEqual(1000, lines[0].GetProperty("time_start_ms").GetInt32());
+        Assert.AreEqual("A", GetRoleLine(lines[0], "lyric").GetProperty("text").GetString());
+        Assert.AreEqual(2000, lines[1].GetProperty("time_start_ms").GetInt32());
+        Assert.AreEqual("C", GetRoleLine(lines[1], "lyric").GetProperty("text").GetString());
+        Assert.AreEqual(3000, lines[2].GetProperty("time_start_ms").GetInt32());
+        Assert.AreEqual("C", GetRoleLine(lines[2], "lyric").GetProperty("text").GetString());
+        Assert.AreEqual(5000, lines[3].GetProperty("time_start_ms").GetInt32());
     }
 
-    #endregion
-
-    #region Lyric text
-
     [TestMethod]
-    public void GetLrcLineAt_ReturnsCorrectText()
+    public void ParseLrcToIntermediateJson_ProgressNode_ExportsControllerNodes()
     {
-        using var ctrl = CreateFromStream(SimpleLrc);
+        const string lrc = """
+                           [offset:100]
+                           [00:00.00]今<00:00.250>天<00:00.500>我<00:00.750>
+                           """;
 
-        Assert.AreEqual("First line", ctrl.GetLrcLineAt(0, 0));
-        Assert.AreEqual("Second line", ctrl.GetLrcLineAt(1, 0));
-        Assert.AreEqual("Third line", ctrl.GetLrcLineAt(2, 0));
+        using var doc = ParseToJson(lrc);
+
+        var root = doc.RootElement;
+        Assert.AreEqual(100, root.GetProperty("offset").GetInt32());
+
+        var lyricLine = GetLyricLines(doc).Single();
+        Assert.AreEqual(0, lyricLine.GetProperty("time_start_ms").GetInt32());
+        Assert.AreEqual(750, lyricLine.GetProperty("time_end_ms").GetInt32());
+
+        var line = GetLineNodes(lyricLine).Single();
+        Assert.AreEqual("lyric", line.GetProperty("role").GetString());
+        Assert.AreEqual("controller_nodes", line.GetProperty("sync").GetString());
+
+        var controllerNodes = line.GetProperty("controller_nodes").EnumerateArray().ToArray();
+        Assert.HasCount(3, controllerNodes);
+        Assert.AreEqual(0, controllerNodes[0].GetProperty("time_start_ms").GetInt32());
+        Assert.AreEqual(250, controllerNodes[0].GetProperty("time_end_ms").GetInt32());
+        Assert.AreEqual("今", controllerNodes[0].GetProperty("text").GetString());
+        Assert.AreEqual(250, controllerNodes[1].GetProperty("time_start_ms").GetInt32());
+        Assert.AreEqual(500, controllerNodes[1].GetProperty("time_end_ms").GetInt32());
+        Assert.AreEqual("天", controllerNodes[1].GetProperty("text").GetString());
+        Assert.AreEqual(500, controllerNodes[2].GetProperty("time_start_ms").GetInt32());
+        Assert.AreEqual(750, controllerNodes[2].GetProperty("time_end_ms").GetInt32());
+        Assert.AreEqual("我", controllerNodes[2].GetProperty("text").GetString());
     }
 
     [TestMethod]
-    public void GetLrcLineAt_InvalidIndex_ThrowArgumentOutOfRangeException()
+    public void ParseLrcToIntermediateJson_Metadata_ExportsPresentFieldsOnly()
     {
-        const string lrc =
-            """
-            [00:03.123]Hello
-            """;
-        using var ctrl = CreateFromStream(lrc);
-        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => ctrl.GetLrcLineAt(1, 1));
+        const string lrc = """
+                           [ar:TestArtist]
+                           [ti:TestTitle]
+                           [by:TestBy]
+                           [00:01.00]Line
+                           """;
+
+        using var doc = ParseToJson(lrc);
+
+        var metadata = doc.RootElement.GetProperty("metadata");
+        Assert.AreEqual("TestArtist", metadata.GetProperty("artist").GetString());
+        Assert.AreEqual("TestTitle", metadata.GetProperty("title").GetString());
+        Assert.AreEqual("TestBy", metadata.GetProperty("by").GetString());
+        Assert.IsFalse(metadata.TryGetProperty("album", out _));
+        Assert.IsFalse(metadata.TryGetProperty("author", out _));
     }
 
-    #endregion
-
-    #region Timestamp navigation
-
     [TestMethod]
-    public void SetTimeStamp_UpdatesCurrentTimeStamp()
+    public void LyricParserFactory_WplrcFile_ReturnsIntermediateAstWithoutLrcParsing()
     {
-        using var ctrl = CreateFromStream(SimpleLrc);
-        ctrl.SetTimeStamp(3000);
-        Assert.AreEqual(3000, ctrl.GetCurrentTimeStamp());
+        var path = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.wplrc");
+        const string json = """
+                            {
+                              "format_version": 1,
+                              "offset": 250,
+                              "metadata": {
+                                "title": "Internal"
+                              },
+                              "lyric_lines": [
+                                {
+                                  "time_start_ms": 1000,
+                                  "time_end_ms": 2000,
+                                  "lines": [
+                                    {
+                                      "role": "lyric",
+                                      "text": "Internal line"
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                            """;
+
+        try
+        {
+            var ast = IntermediateLyricDocument.FromJson(json);
+
+            Assert.AreEqual(1, ast.FormatVersion);
+            Assert.AreEqual(250, ast.Offset);
+            Assert.AreEqual("Internal", ast.Metadata.Title);
+            Assert.HasCount(1, ast.LyricLines);
+            Assert.AreEqual("Internal line", ast.LyricLines[0].Lines[0].Text);
+        }
+        finally
+        {
+            if (File.Exists(path))
+                File.Delete(path);
+        }
     }
 
     [TestMethod]
-    public void SetTimeStamp_SelectsCorrectNodeIndex()
+    public void LyricParserFactory_IntermediateJsonContent_ReturnsIntermediateAst()
     {
-        using var ctrl = CreateFromStream(SimpleLrc);
+        const string json = """
+                            {
+                              "format_version": 1,
+                              "offset": 0,
+                              "lyric_lines": [
+                                {
+                                  "time_start_ms": 3000,
+                                  "time_end_ms": 4000,
+                                  "lines": [
+                                    {
+                                      "role": "lyric",
+                                      "text": "Schema matched"
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                            """;
 
-        ctrl.SetTimeStamp(0);
-        Assert.AreEqual(0, ctrl.GetCurrentLrcNodeIndex());
+        var ast = IntermediateLyricDocument.FromJson(json);
 
-        ctrl.SetTimeStamp(6000);
-        Assert.AreEqual(1, ctrl.GetCurrentLrcNodeIndex());
-
-        ctrl.SetTimeStamp(15000);
-        Assert.AreEqual(2, ctrl.GetCurrentLrcNodeIndex());
+        Assert.HasCount(1, ast.LyricLines);
+        Assert.AreEqual(3000, ast.LyricLines[0].TimeStartMs);
+        Assert.AreEqual("Schema matched", ast.LyricLines[0].Lines[0].Text);
     }
 
     [TestMethod]
-    public void TimeStampIncrease_AdvancesTimestamp()
+    public void LyricParserFactory_SupportedOpenExtensions_ReturnsRegisteredParserExtensions()
     {
-        using var ctrl = CreateFromStream(SimpleLrc);
-        ctrl.SetTimeStamp(1000);
-        ctrl.TimeStampIncrease(5000);
-        Assert.AreEqual(6000, ctrl.GetCurrentTimeStamp());
+        var extensions = CreateLyricParserFactory().SupportedOpenExtensions.ToArray();
+
+        CollectionAssert.AreEqual(new[] { ".wplrc", ".lrc" }, extensions);
     }
 
     [TestMethod]
-    public void GetCurrentLrcLineAt_MatchesSetTimeStamp()
-    {
-        using var ctrl = CreateFromStream(SimpleLrc);
-        ctrl.SetTimeStamp(6000);
-
-        Assert.AreEqual("Second line", ctrl.GetCurrentLrcLineAt(0));
-    }
-
-    [TestMethod]
-    public void GetCurrentLrcLinesCount_SingleNode_Returns1()
-    {
-        using var ctrl = CreateFromStream(SimpleLrc);
-        ctrl.SetTimeStamp(1500);
-        Assert.AreEqual(1, ctrl.GetCurrentLrcLinesCount());
-    }
-
-    #endregion
-
-    #region ClearLrcNodes
-
-    [TestMethod]
-    public void ClearLrcNodes_MakesControllerInvalid()
-    {
-        using var ctrl = CreateFromStream(SimpleLrc);
-        Assert.IsTrue(ctrl.Valid());
-
-        ctrl.ClearLrcNodes();
-        Assert.IsFalse(ctrl.Valid());
-    }
-
-    #endregion
-
-    #region AuxiliaryInfo
-
-    [TestMethod]
-    public void AuxiliaryInfo_SetAndClear()
-    {
-        using var ctrl = CreateFromStream(SimpleLrc);
-
-        ctrl.SetAuxiliaryInfoEnabled(LrcAuxiliaryInfo.Translation);
-        Assert.IsTrue(ctrl.IsAuxiliaryInfoEnabled(LrcAuxiliaryInfo.Translation));
-
-        ctrl.ClearAuxiliaryInfoEnabled(LrcAuxiliaryInfo.Translation);
-        Assert.IsFalse(ctrl.IsAuxiliaryInfoEnabled(LrcAuxiliaryInfo.Translation));
-    }
-
-    [TestMethod]
-    public void ResetAuxiliaryInfoEnabled_ClearsAll()
-    {
-        using var ctrl = CreateFromStream(SimpleLrc);
-
-        ctrl.SetAuxiliaryInfoEnabled(LrcAuxiliaryInfo.Translation);
-        ctrl.SetAuxiliaryInfoEnabled(LrcAuxiliaryInfo.Romanization);
-        ctrl.ResetAuxiliaryInfoEnabled();
-
-        Assert.IsFalse(ctrl.IsAuxiliaryInfoEnabled(LrcAuxiliaryInfo.Translation));
-        Assert.IsFalse(ctrl.IsAuxiliaryInfoEnabled(LrcAuxiliaryInfo.Romanization));
-    }
-
-    [TestMethod]
-    public void GetLrcLineAuxIndex_SimpleLrc_LyricAt0()
-    {
-        using var ctrl = CreateFromStream(SimpleLrc);
-        Assert.AreEqual(0, ctrl.GetLrcLineAuxIndex(0, LrcAuxiliaryInfo.Lyric));
-    }
-
-    [TestMethod]
-    public void GetCurrentLrcLineAuxIndex_ReturnsCorrectIndex()
-    {
-        using var ctrl = CreateFromStream(SimpleLrc);
-        ctrl.SetTimeStamp(2000);
-        Assert.AreEqual(0, ctrl.GetCurrentLrcLineAuxIndex(LrcAuxiliaryInfo.Lyric));
-        Assert.AreEqual(-1, ctrl.GetCurrentLrcLineAuxIndex(LrcAuxiliaryInfo.Translation));
-    }
-
-    #endregion
-
-    #region MultiNode (translation)
-
-    [TestMethod]
-    public void ParseLrcStream_MultiNode_DetectsTranslation()
-    {
-        // Japanese lyric + Chinese translation at same timestamp
-        const string lrc =
-            """
-            [00:01.00]夜に駆ける
-            [00:01.00]奔向夜晚
-            [00:10.00]End
-            """;
-
-        using var ctrl = CreateFromStream(lrc);
-
-        Assert.AreEqual(2, ctrl.GetLrcNodeCount());
-        ctrl.SetTimeStamp(2000);
-        Assert.IsGreaterThanOrEqualTo(2, ctrl.GetCurrentLrcLinesCount());
-        Assert.IsTrue(ctrl.IsAuxiliaryInfoEnabled(LrcAuxiliaryInfo.Translation));
-    }
-
-    #endregion
-
-    #region ProgressNode (percentage)
-
-    [TestMethod]
-    public void ParseLrcStream_ProgressNode_PercentageEnabled()
-    {
-        // Word-level sync: text<timestamp>text<timestamp>
-        const string lrc =
-            """
-            [00:01.00]<00:01.00>Hello<00:02.00>World<00:03.00>
-            [00:10.00]End
-            """;
-
-        using var ctrl = CreateFromStream(lrc);
-        Assert.IsTrue(ctrl.IsPercentageEnabled(0));
-        Assert.IsFalse(ctrl.IsPercentageEnabled(1));
-    }
-
-    [TestMethod]
-    public void GetLrcPercentage_AtStart_ReturnsLowValue()
-    {
-        const string lrc =
-            """
-            [00:01.00]<00:01.00>Hello<00:02.00>World<00:03.00>
-            [00:10.00]End
-            """;
-
-        using var ctrl = CreateFromStream(lrc);
-        ctrl.SetTimeStamp(1000);
-
-        float pct = ctrl.GetLrcPercentage(0);
-        Assert.IsTrue(pct >= 0f && pct <= 1f);
-    }
-
-    [TestMethod]
-    public void GetLrcPercentage_PastEnd_Returns1()
-    {
-        const string lrc =
-            """
-            [00:01.00]<00:01.00>Hello<00:02.00>World<00:03.00>
-            [00:10.00]End
-            """;
-
-        using var ctrl = CreateFromStream(lrc);
-        ctrl.SetTimeStamp(5000);
-
-        Assert.AreEqual(1f, ctrl.GetLrcPercentage(0));
-    }
-
-    #endregion
-
-    #region Metadata offset
-
-    [TestMethod]
-    public void ParseLrcStream_WithOffset_ShiftsTimestamps()
-    {
-        const string lrc =
-            """
-            [offset:500]
-            [00:01.00]Line
-            [00:05.00]Line2
-            """;
-
-        using var ctrl = CreateFromStream(lrc);
-
-        // offset adds 500 ms: 1000+500=1500, 5000+500=5500
-        Assert.AreEqual(1500, ctrl.GetLrcNodeTimeMs(0));
-        Assert.AreEqual(5500, ctrl.GetLrcNodeTimeMs(1));
-    }
-
-    #endregion
-
-    #region Metadata Info
-
-    [TestMethod]
-    public void ParseLrcStream_GetMetadataInfo()
-    {
-        using var ctrl = CreateFromStream(SimpleLrc);
-
-        Assert.AreEqual("TestArtist", ctrl.GetMetadataInfo(LrcMetadataType.Artist));
-        Assert.AreEqual("TestTitle", ctrl.GetMetadataInfo(LrcMetadataType.Title));
-        Assert.AreEqual("TestAlbum", ctrl.GetMetadataInfo(LrcMetadataType.Album));
-        Assert.AreEqual("TestBy", ctrl.GetMetadataInfo(LrcMetadataType.By));
-    }
-
-    #endregion
-
-    #region Disordered & Multiple Time Stamp Handling
-
-    [TestMethod]
-    public void ParseLrcStream_DisorderedTimestamp()
-    {
-        const string lrc = "[00:05.00]B\n[00:01.00]A";
-        Assert.AreEqual(2, CreateFromStream(lrc).GetLrcNodeCount());
-        Assert.AreEqual(1000, CreateFromStream(lrc).GetLrcNodeTimeMs(0));
-        Assert.AreEqual(5000, CreateFromStream(lrc).GetLrcNodeTimeMs(1));
-    }
-    #endregion
-
-    [TestMethod]
-    public void ParseLrcStream_MultipleTimeStamps()
-    {
-        const string lrc = "[01:08.39][01:30.10][03:17.21][04:01.65]And though I know, since you've awakened her again";
-        Assert.AreEqual(4, CreateFromStream(lrc).GetLrcNodeCount());
-    }
-
-    [TestMethod]
-    public void ParseLrcStream_PartitionedTranslationBlock()
+    public void ParseLrcToIntermediateJson_PartitionedTranslationBlock_ExportsTranslationRole()
     {
         const string lrc = """
                            [00:27.12]마음이 울적하고 답답할 땐
@@ -370,20 +267,74 @@ public sealed class LrcFileControllerTest
                            [00:30.87]上山去喊出来吧
                            [00:34.29]像我这样打开心扉
                            """;
-        Assert.AreEqual(3, CreateFromStream(lrc).GetLrcNodeCount());
-        Assert.AreEqual(27120, CreateFromStream(lrc).GetLrcNodeTimeMs(0));
-        Assert.AreEqual(30870, CreateFromStream(lrc).GetLrcNodeTimeMs(1));
-        Assert.AreEqual(34290, CreateFromStream(lrc).GetLrcNodeTimeMs(2));
-        Assert.IsTrue(CreateFromStream(lrc).IsAuxiliaryInfoEnabled(LrcAuxiliaryInfo.Translation));
-        Assert.AreEqual(1, CreateFromStream(lrc).GetLrcLineAuxIndex(0, LrcAuxiliaryInfo.Translation));
-        Assert.AreEqual(1, CreateFromStream(lrc).GetLrcLineAuxIndex(1, LrcAuxiliaryInfo.Translation));
-        Assert.AreEqual(1, CreateFromStream(lrc).GetLrcLineAuxIndex(2, LrcAuxiliaryInfo.Translation));
+
+        using var doc = ParseToJson(lrc);
+        var lines = GetLyricLines(doc);
+
+        Assert.HasCount(3, lines);
+        Assert.AreEqual(27120, lines[0].GetProperty("time_start_ms").GetInt32());
+        Assert.AreEqual("当心中忧郁寂寞又烦闷之时", GetRoleLine(lines[0], "translation").GetProperty("text").GetString());
+        Assert.AreEqual("上山去喊出来吧", GetRoleLine(lines[1], "translation").GetProperty("text").GetString());
+        Assert.AreEqual("像我这样打开心扉", GetRoleLine(lines[2], "translation").GetProperty("text").GetString());
     }
 
-    #region Malformed Time Tag Testing
+    [TestMethod]
+    public void ParseLrcToIntermediateJson_BracketInlineTranslation_SplitsBeforeClassification()
+    {
+        const string lrc = """
+                           [00:01.00]Hello (live) （翻译： 你好（世界）（现场））
+                           [00:02.00]World(翻译:世界)
+                           """;
+
+        using var doc = ParseToJson(lrc);
+        var lines = GetLyricLines(doc);
+
+        Assert.HasCount(2, lines);
+        Assert.AreEqual("Hello (live)", GetRoleLine(lines[0], "lyric").GetProperty("text").GetString());
+        Assert.AreEqual("你好（世界）（现场）", GetRoleLine(lines[0], "translation").GetProperty("text").GetString());
+        Assert.AreEqual("World", GetRoleLine(lines[1], "lyric").GetProperty("text").GetString());
+        Assert.AreEqual("世界", GetRoleLine(lines[1], "translation").GetProperty("text").GetString());
+    }
 
     [TestMethod]
-    public void ParseLrcStream_MalformedTimeTag_MetadataParsing()
+    public void ParseLrcToIntermediateJson_SlashInlineTranslation_WhenMajority_SplitsBeforeClassification()
+    {
+        const string lrc = """
+                           [00:01.00]Hello / 你好
+                           [00:02.00]World / 世界
+                           [00:03.00]Good night
+                           """;
+
+        using var doc = ParseToJson(lrc);
+        var lines = GetLyricLines(doc);
+
+        Assert.HasCount(3, lines);
+        Assert.AreEqual("Hello", GetRoleLine(lines[0], "lyric").GetProperty("text").GetString());
+        Assert.AreEqual("你好", GetRoleLine(lines[0], "translation").GetProperty("text").GetString());
+        Assert.AreEqual("World", GetRoleLine(lines[1], "lyric").GetProperty("text").GetString());
+        Assert.AreEqual("世界", GetRoleLine(lines[1], "translation").GetProperty("text").GetString());
+        Assert.AreEqual("Good night", GetRoleLine(lines[2], "lyric").GetProperty("text").GetString());
+    }
+
+    [TestMethod]
+    public void ParseLrcToIntermediateJson_SlashInlineTranslation_WhenBelowThreshold_KeepsOriginalLine()
+    {
+        const string lrc = """
+                           [00:01.00]AC / DC
+                           [00:02.00]Plain line
+                           [00:03.00]Another line
+                           """;
+
+        using var doc = ParseToJson(lrc);
+        var lineNodes = GetLineNodes(GetLyricLines(doc)[0]);
+
+        Assert.HasCount(1, lineNodes);
+        Assert.AreEqual("lyric", lineNodes[0].GetProperty("role").GetString());
+        Assert.AreEqual("AC / DC", lineNodes[0].GetProperty("text").GetString());
+    }
+
+    [TestMethod]
+    public void ParseLrcToIntermediateJson_MalformedTimeTag_MetadataParsing()
     {
         const string lrc = """
                            [00:00.000]作词 : MIMI
@@ -392,54 +343,48 @@ public sealed class LrcFileControllerTest
                            [00:00.211]作曲 : MIMI
                            [00:00.211][ar:MIMI]
                            """;
-        Assert.AreEqual("gurantouw", CreateFromStream(lrc).GetMetadataInfo(LrcMetadataType.By));
-        Assert.AreEqual("MIMI", CreateFromStream(lrc).GetMetadataInfo(LrcMetadataType.Album));
-        Assert.AreEqual("MIMI", CreateFromStream(lrc).GetMetadataInfo(LrcMetadataType.Artist));
+
+        using var doc = ParseToJson(lrc);
+        var metadata = doc.RootElement.GetProperty("metadata");
+
+        Assert.AreEqual("gurantouw", metadata.GetProperty("by").GetString());
+        Assert.AreEqual("MIMI", metadata.GetProperty("album").GetString());
+        Assert.AreEqual("MIMI", metadata.GetProperty("artist").GetString());
     }
 
-    #endregion
-
-    #region Malformed Romanji Testing
-
     [TestMethod]
-    public void ParseLrcStream_MalformedRomanjiContainsChinese_Parsing()
+    public void ParseLrcToIntermediateJson_MalformedRomanjiContainsChinese_ExportsRoles()
     {
         const string lrc = """
                            [01:15.836]be tsu no ko to ga n ba re ba i i ja n ( 笑 )
                            [01:15.836]別の事頑張ればいいじゃん(笑)
                            [01:15.836]在其他方面全力以赴不就行了(笑)
                            """;
-        Assert.AreEqual(0, CreateFromStream(lrc).GetLrcLineAuxIndex(0, LrcAuxiliaryInfo.Romanization));
-        Assert.AreEqual(2, CreateFromStream(lrc).GetLrcLineAuxIndex(0, LrcAuxiliaryInfo.Translation));
+
+        using var doc = ParseToJson(lrc);
+        var lineNodes = GetLineNodes(GetLyricLines(doc).Single());
+
+        Assert.AreEqual("romanization", lineNodes[0].GetProperty("role").GetString());
+        Assert.AreEqual("translation", lineNodes[2].GetProperty("role").GetString());
     }
 
     [TestMethod]
-    public void ParseLrcStream_MalformedRomanjiContainsChinese_Composer_Parsing()
+    public void ParseLrcToIntermediateJson_MalformedRomanjiContainsChineseComposer_ExportsRoles()
     {
         const string lrc = """
                            [00:03.697]kyo ku ： Aiobahn
                            [00:03.697]曲：Aiobahn
                            """;
-        Assert.AreEqual(0, CreateFromStream(lrc).GetLrcLineAuxIndex(0, LrcAuxiliaryInfo.Romanization));
-        Assert.AreEqual(1, CreateFromStream(lrc).GetLrcLineAuxIndex(0, LrcAuxiliaryInfo.Lyric));
+
+        using var doc = ParseToJson(lrc);
+        var lineNodes = GetLineNodes(GetLyricLines(doc).Single());
+
+        Assert.AreEqual("romanization", lineNodes[0].GetProperty("role").GetString());
+        Assert.AreEqual("lyric", lineNodes[1].GetProperty("role").GetString());
     }
 
     [TestMethod]
-    public void ParseLrcStream_MalformedRomanjiContainsEnglish_Parsing()
-    {
-        const string lrc = """
-                           [00:42.468]sa ga su ta bi ni de ru ha a to no A 
-                           [00:42.468]探す旅に出るハートのA
-                           [00:42.468]踏上旅程的则是那张红心A
-                           """;
-        Assert.AreEqual(0, CreateFromStream(lrc).GetLrcLineAuxIndex(0, LrcAuxiliaryInfo.Romanization));
-        Assert.AreEqual(2, CreateFromStream(lrc).GetLrcLineAuxIndex(0, LrcAuxiliaryInfo.Translation));
-    }
-    #endregion
-
-    #region Jyutping Parsing
-    [TestMethod]
-    public void ParseLrcStream_ChnWithJyutping_Parsing()
+    public void ParseLrcToIntermediateJson_ChnWithJyutping_ExportsRomanizationRole()
     {
         const string lrc = """
                            [00:06.417]coi san dou coi san dou 
@@ -447,44 +392,164 @@ public sealed class LrcFileControllerTest
                            [00:08.080]hou san da hou bou 
                            [00:08.080]好心得好报
                            """;
-        Assert.AreEqual(0, CreateFromStream(lrc).GetLrcLineAuxIndex(0, LrcAuxiliaryInfo.Romanization));
-        Assert.AreEqual(0, CreateFromStream(lrc).GetLrcLineAuxIndex(1, LrcAuxiliaryInfo.Romanization));
-    }
-    #endregion
 
-    #region Error handling
+        using var doc = ParseToJson(lrc);
+        var lines = GetLyricLines(doc);
+
+        Assert.AreEqual("romanization", GetLineNodes(lines[0])[0].GetProperty("role").GetString());
+        Assert.AreEqual("romanization", GetLineNodes(lines[1])[0].GetProperty("role").GetString());
+    }
 
     [TestMethod]
-    public void ParseLrcStream_MalformedTimeTag_Throws()
+    public void ParseLrcToIntermediateJson_MalformedTimeTag_Throws()
     {
         const string lrc = "[INVALID]Some text";
-        Assert.ThrowsExactly<InvalidOperationException>(() =>
-        {
-            using var ctrl = CreateFromStream(lrc);
-        });
+
+        Assert.ThrowsExactly<InvalidOperationException>(() => CreateLyricParserFactory().ParseToIntermediateJson(lrc));
     }
 
     [TestMethod]
-    public void ParseLrcStream_UnclosedOpeningBracket_Throws()
+    public void ParseLrcToIntermediateJson_UnclosedOpeningBracket_Throws()
     {
         const string lrc = "[00:01.000 lyric without closing bracket";
-        Assert.ThrowsExactly<InvalidOperationException>(() =>
-        {
-            using var ctrl = CreateFromStream(lrc);
-        });
-    }
 
-    #endregion
-    
-    #region Dispose
+        Assert.ThrowsExactly<InvalidOperationException>(() => CreateLyricParserFactory().ParseToIntermediateJson(lrc));
+    }
 
     [TestMethod]
-    public void AfterDispose_MethodCall_Throws()
+    public void LyricsViewModel_LoadLyrics_UsesIntermediateJsonControllerNodes()
     {
-        var ctrl = CreateFromStream(SimpleLrc);
-        ctrl.Dispose();
-        Assert.ThrowsExactly<InvalidOperationException>(() => ctrl.Valid());
+        const string lrc = """
+                           [00:00.00]今<00:00.250>天<00:00.500>我<00:00.750>
+                           [00:02.00]End
+                           """;
+
+        var vm = CreateLyricsViewModel();
+        vm.LoadLyrics(null, lrc, null, 10f, 0);
+        vm.UpdateLyricProgress(0.375f);
+
+        Assert.HasCount(2, vm.Lyrics);
+        Assert.AreEqual("今天我", vm.Lyrics[0].Text);
+        Assert.IsTrue(vm.Lyrics[0].IsProgressEnabled);
+        Assert.AreEqual(0, vm.CurrentLyricIndex);
+        Assert.AreEqual(0.5, vm.Lyrics[0].Progress, 0.001);
     }
 
-    #endregion
+    [TestMethod]
+    public void LyricsViewModel_LoadLyrics_UsesLinearProgressWhenSyncIsAbsent()
+    {
+        const string lrc = """
+                           [00:01.00]Plain
+                           [00:02.00]Next
+                           """;
+
+        var vm = CreateLyricsViewModel();
+        vm.LoadLyrics(null, lrc, null, 10f, 0);
+        vm.UpdateLyricProgress(1.5f);
+
+        Assert.HasCount(2, vm.Lyrics);
+        Assert.AreEqual("Plain", vm.Lyrics[0].Text);
+        Assert.IsFalse(vm.Lyrics[0].IsProgressEnabled);
+        Assert.AreEqual(0, vm.CurrentLyricIndex);
+        Assert.AreEqual(0.5, vm.Lyrics[0].Progress, 0.001);
+    }
+
+    [TestMethod]
+    public void LyricsViewModel_LoadLyrics_AppliesIntermediateOffsetUnlessOverridden()
+    {
+        const string lrc = """
+                           [offset:500]
+                           [00:01.00]A
+                           [00:02.00]B
+                           """;
+
+        var metadataOffsetVm = CreateLyricsViewModel();
+        metadataOffsetVm.LoadLyrics(null, lrc, null, 10f, 0);
+
+        var overrideOffsetVm = CreateLyricsViewModel();
+        overrideOffsetVm.LoadLyrics(null, lrc, null, 10f, 200);
+
+        Assert.AreEqual(1500, metadataOffsetVm.Lyrics[0].TimeMs);
+        Assert.AreEqual(1200, overrideOffsetVm.Lyrics[0].TimeMs);
+    }
+
+    [TestMethod]
+    public async Task LyricsViewModel_ExportWplrcCommand_WritesPrettyIntermediateJson()
+    {
+        var savePath = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.txt");
+        var exportedPath = Path.ChangeExtension(savePath, ".wplrc");
+        var fileDialogService = new NoopFileDialogService
+        {
+            SavePath = savePath
+        };
+        var vm = new LyricsViewModel(
+            NullLogger<LyricsViewModel>.Instance,
+            fileDialogService,
+            CreateLyricParserFactory());
+        const string json = """{"format_version":1,"offset":0,"lyric_lines":[{"time_start_ms":0,"time_end_ms":1000,"lines":[{"role":"lyric","text":"\u4e2d\u6587\u6b4c\u8bcd"}]}]}""";
+
+        Assert.IsFalse(vm.ExportWplrcCommand.CanExecute(null));
+
+        try
+        {
+            vm.LoadLyrics(null, json, "Export Song", 10f, 0);
+
+            Assert.IsTrue(vm.ExportWplrcCommand.CanExecute(null));
+
+            await vm.ExportWplrcCommand.ExecuteAsync(null);
+
+            Assert.IsTrue(File.Exists(exportedPath));
+            var exported = await File.ReadAllTextAsync(exportedPath, Encoding.UTF8);
+            Assert.IsTrue(exported.Contains("\n  \"format_version\": 1", StringComparison.Ordinal));
+            StringAssert.Contains(exported, "中文歌词");
+            Assert.IsFalse(exported.Contains(@"\u4e2d", StringComparison.OrdinalIgnoreCase));
+
+            using var document = JsonDocument.Parse(exported);
+            var lyric = GetRoleLine(GetLyricLines(document).Single(), "lyric");
+            Assert.AreEqual("中文歌词", lyric.GetProperty("text").GetString());
+        }
+        finally
+        {
+            if (File.Exists(savePath))
+                File.Delete(savePath);
+            if (File.Exists(exportedPath))
+                File.Delete(exportedPath);
+        }
+    }
+
+    private sealed class NoopFileDialogService : IFileDialogService
+    {
+        public IReadOnlyList<string> MusicFileExtensions { get; } = [];
+
+        public string? SavePath { get; init; }
+
+        public Task<string?> PickFileAsync(
+            IReadOnlyList<string> extensions,
+            FileDialogLocation suggestedStartLocation = FileDialogLocation.DocumentsLibrary,
+            FileDialogViewMode viewMode = FileDialogViewMode.List) =>
+            Task.FromResult<string?>(null);
+
+        public Task<IReadOnlyList<string>> PickFilesAsync(
+            IReadOnlyList<string> extensions,
+            FileDialogLocation suggestedStartLocation = FileDialogLocation.DocumentsLibrary,
+            FileDialogViewMode viewMode = FileDialogViewMode.List) =>
+            Task.FromResult<IReadOnlyList<string>>([]);
+
+        public Task<string?> SaveFileAsync(
+            IReadOnlyDictionary<string, IReadOnlyList<string>> fileTypeChoices,
+            string suggestedFileName,
+            FileDialogLocation suggestedStartLocation = FileDialogLocation.DocumentsLibrary) =>
+            Task.FromResult(SavePath);
+
+        public Task<string?> PickMusicFileAsync() => Task.FromResult<string?>(null);
+
+        public Task<IReadOnlyList<string>> PickMusicFilesAsync() =>
+            Task.FromResult<IReadOnlyList<string>>([]);
+
+        public Task<string?> PickWpplAsync() => Task.FromResult<string?>(null);
+
+        public Task<string?> SaveWpplAsync(string suggestedFileName = "playlist") => Task.FromResult<string?>(null);
+
+        public Task<string?> PickImageAsync() => Task.FromResult<string?>(null);
+    }
 }

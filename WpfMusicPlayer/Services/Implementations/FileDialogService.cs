@@ -1,4 +1,5 @@
 using System.Windows;
+using Windows.Storage.Pickers;
 using WinRT.Interop;
 using WpfMusicPlayer.Services.Abstractions;
 
@@ -6,94 +7,151 @@ namespace WpfMusicPlayer.Services.Implementations;
 
 public class FileDialogService : IFileDialogService
 {
-    public List<string> MscExtList => [
+    private static readonly IReadOnlyList<string> ImageFileExtensions = [
+        ".bmp", ".jpg", ".jpeg", ".png", ".tiff", ".webp", ".ico", ".gif"
+    ];
+
+    private static readonly IReadOnlyList<string> PlaylistFileExtensions = [".wppl"];
+
+    private static readonly IReadOnlyDictionary<string, IReadOnlyList<string>> PlaylistSaveFileTypeChoices =
+        new Dictionary<string, IReadOnlyList<string>>
+        {
+            ["WpfMusicPlayer 播放列表"] = PlaylistFileExtensions
+        };
+
+    public IReadOnlyList<string> MusicFileExtensions { get; } = [
         ".mp3", ".flac", ".wav", ".wma", ".m4a", ".m4s", ".aac", ".ogg", ".ape", ".aiff", ".au", ".aifc",
         ".ncm"
     ];
-    public List<string> PicExtList => [
-        ".bmp", ".jpg", ".jpeg", ".png", ".tiff", ".webp", ".ico", ".gif"
-    ];
-    public async Task<string?> PickMusicFileAsync() {
-        var picker = new Windows.Storage.Pickers.FileOpenPicker();
-        picker.ViewMode = Windows.Storage.Pickers.PickerViewMode.Thumbnail;
-        picker.SuggestedStartLocation = Windows.Storage.Pickers.PickerLocationId.MusicLibrary;
-        foreach(var ext in MscExtList) {
-            picker.FileTypeFilter.Add(ext);
-        }
-        //picker.FileTypeFilter.Add("*");
-        var hwnd = new System.Windows.Interop.WindowInteropHelper(Application.Current.MainWindow ?? throw new InvalidOperationException()).Handle;
-        InitializeWithWindow.Initialize(picker, hwnd);
 
-        Windows.Storage.StorageFile file = await picker.PickSingleFileAsync();
+    public Task<string?> PickMusicFileAsync() =>
+        PickFileAsync(MusicFileExtensions, FileDialogLocation.MusicLibrary, FileDialogViewMode.Thumbnail);
+
+    public Task<IReadOnlyList<string>> PickMusicFilesAsync() =>
+        PickFilesAsync(MusicFileExtensions, FileDialogLocation.MusicLibrary, FileDialogViewMode.Thumbnail);
+
+    public Task<string?> PickImageAsync() =>
+        PickFileAsync(ImageFileExtensions, FileDialogLocation.PicturesLibrary, FileDialogViewMode.Thumbnail);
+
+    public Task<string?> PickWpplAsync() =>
+        PickFileAsync(PlaylistFileExtensions);
+
+    public Task<string?> SaveWpplAsync(string suggestedFileName = "playlist") =>
+        SaveFileAsync(PlaylistSaveFileTypeChoices, suggestedFileName);
+
+    public async Task<string?> PickFileAsync(
+        IReadOnlyList<string> extensions,
+        FileDialogLocation suggestedStartLocation = FileDialogLocation.DocumentsLibrary,
+        FileDialogViewMode viewMode = FileDialogViewMode.List)
+    {
+        var picker = CreateOpenPicker(extensions, suggestedStartLocation, viewMode);
+        var file = await picker.PickSingleFileAsync();
         return file?.Path;
     }
 
-    public async Task<IReadOnlyList<string>> PickMusicFilesAsync() {
-        var picker = new Windows.Storage.Pickers.FileOpenPicker();
-        picker.ViewMode = Windows.Storage.Pickers.PickerViewMode.Thumbnail;
-        picker.SuggestedStartLocation = Windows.Storage.Pickers.PickerLocationId.MusicLibrary;
-        foreach(var ext in MscExtList) {
-            picker.FileTypeFilter.Add(ext);
-        }
-        //picker.FileTypeFilter.Add("*");
-        var hwnd = new System.Windows.Interop.WindowInteropHelper(Application.Current.MainWindow ?? throw new InvalidOperationException()).Handle;
-        InitializeWithWindow.Initialize(picker, hwnd);
-
+    public async Task<IReadOnlyList<string>> PickFilesAsync(
+        IReadOnlyList<string> extensions,
+        FileDialogLocation suggestedStartLocation = FileDialogLocation.DocumentsLibrary,
+        FileDialogViewMode viewMode = FileDialogViewMode.List)
+    {
+        var picker = CreateOpenPicker(extensions, suggestedStartLocation, viewMode);
         var files = await picker.PickMultipleFilesAsync();
-        return files?.Select(f => f.Path).ToList() ?? [];
+        return files?.Select(file => file.Path).ToList() ?? [];
     }
 
-    public async Task<string?> PickImageAsync() {
-        var picker = new Windows.Storage.Pickers.FileOpenPicker();
-        picker.ViewMode = Windows.Storage.Pickers.PickerViewMode.Thumbnail;
-        picker.SuggestedStartLocation = Windows.Storage.Pickers.PickerLocationId.PicturesLibrary;
-        foreach(var ext in PicExtList) {
-            picker.FileTypeFilter.Add(ext);
+    public async Task<string?> SaveFileAsync(
+        IReadOnlyDictionary<string, IReadOnlyList<string>> fileTypeChoices,
+        string suggestedFileName,
+        FileDialogLocation suggestedStartLocation = FileDialogLocation.DocumentsLibrary)
+    {
+        ArgumentNullException.ThrowIfNull(fileTypeChoices);
+
+        if (fileTypeChoices.Count == 0)
+            throw new ArgumentException("At least one file type choice is required.", nameof(fileTypeChoices));
+
+        var picker = new FileSavePicker
+        {
+            SuggestedStartLocation = ToPickerLocationId(suggestedStartLocation),
+            SuggestedFileName = suggestedFileName
+        };
+
+        foreach (var (description, extensions) in fileTypeChoices)
+        {
+            picker.FileTypeChoices.Add(description, NormalizeExtensions(extensions).ToList());
         }
-        //picker.FileTypeFilter.Add("*");
-        var hwnd = new System.Windows.Interop.WindowInteropHelper(Application.Current.MainWindow ?? throw new InvalidOperationException()).Handle;
-        InitializeWithWindow.Initialize(picker, hwnd);
 
-        Windows.Storage.StorageFile file = await picker.PickSingleFileAsync();
+        InitializeWithMainWindow(picker);
+
+        var file = await picker.PickSaveFileAsync();
         return file?.Path;
     }
 
-    public async Task<string?> PickWpplAsync() {
-        var picker = new Windows.Storage.Pickers.FileOpenPicker();
-        picker.ViewMode = Windows.Storage.Pickers.PickerViewMode.List;
-        picker.SuggestedStartLocation = Windows.Storage.Pickers.PickerLocationId.DocumentsLibrary;
-        picker.FileTypeFilter.Add(".wppl");
+    private static FileOpenPicker CreateOpenPicker(
+        IReadOnlyList<string> extensions,
+        FileDialogLocation suggestedStartLocation,
+        FileDialogViewMode viewMode)
+    {
+        var picker = new FileOpenPicker
+        {
+            ViewMode = ToPickerViewMode(viewMode),
+            SuggestedStartLocation = ToPickerLocationId(suggestedStartLocation)
+        };
 
-        var hwnd = new System.Windows.Interop.WindowInteropHelper(Application.Current.MainWindow ?? throw new InvalidOperationException()).Handle;
-        InitializeWithWindow.Initialize(picker, hwnd);
+        foreach (var extension in NormalizeExtensions(extensions))
+        {
+            picker.FileTypeFilter.Add(extension);
+        }
 
-        Windows.Storage.StorageFile file = await picker.PickSingleFileAsync();
-        return file?.Path;
+        InitializeWithMainWindow(picker);
+        return picker;
     }
 
-    public async Task<string?> SaveWpplAsync(string suggestedFileName = "playlist") {
-        var picker = new Windows.Storage.Pickers.FileSavePicker();
-        picker.SuggestedStartLocation = Windows.Storage.Pickers.PickerLocationId.DocumentsLibrary;
-        picker.FileTypeChoices.Add("WpfMusicPlayer 播放列表", new List<string> { ".wppl" });
-        picker.SuggestedFileName = suggestedFileName;
+    private static IReadOnlyList<string> NormalizeExtensions(IEnumerable<string> extensions)
+    {
+        ArgumentNullException.ThrowIfNull(extensions);
 
-        var hwnd = new System.Windows.Interop.WindowInteropHelper(Application.Current.MainWindow ?? throw new InvalidOperationException()).Handle;
-        InitializeWithWindow.Initialize(picker, hwnd);
+        var normalized = extensions
+            .Where(extension => !string.IsNullOrWhiteSpace(extension))
+            .Select(extension =>
+            {
+                extension = extension.Trim();
+                return extension == "*" || extension.StartsWith('.') ? extension : $".{extension}";
+            })
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
 
-        Windows.Storage.StorageFile file = await picker.PickSaveFileAsync();
-        return file?.Path;
+        return normalized.Length == 0 
+            ? throw new ArgumentException("At least one file extension is required.", nameof(extensions)) 
+            : normalized;
     }
 
-    public async Task<string?> PickLrcAsync() {
-        var picker = new Windows.Storage.Pickers.FileOpenPicker();
-        picker.ViewMode = Windows.Storage.Pickers.PickerViewMode.List;
-        picker.SuggestedStartLocation = Windows.Storage.Pickers.PickerLocationId.DocumentsLibrary;
-        picker.FileTypeFilter.Add(".lrc");
+    private static PickerLocationId ToPickerLocationId(FileDialogLocation location) =>
+        location switch
+        {
+            FileDialogLocation.DocumentsLibrary => PickerLocationId.DocumentsLibrary,
+            FileDialogLocation.MusicLibrary => PickerLocationId.MusicLibrary,
+            FileDialogLocation.PicturesLibrary => PickerLocationId.PicturesLibrary,
+            FileDialogLocation.VideosLibrary => PickerLocationId.VideosLibrary,
+            FileDialogLocation.Desktop => PickerLocationId.Desktop,
+            FileDialogLocation.Downloads => PickerLocationId.Downloads,
+            FileDialogLocation.ComputerFolder => PickerLocationId.ComputerFolder,
+            FileDialogLocation.HomeGroup => PickerLocationId.HomeGroup,
+            FileDialogLocation.Objects3D => PickerLocationId.Objects3D,
+            FileDialogLocation.Unspecified => PickerLocationId.Unspecified,
+            _ => PickerLocationId.DocumentsLibrary
+        };
 
-        var hwnd = new System.Windows.Interop.WindowInteropHelper(Application.Current.MainWindow ?? throw new InvalidOperationException()).Handle;
+    private static PickerViewMode ToPickerViewMode(FileDialogViewMode viewMode) =>
+        viewMode switch
+        {
+            FileDialogViewMode.Thumbnail => PickerViewMode.Thumbnail,
+            _ => PickerViewMode.List
+        };
+
+    private static void InitializeWithMainWindow(object picker)
+    {
+        var hwnd = new System.Windows.Interop.WindowInteropHelper(
+            Application.Current.MainWindow ?? throw new InvalidOperationException()).Handle;
         InitializeWithWindow.Initialize(picker, hwnd);
-
-        Windows.Storage.StorageFile file = await picker.PickSingleFileAsync();
-        return file?.Path;
     }
 }

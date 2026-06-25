@@ -77,7 +77,7 @@ namespace
 			return nullptr;
 		if (image_size > (std::numeric_limits<DWORD>::max)())
 		{
-			ATLTRACE("err: image buffer is too large for WIC stream\n");
+			NATIVE_TRACE("err: image buffer is too large for WIC stream\n");
 			return nullptr;
 		}
 
@@ -89,7 +89,7 @@ namespace
 			});
 		if (FAILED(hr) || !imaging_factory)
 		{
-			ATLTRACE("err: create WIC imaging factory failed, hr=0x%08lx\n", hr);
+			NATIVE_TRACE("err: create WIC imaging factory failed, hr=0x%08lx\n", hr);
 			return nullptr;
 		}
 
@@ -100,14 +100,14 @@ namespace
 			});
 		if (FAILED(hr) || !iwic_stream)
 		{
-			ATLTRACE("err: create WIC stream failed, hr=0x%08lx\n", hr);
+			NATIVE_TRACE("err: create WIC stream failed, hr=0x%08lx\n", hr);
 			return nullptr;
 		}
 
 		hr = iwic_stream->InitializeFromMemory(image_data, static_cast<DWORD>(image_size));
 		if (FAILED(hr))
 		{
-			ATLTRACE("err: initialize WIC stream from memory failed, hr=0x%08lx\n", hr);
+			NATIVE_TRACE("err: initialize WIC stream from memory failed, hr=0x%08lx\n", hr);
 			return nullptr;
 		}
 
@@ -119,7 +119,7 @@ namespace
 			});
 		if (FAILED(hr) || !bitmap_decoder)
 		{
-			ATLTRACE("err: create decoder from stream failed, hr=0x%08lx\n", hr);
+			NATIVE_TRACE("err: create decoder from stream failed, hr=0x%08lx\n", hr);
 			return nullptr;
 		}
 
@@ -130,7 +130,7 @@ namespace
 			});
 		if (FAILED(hr) || !source)
 		{
-			ATLTRACE("err: get WIC bitmap frame failed, hr=0x%08lx\n", hr);
+			NATIVE_TRACE("err: get WIC bitmap frame failed, hr=0x%08lx\n", hr);
 			return nullptr;
 		}
 
@@ -141,7 +141,7 @@ namespace
 			});
 		if (FAILED(hr) || !iwic_format_converter)
 		{
-			ATLTRACE("err: create WIC format converter failed, hr=0x%08lx\n", hr);
+			NATIVE_TRACE("err: create WIC format converter failed, hr=0x%08lx\n", hr);
 			return nullptr;
 		}
 
@@ -150,7 +150,7 @@ namespace
 			WICBitmapPaletteTypeCustom);
 		if (FAILED(hr))
 		{
-			ATLTRACE("err: initialize WIC format converter failed, hr=0x%08lx\n", hr);
+			NATIVE_TRACE("err: initialize WIC format converter failed, hr=0x%08lx\n", hr);
 			return nullptr;
 		}
 
@@ -159,7 +159,7 @@ namespace
 		hr = source->GetSize(&width, &height);
 		if (FAILED(hr) || width == 0 || height == 0)
 		{
-			ATLTRACE("err: get WIC bitmap size failed, hr=0x%08lx\n", hr);
+			NATIVE_TRACE("err: get WIC bitmap size failed, hr=0x%08lx\n", hr);
 			return nullptr;
 		}
 
@@ -171,7 +171,7 @@ namespace
 			});
 		if (FAILED(hr) || !scaler)
 		{
-			ATLTRACE("err: create WIC bitmap scaler failed, hr=0x%08lx\n", hr);
+			NATIVE_TRACE("err: create WIC bitmap scaler failed, hr=0x%08lx\n", hr);
 			return nullptr;
 		}
 
@@ -186,7 +186,7 @@ namespace
 			const UINT crop_x = (width - crop_width) / 2;
 			const UINT crop_y = (height - crop_height) / 2;
 
-			ATLTRACE("info: center crop - src(%u %u), crop(%u %u) at (%u %u)\n",
+			NATIVE_TRACE("info: center crop - src(%u %u), crop(%u %u) at (%u %u)\n",
 				width, height, crop_width, crop_height, crop_x, crop_y);
 
 			hr = CreateComPtr(clipper, [&](IWICBitmapClipper** out)
@@ -195,7 +195,7 @@ namespace
 				});
 			if (FAILED(hr) || !clipper)
 			{
-				ATLTRACE("err: create WIC bitmap clipper failed, hr=0x%08lx\n", hr);
+				NATIVE_TRACE("err: create WIC bitmap clipper failed, hr=0x%08lx\n", hr);
 				return nullptr;
 			}
 
@@ -204,7 +204,7 @@ namespace
 			hr = clipper->Initialize(iwic_format_converter.get(), &crop_rect);
 			if (FAILED(hr))
 			{
-				ATLTRACE("err: initialize WIC bitmap clipper failed, hr=0x%08lx\n", hr);
+				NATIVE_TRACE("err: initialize WIC bitmap clipper failed, hr=0x%08lx\n", hr);
 				return nullptr;
 			}
 
@@ -216,7 +216,7 @@ namespace
 		}
 		if (FAILED(hr))
 		{
-			ATLTRACE("err: initialize WIC bitmap scaler failed, hr=0x%08lx\n", hr);
+			NATIVE_TRACE("err: initialize WIC bitmap scaler failed, hr=0x%08lx\n", hr);
 			return nullptr;
 		}
 
@@ -237,14 +237,14 @@ namespace
 		ReleaseDC(nullptr, hdc_screen);
 		if (!bitmap || image_bits == nullptr)
 		{
-			ATLTRACE("err: create album art DIB section failed\n");
+			NATIVE_TRACE("err: create album art DIB section failed\n");
 			return nullptr;
 		}
 
 		hr = scaler->CopyPixels(nullptr, stride, buffer_size, image_bits);
 		if (FAILED(hr))
 		{
-			ATLTRACE("err: copy WIC pixels failed, hr=0x%08lx\n", hr);
+			NATIVE_TRACE("err: copy WIC pixels failed, hr=0x%08lx\n", hr);
 			DeleteObject(bitmap);
 			return nullptr;
 		}
@@ -300,21 +300,21 @@ inline int MusicPlayerLibrary::MusicPlayerNative::load_audio_context(const std::
 	file_extension = file_extension_in;
 	if (!file_stream)
 	{
-		ATLTRACE("err: file not exists!\n");
+		NATIVE_TRACE("err: file not exists!\n");
 		return -1;
 	}
 	char magic[10];
 	if (const int ret = file_stream->Read(magic, 8); ret != 8)
 	{
-		ATLTRACE("err: failed to read magic bytes\n");
+		NATIVE_TRACE("err: failed to read magic bytes\n");
 		file_stream.reset();
 		return -1;
 	}
 	magic[9] = '\0';
-	ATLTRACE("info: magic bytes: %s\n", magic);
+	NATIVE_TRACE("info: magic bytes: %s\n", magic);
 	if (std::string_view(magic, 8) == "CTENFDAM")
 	{
-		ATLTRACE("info: found ncm header\n");
+		NATIVE_TRACE("info: found ncm header\n");
 		is_ncm = true;
 	}
 	file_stream->SeekToBegin();
@@ -331,9 +331,9 @@ inline int MusicPlayerLibrary::MusicPlayerNative::load_audio_context(const std::
 		}
 		catch (std::exception& e)
 		{
-			ATLTRACE("err: decrypt ncm failed: %s\n", e.what());
-			ATLTRACE("err: this can be caused by ncm algorithm update, or ncm file corrupt\n");
-			ATLTRACE("err: please try to report ncm file to issues\n");
+			NATIVE_TRACE("err: decrypt ncm failed: %s\n", e.what());
+			NATIVE_TRACE("err: this can be caused by ncm algorithm update, or ncm file corrupt\n");
+			NATIVE_TRACE("err: please try to report ncm file to issues\n");
 			file_stream.reset();
 			return -1;
 		}
@@ -355,7 +355,7 @@ int MusicPlayerLibrary::MusicPlayerNative::load_audio_context_from_file_stream()
 	// 取得文件大小
 	format_context = avformat_alloc_context();
 	size_t file_len = static_cast<int64_t>(file_stream->GetLength());
-	ATLTRACE("info: file loaded, size = %zu\n", file_len);
+	NATIVE_TRACE("info: file loaded, size = %zu\n", file_len);
 
 	constexpr size_t avio_buf_size = 8192;
 
@@ -378,13 +378,13 @@ int MusicPlayerLibrary::MusicPlayerNative::load_audio_context_from_file_stream()
 	);
 	if (res < 0) {
 		av_strerror(res, buf, 1024);
-		ATLTRACE("err: avformat_open_input failed: %s\n", buf);
+		NATIVE_TRACE("err: avformat_open_input failed: %s\n", buf);
 		return -1;
 	}
 	if (!format_context)
 	{
 		av_strerror(res, buf, 1024);
-		ATLTRACE("err: avformat_open_input failed, reason = %s(%d)\n", buf, res);
+		NATIVE_TRACE("err: avformat_open_input failed, reason = %s(%d)\n", buf, res);
 		release_audio_context();
 		delete[] buf;
 		return -1;
@@ -393,15 +393,15 @@ int MusicPlayerLibrary::MusicPlayerNative::load_audio_context_from_file_stream()
 	res = avformat_find_stream_info(format_context, nullptr);
 	if (res == AVERROR_EOF)
 	{
-		ATLTRACE("err: no stream found in file\n");
+		NATIVE_TRACE("err: no stream found in file\n");
 		release_audio_context();
 		delete[] buf;
 		return -1;
 	}
-	ATLTRACE("info: stream count %d\n", format_context->nb_streams);
+	NATIVE_TRACE("info: stream count %d\n", format_context->nb_streams);
 	audio_stream_index = av_find_best_stream(format_context, AVMEDIA_TYPE_AUDIO, -1, -1, const_cast<const AVCodec**>(&codec), 0);
 	if (audio_stream_index < 0) {
-		ATLTRACE("err: no audio stream found\n");
+		NATIVE_TRACE("err: no audio stream found\n");
 		release_audio_context();
 		delete[] buf;
 		return -1;
@@ -411,13 +411,13 @@ int MusicPlayerLibrary::MusicPlayerNative::load_audio_context_from_file_stream()
 	codec = const_cast<AVCodec*>(avcodec_find_decoder(current_stream->codecpar->codec_id));
 	if (!codec)
 	{
-		ATLTRACE("warn: no valid decoder found, stream id = %d!\n", audio_stream_index);
+		NATIVE_TRACE("warn: no valid decoder found, stream id = %d!\n", audio_stream_index);
 		release_audio_context();
 		delete[] buf;
 		return -1;
 	}
 
-	ATLTRACE("info: open stream id %d, format=%d, sample_rate=%d, channels=%d, channel_layout=%d\n",
+	NATIVE_TRACE("info: open stream id %d, format=%d, sample_rate=%d, channels=%d, channel_layout=%d\n",
 		audio_stream_index,
 		current_stream->codecpar->format,
 		current_stream->codecpar->sample_rate,
@@ -428,7 +428,7 @@ int MusicPlayerLibrary::MusicPlayerNative::load_audio_context_from_file_stream()
 
 	for (unsigned int i = 0; i < format_context->nb_streams; i++) {
 		if (AVStream* stream = format_context->streams[i]; stream->disposition & AV_DISPOSITION_ATTACHED_PIC) {
-			ATLTRACE("info: open stream id %d read attaching pic\n", i);
+			NATIVE_TRACE("info: open stream id %d read attaching pic\n", i);
 			image_stream_id = static_cast<int>(i);
 			break;
 		}
@@ -452,7 +452,7 @@ int MusicPlayerLibrary::MusicPlayerNative::load_audio_context_from_file_stream()
 	codec_context = avcodec_alloc_context3(codec);
 	if (codec_context == nullptr)
 	{
-		ATLTRACE("err: avcodec_alloc_context3 failed\n");
+		NATIVE_TRACE("err: avcodec_alloc_context3 failed\n");
 		release_audio_context();
 		delete[] buf;
 		return -1;
@@ -472,7 +472,7 @@ int MusicPlayerLibrary::MusicPlayerNative::load_audio_context_from_file_stream()
 	if (res)
 	{
 		av_strerror(res, buf, 1024);
-		ATLTRACE("err: avcodec_open2 failed, reason = %s\n", buf);
+		NATIVE_TRACE("err: avcodec_open2 failed, reason = %s\n", buf);
 		release_audio_context();
 		delete[] buf;
 		return -1;
@@ -493,7 +493,7 @@ int MusicPlayerLibrary::MusicPlayerNative::load_audio_context_from_file_stream()
 			fifo_audio_channels,
 			1024); // initial size
 		if (res < 0) {
-			ATLTRACE("err: initialize_audio_fifo failed\n");
+			NATIVE_TRACE("err: initialize_audio_fifo failed\n");
 			release_audio_context();
 			delete[] buf;
 			return -1;
@@ -562,7 +562,7 @@ void MusicPlayerLibrary::MusicPlayerNative::reset_audio_context()
 		av_seek_frame(format_context, audio_stream_index, 0, AVSEEK_FLAG_BACKWARD);
 		avcodec_flush_buffers(codec_context);
 		// 重置滤镜图
-		ATLTRACE("info: audio context reset, rebuilding filter graph\n");
+		NATIVE_TRACE("info: audio context reset, rebuilding filter graph\n");
 		reset_av_filter_equalizer();
 		if (init_av_filter_equalizer() < 0)
 		{
@@ -625,13 +625,13 @@ HBITMAP MusicPlayerLibrary::MusicPlayerNative::download_ncm_album_art(const std:
 		urlComponents.dwExtraInfoLength = static_cast<DWORD>(-1);
 		if (!WinHttpCrackUrl(url.c_str(), static_cast<DWORD>(url.size()), 0, &urlComponents))
 		{
-			ATLTRACE("err: crack album art url failed, gle=%lu\n", GetLastError());
+			NATIVE_TRACE("err: crack album art url failed, gle=%lu\n", GetLastError());
 			break;
 		}
 
 		if (urlComponents.nScheme != INTERNET_SCHEME_HTTP && urlComponents.nScheme != INTERNET_SCHEME_HTTPS)
 		{
-			ATLTRACE("err: unsupported album art url scheme=%d\n", urlComponents.nScheme);
+			NATIVE_TRACE("err: unsupported album art url scheme=%d\n", urlComponents.nScheme);
 			break;
 		}
 
@@ -642,7 +642,7 @@ HBITMAP MusicPlayerLibrary::MusicPlayerNative::download_ncm_album_art(const std:
 		if (urlComponents.dwExtraInfoLength > 0)
 			requestPath.append(urlComponents.lpszExtraInfo, urlComponents.dwExtraInfoLength);
 
-		ATLTRACE("info: establishing connection with ncm server\n");
+		NATIVE_TRACE("info: establishing connection with ncm server\n");
 		hSession = WinHttpOpen(
 			L"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
 			WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
@@ -651,14 +651,14 @@ HBITMAP MusicPlayerLibrary::MusicPlayerNative::download_ncm_album_art(const std:
 			0);
 		if (!hSession)
 		{
-			ATLTRACE("err: open winhttp session failed, gle=%lu\n", GetLastError());
+			NATIVE_TRACE("err: open winhttp session failed, gle=%lu\n", GetLastError());
 			break;
 		}
 
 		hConnect = WinHttpConnect(hSession, host.c_str(), urlComponents.nPort, 0);
 		if (!hConnect)
 		{
-			ATLTRACE("err: connect album art host failed, gle=%lu\n", GetLastError());
+			NATIVE_TRACE("err: connect album art host failed, gle=%lu\n", GetLastError());
 			break;
 		}
 
@@ -673,7 +673,7 @@ HBITMAP MusicPlayerLibrary::MusicPlayerNative::download_ncm_album_art(const std:
 			requestFlags);
 		if (!hRequest)
 		{
-			ATLTRACE("err: open album art request failed, gle=%lu\n", GetLastError());
+			NATIVE_TRACE("err: open album art request failed, gle=%lu\n", GetLastError());
 			break;
 		}
 
@@ -687,13 +687,13 @@ HBITMAP MusicPlayerLibrary::MusicPlayerNative::download_ncm_album_art(const std:
 			0,
 			0))
 		{
-			ATLTRACE("err: send album art request failed, gle=%lu\n", GetLastError());
+			NATIVE_TRACE("err: send album art request failed, gle=%lu\n", GetLastError());
 			break;
 		}
 
 		if (!WinHttpReceiveResponse(hRequest, nullptr))
 		{
-			ATLTRACE("err: receive album art response failed, gle=%lu\n", GetLastError());
+			NATIVE_TRACE("err: receive album art response failed, gle=%lu\n", GetLastError());
 			break;
 		}
 
@@ -708,7 +708,7 @@ HBITMAP MusicPlayerLibrary::MusicPlayerNative::download_ncm_album_art(const std:
 			WINHTTP_NO_HEADER_INDEX)
 			&& (statusCode < 200 || statusCode >= 300))
 		{
-			ATLTRACE("err: album art response status=%lu\n", statusCode);
+			NATIVE_TRACE("err: album art response status=%lu\n", statusCode);
 			break;
 		}
 
@@ -719,7 +719,7 @@ HBITMAP MusicPlayerLibrary::MusicPlayerNative::download_ncm_album_art(const std:
 		{
 			if (!WinHttpReadData(hRequest, buf, sizeof(buf), &nRead))
 			{
-				ATLTRACE("err: read album art response failed, gle=%lu\n", GetLastError());
+				NATIVE_TRACE("err: read album art response failed, gle=%lu\n", GetLastError());
 				readSucceeded = false;
 				nRead = 0;
 				break;
@@ -741,14 +741,14 @@ HBITMAP MusicPlayerLibrary::MusicPlayerNative::download_ncm_album_art(const std:
 		return nullptr;
 	}
 
-	ATLTRACE("info: downloaded %llu bytes\n", totalBytesRead);
+	NATIVE_TRACE("info: downloaded %llu bytes\n", totalBytesRead);
 
 	file->SeekToBegin();
 	void* pBufStart = nullptr;
 	void* pBufMax = nullptr;
 	if (!file->GetReadBuffer(&pBufStart, &pBufMax))
 	{
-		ATLTRACE("err: get album art memory buffer failed\n");
+		NATIVE_TRACE("err: get album art memory buffer failed\n");
 		return nullptr;
 	}
 	HBITMAP bmp = DecodeImageBufferToHBitmap(
@@ -807,14 +807,14 @@ void MusicPlayerLibrary::MusicPlayerNative::read_metadata()
 	auto read_metadata_iter = [&](AVDictionaryEntry* tag) {
 		std::wstring key = convert_utf8(tag->key);
 		std::wstring value = convert_utf8(tag->value);
-		ATLTRACE(L"info: key %s = %s\n", key.c_str(), value.c_str());
+		NATIVE_TRACE(L"info: key %s = %s\n", key.c_str(), value.c_str());
 		if (EqualsIgnoreCase(key, L"title") && song_title.empty()) {
 			song_title = value;
-			ATLTRACE(L"info: song title: %s\n", song_title.c_str());
+			NATIVE_TRACE(L"info: song title: %s\n", song_title.c_str());
 		}
 		else if (EqualsIgnoreCase(key, L"artist") && song_artist.empty()) {
 			song_artist = value;
-			ATLTRACE(L"info: song artist: %s\n", song_artist.c_str());
+			NATIVE_TRACE(L"info: song artist: %s\n", song_artist.c_str());
 		}
 		else
 		{
@@ -822,7 +822,7 @@ void MusicPlayerLibrary::MusicPlayerNative::read_metadata()
 			if (key.find(L"lyric") != std::wstring::npos)
 			{
 				this->id3_string_lyric = value;
-				ATLTRACE("info: song contains lyric in metadata\n");
+				NATIVE_TRACE("info: song contains lyric in metadata\n");
 			}
 		}
 	};
@@ -1023,7 +1023,7 @@ inline int MusicPlayerLibrary::MusicPlayerNative::initialize_audio_engine()
 	// create com obj
 	if (FAILED(XAudio2Create(&xaudio2)))
 	{
-		ATLTRACE("err: create xaudio2 com object failed\n");
+		NATIVE_TRACE("err: create xaudio2 com object failed\n");
 		uninitialize_audio_engine();
 		return -1;
 	}
@@ -1034,7 +1034,7 @@ inline int MusicPlayerLibrary::MusicPlayerNative::initialize_audio_engine()
 		XAUDIO2_DEFAULT_SAMPLERATE,
 		0, nullptr, nullptr,
 		AudioCategory_GameMedia))) {
-		ATLTRACE("err: creating mastering voice failed\n");
+		NATIVE_TRACE("err: creating mastering voice failed\n");
 		uninitialize_audio_engine();
 		return -1;
 	}
@@ -1050,7 +1050,7 @@ inline int MusicPlayerLibrary::MusicPlayerNative::initialize_audio_engine()
 	wfx.cbSize = sizeof(wfx);
 	if (FAILED(xaudio2->CreateSourceVoice(&source_voice, &wfx, XAUDIO2_VOICE_NOPITCH)))
 	{
-		ATLTRACE("err: create source voice failed\n");
+		NATIVE_TRACE("err: create source voice failed\n");
 		uninitialize_audio_engine();
 		return -1;
 	}
@@ -1065,7 +1065,7 @@ inline int MusicPlayerLibrary::MusicPlayerNative::initialize_audio_engine()
 	}
 	catch (const std::exception& e)
 	{
-		ATLTRACE("err: create fft executer failed, reason=%s\n", e.what());
+		NATIVE_TRACE("err: create fft executer failed, reason=%s\n", e.what());
 		uninitialize_audio_engine();
 		return -1;
 	}
@@ -1143,7 +1143,7 @@ void MusicPlayerLibrary::MusicPlayerNative::audio_playback_worker_thread()
 				}
 			}
 			else if (file_stream_end) {
-				ATLTRACE("info: decode stopped, fetch from fifo\n");
+				NATIVE_TRACE("info: decode stopped, fetch from fifo\n");
 				notify_frame_ready(); // avoid deadlock
 			}
 			else {
@@ -1165,7 +1165,7 @@ void MusicPlayerLibrary::MusicPlayerNative::audio_playback_worker_thread()
 			// bypass
 		}
 		else if (!is_audio_pipeline_running() && fifo_size == 0) {
-			ATLTRACE("info: audio pipeline stopped and fifo empty, ending playback thread\n");
+			NATIVE_TRACE("info: audio pipeline stopped and fifo empty, ending playback thread\n");
 			playback_state.store(audio_playback_state_decoder_exit_pre_stop);
 			continue;
 		}
@@ -1181,7 +1181,7 @@ void MusicPlayerLibrary::MusicPlayerNative::audio_playback_worker_thread()
 		source_voice->GetState(&state);
 		if (user_request_stop.load()) {
 			// immediate return
-			ATLTRACE("info: user request stop, do cleaning\n");
+			NATIVE_TRACE("info: user request stop, do cleaning\n");
 
 			base_offset = state.SamplesPlayed;
 			break;
@@ -1192,11 +1192,11 @@ void MusicPlayerLibrary::MusicPlayerNative::audio_playback_worker_thread()
 
 			if (fifo_size == 0 && state.BuffersQueued > 0)
 			{
-				ATLTRACE("info: file stream ended, waiting for xaudio2 flush buffer\n");
+				NATIVE_TRACE("info: file stream ended, waiting for xaudio2 flush buffer\n");
 				std::this_thread::sleep_for(std::chrono::milliseconds(1));
 				source_voice->GetState(&state);
 				elapsed_time = static_cast<float>(state.SamplesPlayed - base_offset) * 1.0f / static_cast<float>(wfx.nSamplesPerSec) + static_cast<float>(pts_seconds);
-				ATLTRACE("info: samples played=%lld, elapsed time=%lf\n",
+				NATIVE_TRACE("info: samples played=%lld, elapsed time=%lf\n",
 					state.SamplesPlayed, elapsed_time.load());
 
 				UINT32 raw = *reinterpret_cast<UINT32*>(&elapsed_time);
@@ -1206,7 +1206,7 @@ void MusicPlayerLibrary::MusicPlayerNative::audio_playback_worker_thread()
 			}
 			else
 			{
-				ATLTRACE("info: playback finished, destroying thread\n");
+				NATIVE_TRACE("info: playback finished, destroying thread\n");
 				managed_music_player->ProcessEvent(WM_PLAYER_STOP, 0, 0);
 				// AfxGetMainWnd()->PostMessage(WM_PLAYER_STOP);
 				base_offset = state.SamplesPlayed;
@@ -1260,11 +1260,11 @@ void MusicPlayerLibrary::MusicPlayerNative::audio_playback_worker_thread()
 			}
 			read_samples = read_samples_from_fifo(fifo_buf, fifo_read_size);
 			if (read_samples < 0) {
-				ATLTRACE("err: read samples from fifo failed, code=%d\n", read_samples);
-				ATLTRACE("err: fifo size=%d", get_audio_fifo_cached_samples_size());
+				NATIVE_TRACE("err: read samples from fifo failed, code=%d\n", read_samples);
+				NATIVE_TRACE("err: fifo size=%d", get_audio_fifo_cached_samples_size());
 				if (user_request_stop.load())
 				{
-					ATLTRACE("info: user request stop and fifo cleared up, exiting\n");
+					NATIVE_TRACE("info: user request stop and fifo cleared up, exiting\n");
 					av_freep(&fifo_buf[0]);
 					av_free(fifo_buf);
 					break;
@@ -1281,7 +1281,7 @@ void MusicPlayerLibrary::MusicPlayerNative::audio_playback_worker_thread()
 
 		if (read_samples == 0)
 		{
-			ATLTRACE("info: no samples read, spin wait instead\n");
+			NATIVE_TRACE("info: no samples read, spin wait instead\n");
 			av_freep(&fifo_buf[0]);
 			av_free(fifo_buf);
 			Sleep(5); // wait for producing buffer
@@ -1322,7 +1322,7 @@ void MusicPlayerLibrary::MusicPlayerNative::audio_playback_worker_thread()
 
 		hr = source_voice->SubmitSourceBuffer(buffer_pcm);
 		if (FAILED(hr)) {
-			ATLTRACE("err: submit source buffer failed, reason=0x%x\n", hr);
+			NATIVE_TRACE("err: submit source buffer failed, reason=0x%x\n", hr);
 			playback_state.store(audio_playback_state_stopped);
 			break;
 		}
@@ -1420,7 +1420,7 @@ void MusicPlayerLibrary::MusicPlayerNative::audio_playback_worker_thread()
 		std::lock_guard fifo_event_lock(audio_fifo_mutex);
 		if (get_audio_fifo_cached_samples_size() < get_audio_fifo_low_watermark()) {
 			// need more data
-			ATLTRACE("info: audio fifo cached samples size=%d, frame underrun!\n", get_audio_fifo_cached_samples_size());
+			NATIVE_TRACE("info: audio fifo cached samples size=%d, frame underrun!\n", get_audio_fifo_cached_samples_size());
 			notify_frame_underrun();
 		}
 		else if (state.BuffersQueued < 16) {
@@ -1437,7 +1437,7 @@ void MusicPlayerLibrary::MusicPlayerNative::audio_decode_worker_thread()
 	bool decoder_flushed = false;
 	while (true) {
 		if (playback_state.load() == audio_playback_state_stopped) {
-			ATLTRACE("info: playback stopped, decoder thread exiting\n");
+			NATIVE_TRACE("info: playback stopped, decoder thread exiting\n");
 			break;
 		}
 
@@ -1460,9 +1460,9 @@ void MusicPlayerLibrary::MusicPlayerNative::audio_decode_worker_thread()
 
 		if (playback_state.load() == audio_playback_state_init
 			&& is_pause) {
-			ATLTRACE("info: resume from pause, pts_seconds=%lf\n", pts_seconds.load());
+			NATIVE_TRACE("info: resume from pause, pts_seconds=%lf\n", pts_seconds.load());
 			if (av_seek_frame(format_context, -1, static_cast<int64_t>(pts_seconds * AV_TIME_BASE), AVSEEK_FLAG_ANY) < 0) {
-				ATLTRACE("err: resume failed\n");
+				NATIVE_TRACE("err: resume failed\n");
 				playback_state.store(audio_playback_state_stopped);
 			}
 			avcodec_flush_buffers(codec_context);
@@ -1474,7 +1474,7 @@ void MusicPlayerLibrary::MusicPlayerNative::audio_decode_worker_thread()
 		// 从输入文件中读取数据并解码
 		if (!is_eof) {
 			if (av_read_frame(format_context, packet) < 0) {
-				ATLTRACE("info: av_read_frame reached eof, entering flush mode\n");
+				NATIVE_TRACE("info: av_read_frame reached eof, entering flush mode\n");
 				// 文件流结束，进入flush模式
 				is_eof = true;
 			}
@@ -1489,7 +1489,7 @@ void MusicPlayerLibrary::MusicPlayerNative::audio_decode_worker_thread()
 		if (is_eof && !decoder_flushed) {
 			// 发送空包以排空解码器缓存
 			if (int ret = avcodec_send_packet(codec_context, nullptr); ret < 0 && ret != AVERROR_EOF) {
-				ATLTRACE("warn: flush decoder failed, code=%d\n", ret);
+				NATIVE_TRACE("warn: flush decoder failed, code=%d\n", ret);
 			}
 			decoder_flushed = true;
 		}
@@ -1515,7 +1515,7 @@ void MusicPlayerLibrary::MusicPlayerNative::audio_decode_worker_thread()
 			else
 			{
 				if (receive_res == AVERROR_EOF) {
-					ATLTRACE("info: decoder flushed, signaling equalizer eof\n");
+					NATIVE_TRACE("info: decoder flushed, signaling equalizer eof\n");
 					signal_decoded_frame_queue_eof();
 					av_frame_unref(frame);
 					if (!is_eof) {
@@ -1533,7 +1533,7 @@ void MusicPlayerLibrary::MusicPlayerNative::audio_decode_worker_thread()
 			{
 				if (playback_state.load() != audio_playback_state_stopped)
 				{
-					ATLTRACE("err: queue decoded frame failed\n");
+					NATIVE_TRACE("err: queue decoded frame failed\n");
 					playback_state.store(audio_playback_state_stopped);
 				}
 				break;
@@ -1580,7 +1580,7 @@ void MusicPlayerLibrary::MusicPlayerNative::audio_equalize_worker_thread()
 					return true;
 				if (res == AVERROR_EOF)
 				{
-					ATLTRACE("info: filter flushed, all samples processed\n");
+					NATIVE_TRACE("info: filter flushed, all samples processed\n");
 					file_stream_end = true;
 					return false;
 				}
@@ -1630,7 +1630,7 @@ void MusicPlayerLibrary::MusicPlayerNative::audio_equalize_worker_thread()
 			std::lock_guard graph_lock(filter_graph_mutex);
 			if (!filter_flush_sent)
 			{
-				ATLTRACE("info: decoded queue eof, flushing equalizer filter graph\n");
+				NATIVE_TRACE("info: decoded queue eof, flushing equalizer filter graph\n");
 				if (int ret = av_buffersrc_add_frame(filter_context_src, nullptr); ret < 0 && ret != AVERROR_EOF)
 				{
 					FFMPEG_CRITICAL_ERROR(ret);
@@ -1653,7 +1653,7 @@ void MusicPlayerLibrary::MusicPlayerNative::audio_equalize_worker_thread()
 					FFMPEG_CRITICAL_ERROR(add_frame_ret);
 				}
 				else {
-					ATLTRACE("info: filter shutdown, exiting\n");
+					NATIVE_TRACE("info: filter shutdown, exiting\n");
 				}
 				playback_state.store(audio_playback_state_stopped);
 				av_frame_free(&decoded_frame);
@@ -1678,7 +1678,7 @@ void MusicPlayerLibrary::MusicPlayerNative::audio_equalize_worker_thread()
 			                             ? decoder_query_xaudio2_buffer_size()
 			                             : 0;
 		if (player_buffers_queued < 4 && playback_state.load() == audio_playback_state_playing) {
-			ATLTRACE("info: xaudio2 buffers queued=%d, notify player thread to submit data\n", player_buffers_queued);
+			NATIVE_TRACE("info: xaudio2 buffers queued=%d, notify player thread to submit data\n", player_buffers_queued);
 			notify_frame_ready();
 		}
 	}
@@ -1688,7 +1688,7 @@ void MusicPlayerLibrary::MusicPlayerNative::audio_equalize_worker_thread()
 
 void MusicPlayerLibrary::MusicPlayerNative::handle_worker_exception(System::Exception^ exception, const char* worker_name)
 {
-	ATLTRACE("err: audio %s worker failed\n", worker_name);
+	NATIVE_TRACE("err: audio %s worker failed\n", worker_name);
 	playback_state.store(audio_playback_state_stopped);
 	user_request_stop.store(true);
 	decoder_is_running = false;
@@ -1742,7 +1742,7 @@ void MusicPlayerLibrary::MusicPlayerNative::init_decoder_thread() {
 			}
 			decoder_is_running = false;
 		});
-	ATLTRACE("info: decoder thread created\n");
+	NATIVE_TRACE("info: decoder thread created\n");
 	notify_frame_underrun();
 }
 
@@ -1780,7 +1780,7 @@ void MusicPlayerLibrary::MusicPlayerNative::init_equalizer_thread()
 			}
 			equalizer_is_running = false;
 		});
-	ATLTRACE("info: equalizer thread created\n");
+	NATIVE_TRACE("info: equalizer thread created\n");
 }
 
 inline void MusicPlayerLibrary::MusicPlayerNative::start_audio_playback()
@@ -1823,7 +1823,7 @@ inline void MusicPlayerLibrary::MusicPlayerNative::start_audio_playback()
 				handle_worker_exception(gcnew System::InvalidOperationException("Unhandled unknown exception in playback worker."), "playback");
 			}
 		});
-	ATLTRACE("info: player thread created\n");
+	NATIVE_TRACE("info: player thread created\n");
 	// notify decoder to start decoding
 }
 
@@ -2002,7 +2002,7 @@ void MusicPlayerLibrary::MusicPlayerNative::xaudio2_init_buffer(XAUDIO2_BUFFER* 
 	if (size < 8192) size = 8192;
 	if (int& buffer_size = *reinterpret_cast<int*>(dest_buffer->pContext); size > buffer_size)
 	{
-		ATLTRACE("info: xaudio2 reallocate_buffer, reallocate_size=%d, original_size=%d\n", size, buffer_size);
+		NATIVE_TRACE("info: xaudio2 reallocate_buffer, reallocate_size=%d, original_size=%d\n", size, buffer_size);
 		delete[] dest_buffer->pAudioData;
 		dest_buffer->pAudioData = DBG_NEW BYTE[size];
 		buffer_size = size;
@@ -2106,12 +2106,12 @@ MusicPlayerLibrary::MusicPlayerNative::MusicPlayerNative() :
 	playback_state(audio_playback_state_init),
 	xaudio2_thread_task_index(new DWORD(0))
 {
-	ATLTRACE("info: decode frontend: avformat version %d, avcodec version %d, avutil version %d, swresample version %d\n",
+	NATIVE_TRACE("info: decode frontend: avformat version %d, avcodec version %d, avutil version %d, swresample version %d\n",
 		avformat_version(),
 		avcodec_version(),
 		avutil_version(),
 		swresample_version());
-	ATLTRACE("info: audio api backend: XAudio2 version %s\n", get_backend_implement_version());
+	NATIVE_TRACE("info: audio api backend: XAudio2 version %s\n", get_backend_implement_version());
 	eq_bands.assign(10, 0);
 }
 
@@ -2127,7 +2127,7 @@ int MusicPlayerLibrary::MusicPlayerNative::init_av_filter_equalizer()
 	filter_graph = avfilter_graph_alloc();
 	if (!filter_graph)
 	{
-		ATLTRACE("err: avfilter_graph_alloc failed\n");
+		NATIVE_TRACE("err: avfilter_graph_alloc failed\n");
 		return -1;
 	}
 
@@ -2142,7 +2142,7 @@ int MusicPlayerLibrary::MusicPlayerNative::init_av_filter_equalizer()
 		codec_context->sample_rate,
 		sample_fmt_name == nullptr ? "" : sample_fmt_name,
 		layout_str);
-	ATLTRACE("info: init_av_filter_equalizer, filter args: %s\n", args.c_str());
+	NATIVE_TRACE("info: init_av_filter_equalizer, filter args: %s\n", args.c_str());
 	int ret = avfilter_graph_create_filter(&filter_context_src, avfilter_get_by_name("abuffer"),
 		"src", args.c_str(), nullptr, filter_graph);
 	if (ret < 0)
@@ -2159,16 +2159,16 @@ int MusicPlayerLibrary::MusicPlayerNative::init_av_filter_equalizer()
 		FFMPEG_CRITICAL_ERROR(ret);
 		return ret;
 	}
-	ATLTRACE("info: resample filter created, param = %s\n", resample_args.c_str());
+	NATIVE_TRACE("info: resample filter created, param = %s\n", resample_args.c_str());
 
 	if (eq_bands.size() != 10)
 	{
-		ATLTRACE("warn: invalid eq_bands size, =%d\n", static_cast<int>(eq_bands.size()));
+		NATIVE_TRACE("warn: invalid eq_bands size, =%d\n", static_cast<int>(eq_bands.size()));
 		eq_bands.assign(10, 0);
 	}
 	else
 	{
-		ATLTRACE("info: eq_bands already initialized, skip\n");
+		NATIVE_TRACE("info: eq_bands already initialized, skip\n");
 	}
 	for (int i = 0; i < 10; i++)
 	{
@@ -2180,7 +2180,7 @@ int MusicPlayerLibrary::MusicPlayerNative::init_av_filter_equalizer()
 		};
 		eq_graph.eq_name = std::format("eq{}", i);
 		std::string arg_str = std::format("f={}:t=q:w=1:g={}", freq_hz[i], eq_bands[i]);
-		ATLTRACE("info: init_av_filter_equalizer, filter args: %s\n", arg_str.c_str());
+		NATIVE_TRACE("info: init_av_filter_equalizer, filter args: %s\n", arg_str.c_str());
 
 		ret = avfilter_graph_create_filter(&eq_graph.eq_context, avfilter_get_by_name("equalizer"),
 			eq_graph.eq_name.c_str(),
@@ -2238,7 +2238,7 @@ int MusicPlayerLibrary::MusicPlayerNative::init_av_filter_equalizer()
 		FFMPEG_CRITICAL_ERROR(ret);
 		return ret;
 	}
-	ATLTRACE("info: limiter linked\n");
+	NATIVE_TRACE("info: limiter linked\n");
 	std::string fmt_args = std::format("sample_fmts=s16:sample_rates={}:channel_layouts=stereo", sample_rate);
 	ret = avfilter_graph_create_filter(&format_normalize_ctx,
 		avfilter_get_by_name("aformat"),
@@ -2248,7 +2248,7 @@ int MusicPlayerLibrary::MusicPlayerNative::init_av_filter_equalizer()
 		FFMPEG_CRITICAL_ERROR(ret);
 		return ret;
 	}
-	ATLTRACE("info: format filter created, param = %s\n", fmt_args.c_str());
+	NATIVE_TRACE("info: format filter created, param = %s\n", fmt_args.c_str());
 	if ((ret = avfilter_link(limiter_ctx, 0, format_normalize_ctx, 0)) < 0 ||
 		(ret = avfilter_link(format_normalize_ctx, 0, filter_context_sink, 0)) < 0)
 	{
@@ -2265,7 +2265,7 @@ int MusicPlayerLibrary::MusicPlayerNative::init_av_filter_equalizer()
 
 	const AVFilterLink* sink_link = filter_context_sink->inputs[0];
 	const int sink_channels = sink_link->ch_layout.nb_channels;
-	ATLTRACE("info: filter output format=%s, sample_rate=%d, channels=%d\n",
+	NATIVE_TRACE("info: filter output format=%s, sample_rate=%d, channels=%d\n",
 		av_get_sample_fmt_name(static_cast<AVSampleFormat>(sink_link->format)),
 		sink_link->sample_rate,
 		sink_channels);
@@ -2273,7 +2273,7 @@ int MusicPlayerLibrary::MusicPlayerNative::init_av_filter_equalizer()
 		sink_channels != fifo_audio_channels ||
 		sink_link->format != fifo_audio_sample_fmt)
 	{
-		ATLTRACE("err: filter output format mismatch, expected format=s16, sample_rate=%d, channels=%d\n",
+		NATIVE_TRACE("err: filter output format mismatch, expected format=s16, sample_rate=%d, channels=%d\n",
 			sample_rate, fifo_audio_channels);
 		return -1;
 	}
@@ -2635,7 +2635,7 @@ static bool IsValidPath(const std::wstring& path)
 	{
 		if (path.find(invalidChar) != std::wstring::npos)
 		{
-			ATLTRACE("err: invalid character found, char: %c\n", static_cast<char>(invalidChar));
+			NATIVE_TRACE("err: invalid character found, char: %c\n", static_cast<char>(invalidChar));
 			return false;
 		}
 	}
@@ -2774,7 +2774,7 @@ IntPtr MusicPlayerLibrary::SmtcInteropHelper::GetSmtcForWindow(IntPtr hWnd)
 		&hstrClassName);
 	if (FAILED(hr))
 	{
-		ATLTRACE("error: SmtcInteropHelper: WindowsCreateStringReference failed, hr=0x%08X\n", hr);
+		NATIVE_TRACE("error: SmtcInteropHelper: WindowsCreateStringReference failed, hr=0x%08X\n", hr);
 		return IntPtr::Zero;
 	}
 
@@ -2785,7 +2785,7 @@ IntPtr MusicPlayerLibrary::SmtcInteropHelper::GetSmtcForWindow(IntPtr hWnd)
 		reinterpret_cast<void**>(&interop));
 	if (FAILED(hr) || interop == nullptr)
 	{
-		ATLTRACE("error: SmtcInteropHelper: RoGetActivationFactory failed, hr=0x%08X\n", hr);
+		NATIVE_TRACE("error: SmtcInteropHelper: RoGetActivationFactory failed, hr=0x%08X\n", hr);
 		return IntPtr::Zero;
 	}
 
@@ -2798,18 +2798,18 @@ IntPtr MusicPlayerLibrary::SmtcInteropHelper::GetSmtcForWindow(IntPtr hWnd)
 
 	if (FAILED(hr) || smtc == nullptr)
 	{
-		ATLTRACE("error: SmtcInteropHelper: GetForWindow failed, hr=0x%08X\n", hr);
+		NATIVE_TRACE("error: SmtcInteropHelper: GetForWindow failed, hr=0x%08X\n", hr);
 		return IntPtr::Zero;
 	}
 
 	return IntPtr(smtc);
 }
 
-void MusicPlayerLibrary::AtlTraceRedirectManager::Init(System::Object^ logger)
+void MusicPlayerLibrary::NativeTraceRedirectManager::Init(System::Object^ logger)
 {
 	if (m_pRedirector == nullptr)
 	{
-		m_pRedirector = new AtlTraceRedirect(logger);
-		AtlTraceRedirect::SetAtlTraceRedirector(m_pRedirector);
+		m_pRedirector = new NativeTraceRedirect(logger);
+		NativeTraceRedirect::SetTraceRedirector(m_pRedirector);
 	}
 }

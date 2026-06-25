@@ -42,12 +42,15 @@ A simple music player.
 - FFT Execution and spectrum analyzer support
 - Playing times record & display
 - Playlist support (.wppl format, in standard JSON)
+- Lyric Intermediate JSON format, fully editor-compatible and high accuracy
 
 Still work in progress. 3rd party libraries are managed by vcpkg.
 
 ## TODO List:
 - [ ] UI Refractor (UI, from @Baicaiye)
 - [ ] MusicPlayerLibrary, PcmProvider / PcmSubmitter / PcmObserver refractor
+- [ ] remove C++/CLI, Windows-only APIs, rewrite MusicPlayerLibary to pure C++ implementation
+- [ ] Migrating to Avalonia, extend platform support to Linux / macOS
 - You can submit your ideas in issues, or contact me directly by email.
 
 Author info:
@@ -61,7 +64,6 @@ You can download the latest build from Github CI/CD, but if you want to build by
 - Desktop development with C++
 - Desktop development with .NET
 - Execute `vcpkg integrate install` in the Developer Powershell
-- Notice: ATL/MFC is no longer needed to build this solution.
 3. Open the solution file `WpfMusicPlayer.slnx` in Visual Studio
 - If you are using Qualcomm 8cx series or X Elite Series CPU, Select the `WpfMusicPlayer.ARM64.slnx` solution file
 4. Build the solution.

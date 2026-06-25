@@ -23,10 +23,10 @@
 
 // 添加要在此处预编译的标头
 
-#if !defined(ATLTRACE_REDIRECT_ENABLED)
-#define ATLTRACE_REDIRECT_ENABLED
+#if !defined(NATIVE_TRACE_REDIRECT_ENABLED)
+#define NATIVE_TRACE_REDIRECT_ENABLED
 #endif
-#include "AtlTraceRedirect.h" // For Debug
+#include "NativeTraceRedirect.h" // For Debug
 
 #include <cstdlib>
 #include <cassert>

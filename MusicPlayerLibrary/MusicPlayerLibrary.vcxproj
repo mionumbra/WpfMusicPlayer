@@ -132,7 +132,7 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClInclude Include="AtlTraceRedirect.h" />
+    <ClInclude Include="NativeTraceRedirect.h" />
     <ClInclude Include="FileAbstractionLayer.h" />
     <ClInclude Include="FFTExecuter.h" />
     <ClInclude Include="LocaleConverter.h" />
@@ -144,7 +144,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="AssemblyInfo.cpp" />
-    <ClCompile Include="AtlTraceRedirect.cpp" />
+    <ClCompile Include="NativeTraceRedirect.cpp" />
     <ClCompile Include="FileAbstractionLayer.cpp" />
     <ClCompile Include="FFTExecuter.cpp" />
     <ClCompile Include="LocaleConverter.cpp" />

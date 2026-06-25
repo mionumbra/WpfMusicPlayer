@@ -42,6 +42,9 @@ public partial class App : Application
                     services.AddSingleton<ISmtcService, SmtcService>();
                     services.AddSingleton<ISongDatabaseService, SongDatabaseService>();
                     services.AddSingleton<IPlaylistProvider, PlaylistProvider>();
+                    services.AddSingleton<ILyricParser, IntermediateLyricParser>();
+                    services.AddSingleton<ILyricParser, LrcFileParser>();
+                    services.AddSingleton<LyricParserFactory>();
 
                     services.AddTransient<IFileDialogService, FileDialogService>();
                     services.AddTransient<ICommandLineParser>(_ =>
@@ -64,7 +67,7 @@ public partial class App : Application
         await _host.StartAsync();
 
         var loggerBridge = _host.Services.GetRequiredService<NativeLoggerBridge>();
-        MusicPlayerLibrary.AtlTraceRedirectManager.Init(loggerBridge);
+        MusicPlayerLibrary.NativeTraceRedirectManager.Init(loggerBridge);
 
         var mainWindow = _host.Services.GetRequiredService<MainWindow>();
         mainWindow.Show();

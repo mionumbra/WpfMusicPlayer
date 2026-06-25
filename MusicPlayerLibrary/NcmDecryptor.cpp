@@ -130,7 +130,7 @@ namespace
             if (source_position < audio_offset_
                 || source_position > static_cast<ULONGLONG>((std::numeric_limits<LONGLONG>::max)()))
             {
-                ATLTRACE("err: ncm decrypted audio source position overflow\n");
+                NATIVE_TRACE("err: ncm decrypted audio source position overflow\n");
                 return 0;
             }
 
@@ -138,7 +138,7 @@ namespace
                 source_file_->Seek(static_cast<LONGLONG>(source_position), MusicPlayerLibrary::FileSeekOrigin::Begin);
             if (actual_position == SeekFailure || actual_position != source_position)
             {
-                ATLTRACE("err: seek ncm audio source failed\n");
+                NATIVE_TRACE("err: seek ncm audio source failed\n");
                 return 0;
             }
 
@@ -155,7 +155,7 @@ namespace
         {
             UNREFERENCED_PARAMETER(buffer);
             UNREFERENCED_PARAMETER(count);
-            ATLTRACE("err: ncm decrypted audio file is read-only\n");
+            NATIVE_TRACE("err: ncm decrypted audio file is read-only\n");
         }
 
         ULONGLONG Seek(LONGLONG offset, MusicPlayerLibrary::FileSeekOrigin origin) override
@@ -183,7 +183,7 @@ namespace
                 const ULONGLONG distance = static_cast<ULONGLONG>(-(offset + 1)) + 1;
                 if (distance > base_position)
                 {
-                    ATLTRACE("err: ncm decrypted audio seek before begin\n");
+                    NATIVE_TRACE("err: ncm decrypted audio seek before begin\n");
                     return SeekFailure;
                 }
                 new_position = base_position - distance;
@@ -193,7 +193,7 @@ namespace
                 const ULONGLONG distance = static_cast<ULONGLONG>(offset);
                 if (base_position > (std::numeric_limits<ULONGLONG>::max)() - distance)
                 {
-                    ATLTRACE("err: ncm decrypted audio seek position overflow\n");
+                    NATIVE_TRACE("err: ncm decrypted audio seek position overflow\n");
                     return SeekFailure;
                 }
                 new_position = base_position + distance;
@@ -541,13 +541,13 @@ MusicPlayerLibrary::NcmMusicMeta MusicPlayerLibrary::NcmDecryptor::GetMetaData()
         firstArtist = result.artist[0][0];
     std::wstring jsonTrace = Utf8StringToWideString(jsonStr);
 
-    ATLTRACE(L"info: NcmDecrypt success!\n");
-    ATLTRACE(L"info: music name: %s\n", result.musicName.c_str());
-    ATLTRACE(L"info: album: %s\n", result.album.c_str());
-    ATLTRACE(L"info: artist: %s\n", firstArtist.c_str());
-    ATLTRACE(L"info: album pic: %s\n", result.albumPic.c_str());
-    ATLTRACE(L"info: format: %s\n", result.format.c_str());
-    ATLTRACE(L"info: meta data: %s\n", jsonTrace.c_str());
+    NATIVE_TRACE(L"info: NcmDecrypt success!\n");
+    NATIVE_TRACE(L"info: music name: %s\n", result.musicName.c_str());
+    NATIVE_TRACE(L"info: album: %s\n", result.album.c_str());
+    NATIVE_TRACE(L"info: artist: %s\n", firstArtist.c_str());
+    NATIVE_TRACE(L"info: album pic: %s\n", result.albumPic.c_str());
+    NATIVE_TRACE(L"info: format: %s\n", result.format.c_str());
+    NATIVE_TRACE(L"info: meta data: %s\n", jsonTrace.c_str());
     return result;
 }
 

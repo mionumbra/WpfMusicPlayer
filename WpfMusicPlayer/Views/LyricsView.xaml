@@ -369,6 +369,13 @@
                                 <TextBlock Text="&#xE8E5;" FontFamily="Segoe MDL2 Assets" FontSize="12" Foreground="White"/>
                             </MenuItem.Icon>
                         </MenuItem>
+                        <MenuItem Header="导出WPLRC"
+                                  Command="{Binding PlacementTarget.Tag.ExportWplrcCommand,
+                                                    RelativeSource={RelativeSource AncestorType=ContextMenu}}">
+                            <MenuItem.Icon>
+                                <TextBlock Text="&#xE74E;" FontFamily="Segoe MDL2 Assets" FontSize="12" Foreground="White"/>
+                            </MenuItem.Icon>
+                        </MenuItem>
                         
                         <MenuItem Header="调节歌词延迟"
                                   Command="{Binding PlacementTarget.Tag.AdjustLrcOffsetCommand,
@@ -430,6 +437,12 @@
                           Command="{Binding LoadCustomLyricsCommand}">
                         <MenuItem.Icon>
                             <TextBlock Text="&#xE8E5;" FontFamily="Segoe MDL2 Assets" FontSize="12" Foreground="White"/>
+                        </MenuItem.Icon>
+                    </MenuItem>
+                    <MenuItem Header="导出WPLRC"
+                              Command="{Binding ExportWplrcCommand}">
+                        <MenuItem.Icon>
+                            <TextBlock Text="&#xE74E;" FontFamily="Segoe MDL2 Assets" FontSize="12" Foreground="White"/>
                         </MenuItem.Icon>
                     </MenuItem>
                     <MenuItem Header="调节歌词延迟"
