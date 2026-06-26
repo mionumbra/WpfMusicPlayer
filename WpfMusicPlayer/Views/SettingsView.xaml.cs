@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 using System.Windows.Controls;
 
 namespace WpfMusicPlayer.Views;

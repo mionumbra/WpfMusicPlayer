@@ -1,4 +1,6 @@
-﻿using System.Windows;
+﻿// SPDX-License-Identifier: MIT
+
+using System.Windows;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Microsoft.Extensions.Logging;

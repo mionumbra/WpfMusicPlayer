@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 using WpfMusicPlayer.Models;
 
 namespace WpfMusicPlayer.Services.Abstractions;

@@ -1,4 +1,6 @@
-﻿#include "pch.h"
+﻿// SPDX-License-Identifier: MIT
+
+#include "pch.h"
 #include "NcmDecryptor.h"
 #include "LocaleConverter.h"
 

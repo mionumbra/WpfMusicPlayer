@@ -1,4 +1,5 @@
-﻿using System;
+﻿// SPDX-License-Identifier: MIT
+
 using System.IO;
 
 namespace WpfMusicPlayer.Services.Abstractions;

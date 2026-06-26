@@ -1,4 +1,6 @@
-﻿using System.Diagnostics;
+﻿// SPDX-License-Identifier: MIT
+
+using System.Diagnostics;
 using System.Globalization;
 using System.Linq;
 using System.Windows;

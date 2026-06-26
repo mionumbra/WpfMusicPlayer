@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 using System.Windows.Media.Imaging;
 using CommunityToolkit.Mvvm.ComponentModel;
 

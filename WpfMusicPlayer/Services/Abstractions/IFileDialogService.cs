@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 namespace WpfMusicPlayer.Services.Abstractions;
 
 public enum FileDialogLocation

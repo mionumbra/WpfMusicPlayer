@@ -1,4 +1,6 @@
-﻿using Microsoft.Extensions.Configuration;
+﻿// SPDX-License-Identifier: MIT
+
+using Microsoft.Extensions.Configuration;
 using WpfMusicPlayer.Services.Abstractions;
 using WpfMusicPlayer.ViewModels;
 

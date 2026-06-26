@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 using WpfMusicPlayer.Models;
 using static WpfMusicPlayer.Services.Implementations.ConfigProvider;
 

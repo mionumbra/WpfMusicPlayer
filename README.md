@@ -96,7 +96,7 @@ powercfg -attributes SUB_PROCESSOR bae08b81-2d5e-4688-ad6a-13243356654b -ATTRIB_
 3. Donate to [爱发电](https://afdian.com/a/lucas150670)
 
 ## 对中国大陆用户：
-您可以通过 [GitCode 镜像](https://github.com/lucas150670/WpfMusicPlayer) 访问本项目。
+您可以通过 [GitCode 镜像](https://gitcode.com/lucas150670/WpfMusicPlayer) 访问本项目。
 
 ## Icon Copyright Notice
 - File path: `WpfMusicPlayer/Assets/ApplicationIcon.ico`

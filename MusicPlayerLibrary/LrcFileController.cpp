@@ -1,7 +1,8 @@
-﻿#include "pch.h"
+﻿// SPDX-License-Identifier: MIT
+
+#include "pch.h"
 #include "LrcFileController.h"
 #include "LocaleConverter.h"
-#include <cctype>
 #include <regex>
 #include <ranges>
 #include <string_view>

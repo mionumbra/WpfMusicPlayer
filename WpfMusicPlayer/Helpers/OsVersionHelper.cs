@@ -1,7 +1,6 @@
-﻿using System;
-using System.Collections.Generic;
+﻿// SPDX-License-Identifier: MIT
+
 using System.Runtime.InteropServices;
-using System.Text;
 
 namespace WpfMusicPlayer.Helpers;
 
