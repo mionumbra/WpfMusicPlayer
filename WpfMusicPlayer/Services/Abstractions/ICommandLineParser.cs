@@ -1,6 +1,5 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Text;
+﻿// SPDX-License-Identifier: MIT
+
 using WpfMusicPlayer.ViewModels;
 
 namespace WpfMusicPlayer.Services.Abstractions;

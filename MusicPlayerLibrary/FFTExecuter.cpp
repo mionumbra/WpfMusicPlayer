@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "pch.h"
 #include "FFTExecuter.h"
 

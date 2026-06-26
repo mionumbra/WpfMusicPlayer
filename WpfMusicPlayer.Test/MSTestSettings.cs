@@ -1,1 +1,3 @@
-﻿[assembly: Parallelize(Scope = ExecutionScope.MethodLevel)]
+﻿// SPDX-License-Identifier: MIT
+
+[assembly: Parallelize(Scope = ExecutionScope.MethodLevel)]

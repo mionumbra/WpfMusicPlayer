@@ -367,3 +367,7 @@ vcpkg_installed/
 
 # Jetbrains Rider settings
 .idea/
+qodana.yaml
+
+# Jetbrains MCP Server settings
+.agents/

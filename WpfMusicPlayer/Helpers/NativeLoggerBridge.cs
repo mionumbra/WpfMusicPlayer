@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 using Microsoft.Extensions.Logging;
 
 namespace WpfMusicPlayer.Helpers;
@@ -12,9 +14,18 @@ public class NativeLoggerBridge
     }
 
     // for native method to invoke using reflection
+    // ReSharper disable once UnusedMember.Global
     public void LogTrace(string message) => _logger.LogTrace(message);
+    
+    // ReSharper disable once UnusedMember.Global
     public void LogDebug(string message) => _logger.LogDebug(message);
+    
+    // ReSharper disable once UnusedMember.Global
     public void LogInformation(string message) => _logger.LogInformation(message);
+    
+    // ReSharper disable once UnusedMember.Global
     public void LogWarning(string message) => _logger.LogWarning(message);
+    
+    // ReSharper disable once UnusedMember.Global
     public void LogError(string message) => _logger.LogError(message);
 }

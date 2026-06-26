@@ -1,4 +1,6 @@
-﻿#pragma once
+﻿// SPDX-License-Identifier: MIT
+
+#pragma once
 
 #include "NativeTraceRedirect.h"
 #include <atomic>

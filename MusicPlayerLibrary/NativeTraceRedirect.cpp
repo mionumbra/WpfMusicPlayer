@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "pch.h"
 #include "NativeTraceRedirect.h"
 #include <cstdarg>

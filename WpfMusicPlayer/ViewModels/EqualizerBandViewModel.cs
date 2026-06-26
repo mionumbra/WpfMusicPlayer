@@ -1,4 +1,6 @@
-﻿using CommunityToolkit.Mvvm.ComponentModel;
+﻿// SPDX-License-Identifier: MIT
+
+using CommunityToolkit.Mvvm.ComponentModel;
 
 namespace WpfMusicPlayer.ViewModels;
 

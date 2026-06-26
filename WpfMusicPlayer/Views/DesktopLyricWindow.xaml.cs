@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Input;

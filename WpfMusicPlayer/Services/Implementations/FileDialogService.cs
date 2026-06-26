@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 using System.Windows;
 using Windows.Storage.Pickers;
 using WinRT.Interop;
