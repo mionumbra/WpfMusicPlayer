@@ -2,7 +2,10 @@
   "name": "musicplayerlibrary",
   "version-string": "0.1.0",
   "dependencies": [
-    "ffmpeg",
+    {
+      "name": "ffmpeg",
+      "version>=": "8.1.2"
+    },
     "openssl",
     "rapidjson",
     "cpp-base64",
