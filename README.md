@@ -20,7 +20,7 @@ A simple music player.
 ## Technical stack
 - **Frontend:** WPF / C#  
 - **Backend:** Standard C++/CLI  
-- **Native Libraries:** FFmpeg, OpenSSL, RapidJSON, cpp-base64, kissfft, uchardet, libiconv, dlib
+- **Native Libraries:** FFmpeg, FAudio, OpenSSL, RapidJSON, cpp-base64, kissfft, uchardet, libiconv, dlib
 - **Framework:** .NET 10.0 (Long Term Support)  
 - **Minimum Supported Windows Version:** Windows 10 2004 (build 10.0.19041.0)  
 - **Target Windows Version:** Windows Latest (build 10.0.26100.0)
@@ -50,9 +50,11 @@ Still work in progress. 3rd party libraries are managed by vcpkg.
 
 ## TODO List:
 - [ ] UI Refractor (UI, from @Baicaiye)
-- [ ] MusicPlayerLibrary, PcmProvider / PcmSubmitter / PcmObserver refractor
-- [ ] remove C++/CLI, Windows-only APIs, rewrite MusicPlayerLibary to pure C++ implementation
+- [ ] remove C++/CLI, rewrite `MusicPlayerLibary` to pure C++ implementation
+- [ ] isolate neseccary Windows API Calls, write cross-platform alternatives
 - [ ] Migrating to Avalonia, extend platform support to Linux / macOS
+- [ ] PcmProvider / PcmSubmitter / PcmObserver refractor, plugable, preemptive rewrite
+- [ ] Extract `MusicPlayerLibrary` into an audio middleware
 - You can submit your ideas in issues, or contact me directly by email.
 
 ## How to build?
@@ -113,13 +115,31 @@ powercfg -attributes SUB_PROCESSOR bae08b81-2d5e-4688-ad6a-13243356654b -ATTRIB_
 
 - This project includes third-party components. Their licenses are listed in [LICENSE.thirdparty.txt](LICENSE.thirdparty.txt).
 
-### FFmpeg licensing notice
+### FFmpeg notice
 FFmpeg can be built under **LGPL** or **GPL**, depending on the configuration.
 
 - If you link FFmpeg in **LGPL mode**, you may distribute the application under MIT without additional requirements.  
 - If you link FFmpeg in **GPL mode**, the **entire application becomes GPL‑compatible**, and you **must distribute the full source code** of this project together with the executable.
 
 Make sure you understand the implications before distributing a GPL‑linked build.
+
+>
+> NOTICE!
+> 
+> A critical vulnerability has been disclosed in FFmpeg’s MagicYUV decoder that allows attackers to weaponize seemingly harmless media files and, in some scenarios, achieve remote code execution (RCE).
+> 
+> The flaw, tracked as CVE-2026-8461 and dubbed “PixelSmash,” is a heap out-of-bounds write in FFmpeg’s `libavcodec` component, with a CVSS score of 8.8 (High).
+> 
+> Although this music player does not support video files directly, attackers can still rename a crafted video files with one of the supporting extensions in this player.
+> 
+> Then, the player will try to scan the streams inside the crafted files (in `MusicPlayerNative.cpp`, `MusicPlayerLibrary::MusicPlayerNative::load_audio_context_from_file_stream()`) using `libavcodec`, and it will try to find the best audio stream for decoding.
+> 
+> It will scan the video streams inside the file, triggering this bug, and no authentication or elevated privileges are needed.
+>
+> For users of this software, please update to the versions after commit `29058f2`, which locks vcpkg's FFmpeg version to over 8.1.2, fixing this issue.
+> 
+> For other information about this bug, please visit [CVE-2026-8461](https://nvd.nist.gov/vuln/detail/CVE-2026-8461).
+> 
 
 ### MIT repository status remains unchanged
 Distributing a GPL‑linked build **does not change the license of this repository**.  

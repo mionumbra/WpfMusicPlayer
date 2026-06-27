@@ -98,7 +98,7 @@ namespace MusicPlayerLibrary {
 			return true;
 		}
 
-		UINT Read(void* buffer, UINT count) override
+		uint32_t Read(void* buffer, uint32_t count) override
 		{
 			if (file_ == INVALID_HANDLE_VALUE || buffer == nullptr || count == 0)
 				return 0;
@@ -113,7 +113,7 @@ namespace MusicPlayerLibrary {
 			return static_cast<UINT>(bytes_read);
 		}
 
-		void Write(const void* buffer, UINT count) override
+		void Write(const void* buffer, uint32_t count) override
 		{
 			if (file_ == INVALID_HANDLE_VALUE || buffer == nullptr || count == 0)
 				return;
@@ -149,7 +149,7 @@ namespace MusicPlayerLibrary {
 			Seek(0, FileSeekOrigin::Begin);
 		}
 
-		ULONGLONG GetLength() const override
+		uint64_t GetLength() const override
 		{
 			if (file_ == INVALID_HANDLE_VALUE)
 				return 0;
@@ -164,7 +164,7 @@ namespace MusicPlayerLibrary {
 			return static_cast<ULONGLONG>(file_size.QuadPart);
 		}
 
-		ULONGLONG GetPosition() const override
+		uint64_t GetPosition() const override
 		{
 			if (file_ == INVALID_HANDLE_VALUE)
 				return 0;
@@ -208,7 +208,7 @@ namespace MusicPlayerLibrary {
 			Close();
 		}
 
-		UINT Read(void* buffer, UINT count) override
+		uint32_t Read(void* buffer, uint32_t count) override
 		{
 			if (buffer == nullptr || count == 0 || position_ >= data_.size())
 				return 0;
@@ -220,7 +220,7 @@ namespace MusicPlayerLibrary {
 			return static_cast<UINT>(bytes_to_read);
 		}
 
-		void Write(const void* buffer, UINT count) override
+		void Write(const void* buffer, uint32_t count) override
 		{
 			if (buffer == nullptr || count == 0)
 				return;
@@ -296,12 +296,12 @@ namespace MusicPlayerLibrary {
 			position_ = 0;
 		}
 
-		ULONGLONG GetLength() const override
+		uint64_t GetLength() const override
 		{
 			return data_.size();
 		}
 
-		ULONGLONG GetPosition() const override
+		uint64_t GetPosition() const override
 		{
 			return position_;
 		}

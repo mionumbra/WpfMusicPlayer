@@ -53,8 +53,14 @@ public partial class DesktopTrayIconViewModel
     public void ToggleMainWindow()
     {
         _logger.LogInformation("Toggling main window visibility");
-        Application.Current.MainWindow?.Show();
-        Application.Current.MainWindow?.Activate();
+        var mainWindow = Application.Current.MainWindow;
+        if (mainWindow == null)
+            return;
+
+        mainWindow.Show();
+        if (mainWindow.WindowState == WindowState.Minimized)
+            mainWindow.WindowState = WindowState.Normal;
+        mainWindow.Activate();
         DisableTaskbarIcon();
     }
 

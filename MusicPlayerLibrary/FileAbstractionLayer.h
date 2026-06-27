@@ -19,12 +19,12 @@ namespace MusicPlayerLibrary {
 	public:
 		virtual ~IFile() = default;
 
-		virtual UINT Read(void* buffer, UINT count) = 0;
-		virtual void Write(const void* buffer, UINT count) = 0;
+		virtual uint32_t Read(void* buffer, uint32_t count) = 0;
+		virtual void Write(const void* buffer, uint32_t count) = 0;
 		virtual ULONGLONG Seek(LONGLONG offset, FileSeekOrigin origin) = 0;
 		virtual void SeekToBegin() = 0;
-		virtual ULONGLONG GetLength() const = 0;
-		virtual ULONGLONG GetPosition() const = 0;
+		virtual uint64_t GetLength() const = 0;
+		virtual uint64_t GetPosition() const = 0;
 		virtual void Close() = 0;
 		virtual bool GetReadBuffer(void** buffer_start, void** buffer_end) = 0;
 
