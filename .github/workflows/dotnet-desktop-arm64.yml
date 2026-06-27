@@ -1,0 +1,158 @@
+name: Build
+
+on:
+  push:
+
+jobs:
+  build:
+    runs-on: windows-11-vs2026-arm64
+    
+    permissions:
+      contents: read
+      packages: write
+
+    env:
+      VCPKG_ROOT: ${{ github.workspace }}/vcpkg
+      VCPKG_DEFAULT_TRIPLET: arm64-windows
+
+    steps:
+      - uses: actions/checkout@v4
+    
+      - name: Print runner hardware info
+        shell: pwsh
+        run: |
+          $cpu = Get-CimInstance Win32_Processor
+          Write-Output "Hosted Runner Information:"
+          Write-Output "CPU Model: $($cpu.Name)"
+          Write-Output "Logical Processors: $($cpu.NumberOfLogicalProcessors)"
+          Write-Output "Physical Processors: $($cpu.NumberOfCores)"
+          $mem = Get-CimInstance Win32_ComputerSystem
+          Write-Output ("Memory Size (GB): {0:N2}" -f ($mem.TotalPhysicalMemory/1GB))
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Setup vcpkg
+        shell: pwsh
+        run: |
+          git clone https://github.com/microsoft/vcpkg.git $env:VCPKG_ROOT
+          cd $env:VCPKG_ROOT
+          git checkout c8f45a069ad0266bc70e703c1252cb51506ddcaf
+          .\bootstrap-vcpkg.bat
+          .\vcpkg integrate install      
+          
+      - name: Configure NuGet credentials for vcpkg binary caching
+        shell: pwsh
+        run: |
+          $nuget = & "$env:VCPKG_ROOT\vcpkg" fetch nuget | Select-Object -Last 1
+          & $nuget sources add `
+            -Name "GitHubPackages" `
+            -Source "https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json" `
+            -Username "${{ github.actor }}" `
+            -Password "${{ secrets.GITHUB_TOKEN }}" `
+            -StorePasswordInClearText `
+            -NonInteractive
+          & $nuget setapikey "${{ secrets.GITHUB_TOKEN }}" `
+            -Source "https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json" `
+            -NonInteractive
+
+      - name: Install vcpkg packages
+        shell: pwsh
+        env:
+          VCPKG_BINARY_SOURCES: "clear;nuget,https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json,readwrite"
+        run: |
+          cd $env:VCPKG_ROOT
+          .\vcpkg install `
+            --triplet $env:VCPKG_DEFAULT_TRIPLET `
+            --x-install-root=${{ github.workspace }}/vcpkg_installed
+
+      - name: Restore NuGet packages
+        run: >
+          msbuild WpfMusicPlayer.ARM64.slnx
+          /t:Restore
+          /p:Platform=ARM64
+          /p:VcpkgRoot=$env:VCPKG_ROOT
+          /p:VcpkgInstalledDir=${{ github.workspace }}/vcpkg_installed
+
+      - name: Build solution
+        run: >
+          msbuild WpfMusicPlayer.slnx
+          /p:Configuration=Release
+          /p:Platform=ARM64
+          /p:VcpkgRoot=$env:VCPKG_ROOT
+          /p:VcpkgInstalledDir=${{ github.workspace }}/vcpkg_installed
+          
+      - name: Copy native build output to app output
+        shell: pwsh
+        run: |
+          $src  = Join-Path $env:GITHUB_WORKSPACE 'ARM64\Release'
+          $dest = Join-Path $env:GITHUB_WORKSPACE 'WpfMusicPlayer\bin\Release\net10.0-windows10.0.26100.0'
+
+          if (-not (Test-Path $src))  { throw "Source folder not found: $src" }
+          if (-not (Test-Path $dest)) { throw "Destination folder not found: $dest" }
+
+          Copy-Item -Path (Join-Path $src '*') -Destination $dest -Recurse -Force
+
+      - name: Prepare build artifacts
+        shell: pwsh
+        run: |
+          $outputDir = Join-Path $env:GITHUB_WORKSPACE 'WpfMusicPlayer\bin\Release\net10.0-windows10.0.26100.0'
+          $artifactRoot = Join-Path $env:RUNNER_TEMP 'wpf_music_player_artifacts'
+          $withPdbDir = Join-Path $artifactRoot 'with_pdb'
+          $noPdbDir = Join-Path $artifactRoot 'no_pdb'
+
+          if (-not (Test-Path -LiteralPath $outputDir)) {
+            throw "Build output folder not found: $outputDir"
+          }
+
+          if (Test-Path -LiteralPath $artifactRoot) {
+            Remove-Item -LiteralPath $artifactRoot -Recurse -Force
+          }
+
+          function Copy-AppOutputForArtifact {
+            param([Parameter(Mandatory = $true)][string] $Destination)
+
+            New-Item -ItemType Directory -Path $Destination -Force | Out-Null
+
+            Get-ChildItem -LiteralPath $outputDir -Force |
+              Where-Object { $_.Name -ne 'runtimes' } |
+              ForEach-Object {
+                Copy-Item -LiteralPath $_.FullName -Destination $Destination -Recurse -Force
+              }
+
+            $runtimeNativeSource = Join-Path $outputDir 'runtimes\win-arm64\native'
+            if (-not (Test-Path -LiteralPath $runtimeNativeSource)) {
+              throw "Runtime native folder not found: $runtimeNativeSource"
+            }
+
+            $runtimeNativeDestination = Join-Path $Destination 'runtimes\win-arm64\native'
+            New-Item -ItemType Directory -Path $runtimeNativeDestination -Force | Out-Null
+
+            Get-ChildItem -LiteralPath $runtimeNativeSource -Force |
+              ForEach-Object {
+                Copy-Item -LiteralPath $_.FullName -Destination $runtimeNativeDestination -Recurse -Force
+              }
+          }
+
+          Copy-AppOutputForArtifact -Destination $withPdbDir
+          Copy-AppOutputForArtifact -Destination $noPdbDir
+
+          Get-ChildItem -LiteralPath $noPdbDir -Filter '*.pdb' -File -Recurse -Force |
+            Remove-Item -Force
+
+      - name: Upload build artifact with pdb
+        uses: actions/upload-artifact@v4
+        with:
+          name: wpf_music_player_ci_release_with_pdb_arm64
+          path: ${{ runner.temp }}\wpf_music_player_artifacts\with_pdb
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload build artifact without pdb
+        uses: actions/upload-artifact@v4
+        with:
+          name: wpf_music_player_ci_release_no_pdb_arm64
+          path: ${{ runner.temp }}\wpf_music_player_artifacts\no_pdb
+          if-no-files-found: error
+          retention-days: 7
+      
