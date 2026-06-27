@@ -35,8 +35,16 @@ jobs:
           update: true
           install: mingw-w64-x86_64-gcc-fortran
 
-      - name: Add gfortran to PATH
-        run: echo "C:\msys64\mingw64\bin" >> $env:GITHUB_PATH
+      - name: Force MinGW gfortran
+        shell: pwsh
+        run: |
+          $gfortran = "C:\msys64\mingw64\bin\gfortran.exe"
+          if (-not (Test-Path -LiteralPath $gfortran)) {
+            throw "gfortran not found: $gfortran"
+          }
+
+          "C:\msys64\mingw64\bin" >> $env:GITHUB_PATH
+          "FC=$gfortran" >> $env:GITHUB_ENV
 
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
@@ -70,8 +78,15 @@ jobs:
         env:
           VCPKG_BINARY_SOURCES: "clear;nuget,https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json,readwrite"
         run: |
+          $env:PATH = (($env:PATH -split ';') | Where-Object {
+            $_ -notmatch '\\VC\\Tools\\Llvm\\x64\\bin$'
+          }) -join ';'
+          
           cd $env:VCPKG_ROOT
-          .\vcpkg install --triplet $env:VCPKG_DEFAULT_TRIPLET --x-install-root=${{ github.workspace }}/vcpkg_installed
+          .\vcpkg install `
+            --triplet $env:VCPKG_DEFAULT_TRIPLET `
+            --x-install-root=${{ github.workspace }}/vcpkg_installed `
+            "--x-cmake-args=-DCMAKE_Fortran_COMPILER:FILEPATH=C:/msys64/mingw64/bin/gfortran.exe"
 
       - name: Restore NuGet packages
         run: >
