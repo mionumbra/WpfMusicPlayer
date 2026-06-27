@@ -765,7 +765,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
         }
     }
 
-    private void OnTimeChanged(float time)
+    private void OnTimeChanged(double time)
     {
         _syncContext.Post(_ =>
         {
@@ -1239,7 +1239,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
         return Convert.ToHexStringLower(hashBytes);
     }
 
-    private static string FormatTime(float seconds)
+    private static string FormatTime(double seconds)
     {
         var timeSpan = TimeSpan.FromSeconds(seconds);
         return $"{(int)timeSpan.TotalMinutes}:{timeSpan.Seconds:D2}";

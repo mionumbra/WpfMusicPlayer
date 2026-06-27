@@ -28,6 +28,15 @@ jobs:
           Write-Output "Physical Processors: $($cpu.NumberOfCores)"
           $mem = Get-CimInstance Win32_ComputerSystem
           Write-Output ("Memory Size (GB): {0:N2}" -f ($mem.TotalPhysicalMemory/1GB))
+          
+      - name: Install MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          update: true
+          install: mingw-w64-x86_64-gcc-fortran
+
+      - name: Add gfortran to PATH
+        run: echo "C:\msys64\mingw64\bin" >> $env:GITHUB_PATH
 
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2

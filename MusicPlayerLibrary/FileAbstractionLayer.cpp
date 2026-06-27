@@ -110,7 +110,7 @@ namespace MusicPlayerLibrary {
 				return 0;
 			}
 
-			return static_cast<UINT>(bytes_read);
+			return static_cast<uint32_t>(bytes_read);
 		}
 
 		void Write(const void* buffer, uint32_t count) override
@@ -126,7 +126,7 @@ namespace MusicPlayerLibrary {
 			}
 		}
 
-		ULONGLONG Seek(LONGLONG offset, FileSeekOrigin origin) override
+		uint64_t Seek(int64_t offset, FileSeekOrigin origin) override
 		{
 			if (file_ == INVALID_HANDLE_VALUE)
 				return SeekFailure;
@@ -141,7 +141,7 @@ namespace MusicPlayerLibrary {
 				return SeekFailure;
 			}
 
-			return static_cast<ULONGLONG>(new_position.QuadPart);
+			return static_cast<uint64_t>(new_position.QuadPart);
 		}
 
 		void SeekToBegin() override
@@ -161,7 +161,7 @@ namespace MusicPlayerLibrary {
 				return 0;
 			}
 
-			return static_cast<ULONGLONG>(file_size.QuadPart);
+			return static_cast<uint64_t>(file_size.QuadPart);
 		}
 
 		uint64_t GetPosition() const override
@@ -177,7 +177,7 @@ namespace MusicPlayerLibrary {
 				return 0;
 			}
 
-			return static_cast<ULONGLONG>(position.QuadPart);
+			return static_cast<uint64_t>(position.QuadPart);
 		}
 
 		void Close() override
@@ -217,7 +217,7 @@ namespace MusicPlayerLibrary {
 			const size_t bytes_to_read = (std::min)(static_cast<size_t>(count), data_.size() - read_position);
 			std::memcpy(buffer, data_.data() + read_position, bytes_to_read);
 			position_ += bytes_to_read;
-			return static_cast<UINT>(bytes_to_read);
+			return static_cast<uint32_t>(bytes_to_read);
 		}
 
 		void Write(const void* buffer, uint32_t count) override
@@ -246,9 +246,9 @@ namespace MusicPlayerLibrary {
 			position_ = write_end;
 		}
 
-		ULONGLONG Seek(LONGLONG offset, FileSeekOrigin origin) override
+		uint64_t Seek(int64_t offset, FileSeekOrigin origin) override
 		{
-			ULONGLONG base_position;
+			uint64_t base_position;
 			switch (origin)
 			{
 			case FileSeekOrigin::Begin:
@@ -265,10 +265,10 @@ namespace MusicPlayerLibrary {
 				break;
 			}
 
-			ULONGLONG new_position;
+			uint64_t new_position;
 			if (offset < 0)
 			{
-				const ULONGLONG distance = static_cast<ULONGLONG>(-(offset + 1)) + 1;
+				const uint64_t distance = static_cast<uint64_t>(-(offset + 1)) + 1;
 				if (distance > base_position)
 				{
 					NATIVE_TRACE("err: memory file seek before begin\n");
@@ -278,8 +278,8 @@ namespace MusicPlayerLibrary {
 			}
 			else
 			{
-				const ULONGLONG distance = static_cast<ULONGLONG>(offset);
-				if (base_position > (std::numeric_limits<ULONGLONG>::max)() - distance)
+				const uint64_t distance = static_cast<ULONGLONG>(offset);
+				if (base_position > (std::numeric_limits<uint64_t>::max)() - distance)
 				{
 					NATIVE_TRACE("err: memory file seek position overflow\n");
 					return SeekFailure;
@@ -308,7 +308,7 @@ namespace MusicPlayerLibrary {
 
 		void Close() override
 		{
-			std::vector<BYTE>().swap(data_);
+			decltype(data_){}.swap(data_);
 			position_ = 0;
 		}
 
@@ -327,13 +327,13 @@ namespace MusicPlayerLibrary {
 		}
 
 	private:
-		std::vector<BYTE> data_;
-		ULONGLONG position_ = 0;
+		std::vector<uint8_t> data_;
+		uint64_t position_ = 0;
 	};
 
 	bool WindowsApiFileSystem::FileExists(const std::wstring& file_path) const
 	{
-		const DWORD attributes = ::GetFileAttributesW(file_path.c_str());
+		const DWORD attributes = GetFileAttributesW(file_path.c_str());
 		return attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0;
 	}
 

@@ -6,13 +6,17 @@
       "name": "ffmpeg",
       "version>=": "8.1.2"
     },
+    "faudio",
     "openssl",
     "rapidjson",
     "cpp-base64",
     "kissfft",
     "uchardet",
     "libiconv",
-    "dlib",
-    "faudio"
+    {
+      "name": "dlib",
+      "default-features": false,
+      "features": []
+    }
   ]
 }

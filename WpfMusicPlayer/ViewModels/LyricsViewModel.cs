@@ -48,8 +48,8 @@ public partial class LyricsViewModel(
     public event Action<string, int>? UpdateCurrentLyricRequested;
     public event Action<int>? UpdateCurrentLyricOffsetRequested;
 
-    private float _currentLyricDuration;
-    private float _lastPlaybackTimeSec;
+    private double _currentLyricDuration;
+    private double _lastPlaybackTimeSec;
     private int _currentLyricOffsetMs;
     private string? _currentIntermediateLyricJson;
     private string _suggestedWplrcFileName = "lyrics";
@@ -119,7 +119,7 @@ public partial class LyricsViewModel(
         ExportWplrcCommand.NotifyCanExecuteChanged();
     }
 
-    public void UpdateLyricProgress(float time)
+    public void UpdateLyricProgress(double time)
     {
         _lastPlaybackTimeSec = time;
         if (_lyricStates.Count == 0) return;
@@ -166,7 +166,7 @@ public partial class LyricsViewModel(
         string? filePath,
         string? suppliedLyric,
         string? songTitle,
-        float songDuration,
+        double songDuration,
         int offsetMs,
         SuppliedLyricSource suppliedLyricSource = SuppliedLyricSource.Embedded)
     {
@@ -247,7 +247,7 @@ public partial class LyricsViewModel(
         OnPropertyChanged(nameof(CurrentLyric));
     }
 
-    private double CalculateLinearLyricProgress(int index, float currentTimeSec)
+    private double CalculateLinearLyricProgress(int index, double currentTimeSec)
     {
         if (index < 0 || index >= Lyrics.Count) return 0;
 

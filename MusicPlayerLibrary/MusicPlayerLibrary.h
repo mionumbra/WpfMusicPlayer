@@ -68,8 +68,8 @@ namespace MusicPlayerLibrary {
 		std::atomic_bool file_stream_end = false;
 		std::atomic_bool user_request_stop = false;
 		std::atomic<double> pts_seconds = 0.0;
-		std::atomic<float> elapsed_time = 0.0;
-		std::atomic<float> length = 0.0f;
+		std::atomic<double> elapsed_time = 0.0;
+		std::atomic<double> length = 0.0;
 		std::atomic_bool is_pause = false;
 		std::atomic_bool decoder_is_running = false;
 		std::atomic_bool equalizer_is_running = false;
@@ -227,15 +227,15 @@ namespace MusicPlayerLibrary {
 		bool IsInitialized();
 		bool IsPlaying();
 		void OpenFile(const std::wstring& fileName, const std::wstring& file_extension_in = {}, bool skip_album_art_loading = false);
-		float GetMusicTimeLength();
-		float GetCurrentMusicPosition();
+		double GetMusicTimeLength();
+		double GetCurrentMusicPosition();
 		std::wstring GetSongTitle();
 		std::wstring GetSongArtist();
 		void Start();
 		void Pause();
 		void Stop();
 		void SetMasterVolume(float volume);
-		void SeekToPosition(float time, bool need_stop);
+		void SeekToPosition(double time, bool need_stop);
 		void SetSampleRate(int sample_rate);
 		// int GetRawPCMBytes(uint8_t* buffer_out, int buffer_size) const;
 
@@ -258,7 +258,7 @@ namespace MusicPlayerLibrary {
 	public delegate void PlayerStartDelegate();
 	public delegate void PlayerPauseDelegate();
 	public delegate void PlayerStopDelegate();
-	public delegate void PlayerTimeChangeDelegate(float time);
+	public delegate void PlayerTimeChangeDelegate(double time);
 	public delegate void PlayerDestroyDelegate();
 	public delegate void PlayerErrorDelegate(System::Exception^ exception);
 
@@ -287,8 +287,6 @@ namespace MusicPlayerLibrary {
 		ref class ProcessEventState {
 		public:
 			MessageType EventType;
-			IntPtr WParam;
-			IntPtr LParam;
 			Object^ Payload;
 		};
 		void ProcessEventCore(Object^ state);
@@ -301,7 +299,7 @@ namespace MusicPlayerLibrary {
 		* Callback functions should NOT perform any heavy operation to avoid blocking the audio thread, which may cause audio stutter.
 		* Invoke or similar mechanism to avoid cross-thread operation exceptions.
 		*/
-		void ProcessEvent(MessageType event_type, int64_t wParam, LPARAM lParam);
+		void ProcessEvent(MessageType event_type, Object^ payload);
 		void ProcessAlbumArtEvent(array<System::Byte>^ encodedImage);
 		void ProcessError(System::Exception^ exception);
 
@@ -309,15 +307,15 @@ namespace MusicPlayerLibrary {
 		bool IsPlaying();
 		void OpenFile(const System::String^ fileName);
 		void OpenFile(const System::String^ fileName, bool skipAlbumArtLoading);
-		float GetMusicTimeLength();
-		float GetCurrentMusicPosition();
+		double GetMusicTimeLength();
+		double GetCurrentMusicPosition();
 		System::String^ GetSongTitle();
 		System::String^ GetSongArtist();
 		void Start();
 		void Pause();
 		void Stop();
 		void SetMasterVolume(float volume);
-		void SeekToPosition(float time, bool need_stop);
+		void SeekToPosition(double time, bool need_stop);
 		// int GetRawPCMBytes(uint8_t* buffer_out, int buffer_size) const;
 
 		int GetNBlockAlign();
