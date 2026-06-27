@@ -28,20 +28,6 @@ jobs:
           Write-Output "Physical Processors: $($cpu.NumberOfCores)"
           $mem = Get-CimInstance Win32_ComputerSystem
           Write-Output ("Memory Size (GB): {0:N2}" -f ($mem.TotalPhysicalMemory/1GB))
-          
-      - name: Install MSYS2
-        uses: msys2/setup-msys2@v2
-        with:
-          update: true
-          install: mingw-w64-x86_64-gcc-fortran
-
-      - name: Export MinGW gfortran
-        shell: msys2 {0}
-        run: |
-          test -x /mingw64/bin/gfortran.exe
-          echo "$(cygpath -w /mingw64/bin)" >> "$(cygpath -u "$GITHUB_PATH")"
-          echo "FC=$(cygpath -w /mingw64/bin/gfortran.exe)" >> "$(cygpath -u "$GITHUB_ENV")"
-          echo "CMAKE_FORTRAN_COMPILER=$(cygpath -m /mingw64/bin/gfortran.exe)" >> "$(cygpath -u "$GITHUB_ENV")"
 
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
@@ -53,6 +39,19 @@ jobs:
           cd $env:VCPKG_ROOT
           git checkout 4b77da7fed37817f124936239197833469f1b9a8
           .\bootstrap-vcpkg.bat
+
+          $findFortran = Join-Path $env:VCPKG_ROOT 'scripts\cmake\vcpkg_find_fortran.cmake'
+          $old = 'include(CMakeDetermineFortranCompiler)'
+          $new = @'
+                  message(STATUS "Forcing vcpkg internal MinGW gfortran; skipping CMake Fortran compiler auto-detection")
+                  set(CMAKE_Fortran_COMPILER "")
+                 '@
+          $content = [System.IO.File]::ReadAllText($findFortran)
+          if (-not $content.Contains($old)) {
+            throw "Could not patch vcpkg_find_fortran.cmake; expected line not found."
+          }
+          [System.IO.File]::WriteAllText($findFortran, $content.Replace($old, $new))
+
           .\vcpkg integrate install      
           
       - name: Configure NuGet credentials for vcpkg binary caching
@@ -75,10 +74,6 @@ jobs:
         env:
           VCPKG_BINARY_SOURCES: "clear;nuget,https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json,readwrite"
         run: |
-          $env:PATH = (($env:PATH -split ';') | Where-Object {
-            $_ -notmatch '\\VC\\Tools\\Llvm\\x64\\bin$'
-          }) -join ';'
-          
           cd $env:VCPKG_ROOT
           .\vcpkg install `
             --triplet $env:VCPKG_DEFAULT_TRIPLET `
