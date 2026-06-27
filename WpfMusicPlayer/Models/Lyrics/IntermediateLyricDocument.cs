@@ -4,6 +4,13 @@ using System.Text.Json.Serialization;
 
 namespace WpfMusicPlayer.Models.Lyrics;
 
+public enum RomanizationScheme
+{
+    Romaji,
+    Jyutping,
+    ErrorOrNotEnabled
+}
+
 public sealed class IntermediateLyricDocument
 {
     public static readonly JsonSerializerOptions JsonOptions = new()
@@ -119,6 +126,15 @@ public sealed class IntermediateLineNode
     public bool HasControllerNodesSync =>
         string.Equals(Sync, "controller_node", StringComparison.OrdinalIgnoreCase)
         || string.Equals(Sync, "controller_nodes", StringComparison.OrdinalIgnoreCase);
+
+    [JsonIgnore]
+    public RomanizationScheme RomanizationScheme =>
+        Scheme switch
+        {
+            "romaji" => RomanizationScheme.Romaji,
+            "jyutping" => RomanizationScheme.Jyutping,
+            _ => RomanizationScheme.ErrorOrNotEnabled
+        };
 }
 
 public sealed class IntermediateControllerNode

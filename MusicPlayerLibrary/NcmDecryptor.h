@@ -48,12 +48,12 @@ namespace MusicPlayerLibrary
         std::wstring m_format;
         std::wstring m_mime;
 
-        void EnsureSourceRange(ULONGLONG offset, ULONGLONG count, const char* message) const;
-        void SeekSource(ULONGLONG offset, const char* message);
-        void ReadSourceExact(void* buffer, UINT count, const char* message);
+        void EnsureSourceRange(uint64_t offset, uint64_t count, const char* message) const;
+        void SeekSource(uint64_t offset, const char* message);
+        void ReadSourceExact(void* buffer, uint32_t count, const char* message);
         uint32_t ReadSourceUint32(const char* message);
-        uint32_t ReadSourceUint32At(ULONGLONG offset, const char* message);
-        std::vector<uint8_t> ReadSourceBytes(UINT count, const char* message);
+        uint32_t ReadSourceUint32At(uint64_t offset, const char* message);
+        std::vector<uint8_t> ReadSourceBytes(uint32_t count, const char* message);
         std::vector<uint8_t> GetKeyData();
         std::vector<uint8_t> GetKeyBox();
         NcmMusicMeta GetMetaData();

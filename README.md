@@ -130,11 +130,11 @@ Make sure you understand the implications before distributing a GPL‑linked bui
 > 
 > The flaw, tracked as CVE-2026-8461 and dubbed “PixelSmash,” is a heap out-of-bounds write in FFmpeg’s `libavcodec` component, with a CVSS score of 8.8 (High).
 > 
-> Although this music player does not support video files directly, attackers can still rename a crafted video files with one of the supporting extensions in this player.
+> Although this music player does not support video files directly, attackers can still rename a crafted video file with one of the supporting extensions in this player.
 > 
 > Then, the player will try to scan the streams inside the crafted files (in `MusicPlayerNative.cpp`, `MusicPlayerLibrary::MusicPlayerNative::load_audio_context_from_file_stream()`) using `libavcodec`, and it will try to find the best audio stream for decoding.
 > 
-> It will scan the video streams inside the file, triggering this bug, and no authentication or elevated privileges are needed.
+> It will scan the video streams inside the malicious file, which causes the override of `AVBuffer` struct, replacing the `AVBuffer.free` opaque to libc `system` function, at the same time overrides `AVBuffer.refcount` to 1, causes RCE when FFmpeg triggers normal frame cleanup, and no authentication or elevated privileges are needed.
 >
 > For users of this software, please update to the versions after commit `29058f2`, which locks vcpkg's FFmpeg version to over 8.1.2, fixing this issue.
 > 

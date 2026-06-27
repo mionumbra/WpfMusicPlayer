@@ -160,7 +160,7 @@ namespace
             NATIVE_TRACE("err: ncm decrypted audio file is read-only\n");
         }
 
-        ULONGLONG Seek(LONGLONG offset, MusicPlayerLibrary::FileSeekOrigin origin) override
+        uint64_t Seek(LONGLONG offset, MusicPlayerLibrary::FileSeekOrigin origin) override
         {
             ULONGLONG base_position;
             switch (origin)
@@ -244,20 +244,20 @@ namespace
 
     private:
         std::unique_ptr<IFile> source_file_;
-        ULONGLONG audio_offset_ = 0;
-        ULONGLONG audio_length_ = 0;
-        ULONGLONG position_ = 0;
+        uint64_t audio_offset_ = 0;
+        uint64_t audio_length_ = 0;
+        uint64_t position_ = 0;
         std::vector<uint8_t> key_box_;
     };
 }
 
-void MusicPlayerLibrary::NcmDecryptor::EnsureSourceRange(ULONGLONG offset, ULONGLONG count, const char* message) const
+void MusicPlayerLibrary::NcmDecryptor::EnsureSourceRange(uint64_t offset, uint64_t count, const char* message) const
 {
     if (offset > m_fileLength || count > m_fileLength - offset)
         throw std::runtime_error(message);
 }
 
-void MusicPlayerLibrary::NcmDecryptor::SeekSource(ULONGLONG offset, const char* message)
+void MusicPlayerLibrary::NcmDecryptor::SeekSource(uint64_t offset, const char* message)
 {
     if (offset > static_cast<ULONGLONG>((std::numeric_limits<LONGLONG>::max)()))
         throw std::runtime_error(message);
@@ -267,7 +267,7 @@ void MusicPlayerLibrary::NcmDecryptor::SeekSource(ULONGLONG offset, const char* 
         throw std::runtime_error(message);
 }
 
-void MusicPlayerLibrary::NcmDecryptor::ReadSourceExact(void* buffer, UINT count, const char* message)
+void MusicPlayerLibrary::NcmDecryptor::ReadSourceExact(void* buffer, uint32_t count, const char* message)
 {
     if (count == 0)
         return;
@@ -295,7 +295,7 @@ uint32_t MusicPlayerLibrary::NcmDecryptor::ReadSourceUint32(const char* message)
     return ReadLEUint32(bytes);
 }
 
-uint32_t MusicPlayerLibrary::NcmDecryptor::ReadSourceUint32At(ULONGLONG offset, const char* message)
+uint32_t MusicPlayerLibrary::NcmDecryptor::ReadSourceUint32At(uint64_t offset, const char* message)
 {
     EnsureSourceRange(offset, 4, message);
     uint8_t bytes[4] = {};
@@ -304,7 +304,7 @@ uint32_t MusicPlayerLibrary::NcmDecryptor::ReadSourceUint32At(ULONGLONG offset, 
     return ReadLEUint32(bytes);
 }
 
-std::vector<uint8_t> MusicPlayerLibrary::NcmDecryptor::ReadSourceBytes(UINT count, const char* message)
+std::vector<uint8_t> MusicPlayerLibrary::NcmDecryptor::ReadSourceBytes(uint32_t count, const char* message)
 {
     EnsureSourceRange(m_offset, count, message);
     std::vector<uint8_t> bytes(count);

@@ -116,7 +116,7 @@ System::String^ MusicPlayerLibrary::LocaleConverter::GetSystemStringFromBytes(ar
 
     while (!s.empty())
     {
-        WCHAR ch = s.back();
+        wchar_t ch = s.back();
         if ((ch >= 0x20 && ch <= 0xD7FF) ||
             (ch >= 0xE000 && ch <= 0xFFFD))
         {

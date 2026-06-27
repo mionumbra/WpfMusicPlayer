@@ -21,7 +21,7 @@ namespace MusicPlayerLibrary {
 
 		virtual uint32_t Read(void* buffer, uint32_t count) = 0;
 		virtual void Write(const void* buffer, uint32_t count) = 0;
-		virtual ULONGLONG Seek(LONGLONG offset, FileSeekOrigin origin) = 0;
+		virtual uint64_t Seek(LONGLONG offset, FileSeekOrigin origin) = 0;
 		virtual void SeekToBegin() = 0;
 		virtual uint64_t GetLength() const = 0;
 		virtual uint64_t GetPosition() const = 0;
