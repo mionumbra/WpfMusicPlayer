@@ -1,4 +1,4 @@
-name: Build
+name: Build-ARM64
 
 on:
   push:
@@ -76,7 +76,7 @@ jobs:
 
       - name: Build solution
         run: >
-          msbuild WpfMusicPlayer.slnx
+          msbuild WpfMusicPlayer.ARM64.slnx
           /p:Configuration=Release
           /p:Platform=ARM64
           /p:VcpkgRoot=$env:VCPKG_ROOT
