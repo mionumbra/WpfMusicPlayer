@@ -109,10 +109,66 @@ jobs:
 
           Copy-Item -Path (Join-Path $src '*') -Destination $dest -Recurse -Force
 
-      - name: Upload build artifact
+      - name: Prepare build artifacts
+        shell: pwsh
+        run: |
+          $outputDir = Join-Path $env:GITHUB_WORKSPACE 'WpfMusicPlayer\bin\Release\net10.0-windows10.0.26100.0'
+          $artifactRoot = Join-Path $env:RUNNER_TEMP 'wpf_music_player_artifacts'
+          $withPdbDir = Join-Path $artifactRoot 'with_pdb'
+          $noPdbDir = Join-Path $artifactRoot 'no_pdb'
+
+          if (-not (Test-Path -LiteralPath $outputDir)) {
+            throw "Build output folder not found: $outputDir"
+          }
+
+          if (Test-Path -LiteralPath $artifactRoot) {
+            Remove-Item -LiteralPath $artifactRoot -Recurse -Force
+          }
+
+          function Copy-AppOutputForArtifact {
+            param([Parameter(Mandatory = $true)][string] $Destination)
+
+            New-Item -ItemType Directory -Path $Destination -Force | Out-Null
+
+            Get-ChildItem -LiteralPath $outputDir -Force |
+              Where-Object { $_.Name -ne 'runtimes' } |
+              ForEach-Object {
+                Copy-Item -LiteralPath $_.FullName -Destination $Destination -Recurse -Force
+              }
+
+            $runtimeNativeSource = Join-Path $outputDir 'runtimes\win-x64\native'
+            if (-not (Test-Path -LiteralPath $runtimeNativeSource)) {
+              throw "Runtime native folder not found: $runtimeNativeSource"
+            }
+
+            $runtimeNativeDestination = Join-Path $Destination 'runtimes\win-x64\native'
+            New-Item -ItemType Directory -Path $runtimeNativeDestination -Force | Out-Null
+
+            Get-ChildItem -LiteralPath $runtimeNativeSource -Force |
+              ForEach-Object {
+                Copy-Item -LiteralPath $_.FullName -Destination $runtimeNativeDestination -Recurse -Force
+              }
+          }
+
+          Copy-AppOutputForArtifact -Destination $withPdbDir
+          Copy-AppOutputForArtifact -Destination $noPdbDir
+
+          Get-ChildItem -LiteralPath $noPdbDir -Filter '*.pdb' -File -Recurse -Force |
+            Remove-Item -Force
+
+      - name: Upload build artifact with pdb
         uses: actions/upload-artifact@v4
         with:
-          name: wpf_music_player_ci_release
-          path: WpfMusicPlayer\bin\Release\net10.0-windows10.0.26100.0\**
+          name: wpf_music_player_ci_release_with_pdb
+          path: ${{ runner.temp }}\wpf_music_player_artifacts\with_pdb
           if-no-files-found: error
           retention-days: 7
+
+      - name: Upload build artifact without pdb
+        uses: actions/upload-artifact@v4
+        with:
+          name: wpf_music_player_ci_release_no_pdb
+          path: ${{ runner.temp }}\wpf_music_player_artifacts\no_pdb
+          if-no-files-found: error
+          retention-days: 7
+      
