@@ -40,18 +40,21 @@ jobs:
           git checkout 4b77da7fed37817f124936239197833469f1b9a8
           .\bootstrap-vcpkg.bat
 
+          git clone https://github.com/microsoft/vcpkg.git $env:VCPKG_ROOT
+          cd $env:VCPKG_ROOT
+          git checkout 4b77da7fed37817f124936239197833469f1b9a8
+          .\bootstrap-vcpkg.bat
+
           $findFortran = Join-Path $env:VCPKG_ROOT 'scripts\cmake\vcpkg_find_fortran.cmake'
-          $old = 'include(CMakeDetermineFortranCompiler)'
-          $new = @'
-                  message(STATUS "Forcing vcpkg internal MinGW gfortran; skipping CMake Fortran compiler auto-detection")
-                  set(CMAKE_Fortran_COMPILER "")
-                 '@
+          $old = '    include(CMakeDetermineFortranCompiler)'
+          $new = '    set(CMAKE_Fortran_COMPILER "")'
           $content = [System.IO.File]::ReadAllText($findFortran)
           if (-not $content.Contains($old)) {
             throw "Could not patch vcpkg_find_fortran.cmake; expected line not found."
           }
           [System.IO.File]::WriteAllText($findFortran, $content.Replace($old, $new))
-
+        
+          Write-Output "F**ked CMakeDetermineFortranCompiler, LLVMFlang get out of my way"
           .\vcpkg integrate install      
           
       - name: Configure NuGet credentials for vcpkg binary caching
