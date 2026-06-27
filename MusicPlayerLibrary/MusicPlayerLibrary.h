@@ -29,15 +29,15 @@ namespace MusicPlayerLibrary {
 		audio_playback_state_stopped
 	};
 
-	public enum MessageType : UINT {
-		WM_PLAYER_FILE_INIT = (WM_USER + 100),
-		WM_PLAYER_TIME_CHANGE = (WM_USER + 101),
-		WM_PLAYER_START = (WM_USER + 102),
-		WM_PLAYER_PAUSE = (WM_USER + 103),
-		WM_PLAYER_STOP = (WM_USER + 104),
-		WM_PLAYER_ALBUM_ART_INIT = (WM_USER + 105),
-		WM_PLAYER_DESTROY = (WM_USER + 106),
-		WM_PLAYER_ERROR = (WM_USER + 107)
+	public enum MessageType : uint32_t {
+		MPL_PLAYER_FILE_INIT = 100,
+		MPL_PLAYER_TIME_CHANGE = 101,
+		MPL_PLAYER_START = 102,
+		MPL_PLAYER_PAUSE = 103,
+		MPL_PLAYER_STOP = 104,
+		MPL_PLAYER_ALBUM_ART_INIT = 105,
+		MPL_PLAYER_DESTROY = 106,
+		MPL_PLAYER_ERROR = 107
 	};
 
 	ref class MusicPlayer;
@@ -95,10 +95,10 @@ namespace MusicPlayerLibrary {
 		bool frame_ready_requested = false;
 		bool frame_underrun_requested = false;
 
-		IXAudio2* xaudio2 = nullptr;
-		IXAudio2MasteringVoice* mastering_voice = nullptr;
-		IXAudio2SourceVoice* source_voice = nullptr;
-		WAVEFORMATEX wfx = {};
+		FAudio* faudio = nullptr;
+		FAudioMasteringVoice* mastering_voice = nullptr;
+		FAudioSourceVoice* source_voice = nullptr;
+		FAudioWaveFormatEx wfx = {};
 
 		std::atomic_int playback_state;
 		std::jthread audio_player_worker_thread;
@@ -106,18 +106,18 @@ namespace MusicPlayerLibrary {
 		std::jthread audio_equalizer_worker_thread;
 		std::jthread album_art_worker_thread;
 
-		std::list<XAUDIO2_BUFFER*> xaudio2_playing_buffers = {};
-		std::list<XAUDIO2_BUFFER*> xaudio2_free_buffers = {};
-		size_t xaudio2_played_buffers = 0, xaudio2_allocated_buffers = 0, xaudio2_played_samples = 0;
+		std::list<FAudioBuffer*> faudio_playing_buffers = {};
+		std::list<FAudioBuffer*> faudio_free_buffers = {};
+		size_t faudio_played_buffers = 0, faudio_allocated_buffers = 0, faudio_played_samples = 0;
 		size_t base_offset = 0;
 
 		// use avaudiofifo to avoid lag on low-cpu performance system, like jasper lake/alder lake-n
 		AVAudioFifo* audio_fifo = nullptr;
-		int xaudio2_play_frame_size = 256;
-		LPDWORD xaudio2_thread_task_index = nullptr;
+		int faudio_play_frame_size = 256;
+		LPDWORD faudio_thread_task_index = nullptr;
 		double standard_frametime = 0.0, last_frametime = 0.0;
 		float message_interval = 16.67f, message_interval_timer = 0.0f;
-		size_t prev_decode_cycle_xaudio2_played_samples = 0;
+		size_t prev_decode_cycle_faudio_played_samples = 0;
 		std::wstring id3_string_lyric;
 		int sample_rate = 48000;
 
@@ -176,15 +176,15 @@ namespace MusicPlayerLibrary {
 		void signal_decoded_frame_queue_eof();
 		void reset_decoded_frame_queue(bool abort_waiters = false);
 
-		// XAudio2 helper function
+		// FAudio helper function
 		const char* get_backend_implement_version();
-		void xaudio2_init_buffer(XAUDIO2_BUFFER* dest_buffer, int size = 8192);
-		XAUDIO2_BUFFER* xaudio2_allocate_buffer(int size = 8192);
-		XAUDIO2_BUFFER* xaudio2_get_available_buffer(int size = 8192);
-		void xaudio2_free_buffer();
-		void xaudio2_destroy_buffer();
-		int decoder_query_xaudio2_buffer_size();
-		bool is_xaudio2_initialized();
+		void faudio_init_buffer(FAudioBuffer* dest_buffer, int size = 8192);
+		FAudioBuffer* faudio_allocate_buffer(int size = 8192);
+		FAudioBuffer* faudio_get_available_buffer(int size = 8192);
+		void faudio_free_buffer();
+		void faudio_destroy_buffer();
+		int decoder_query_faudio_buffer_size();
+		bool is_faudio_initialized();
 		size_t get_samples_played_per_session();
 	public:
 		// using WriteRawPCMBytesCallback = std::function<void(const uint8_t* buffer_out, int buffer_size)>;
@@ -301,7 +301,7 @@ namespace MusicPlayerLibrary {
 		* Callback functions should NOT perform any heavy operation to avoid blocking the audio thread, which may cause audio stutter.
 		* Invoke or similar mechanism to avoid cross-thread operation exceptions.
 		*/
-		void ProcessEvent(MessageType event_type, WPARAM wParam, LPARAM lParam);
+		void ProcessEvent(MessageType event_type, int64_t wParam, LPARAM lParam);
 		void ProcessAlbumArtEvent(array<System::Byte>^ encodedImage);
 		void ProcessError(System::Exception^ exception);
 

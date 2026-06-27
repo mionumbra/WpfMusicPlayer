@@ -278,8 +278,6 @@ static int FindVectorIndex(const std::vector<T>& values, const T& value)
     return it == values.end() ? -1 : static_cast<int>(std::distance(values.begin(), it));
 }
 
-// 没用了。至少证明我在规则匹配上努力过。但是一直打补丁永远不是解决问题的方法。
-// IsRomajiSyllableToken and IsStrongSeparatedRomaji removed.
 static std::regex time_tag_regex(R"(\[\s*(\d{1,2})\s*[:.]\s*(\d{1,2})(?:\s*[:.]\s*(\d{1,4}))?\s*\])");
 static std::regex time_tag_progress_regex(R"(\s*(\d{1,2})\s*[:.]\s*(\d{1,2})(?:\s*[:.]\s*(\d{1,4}))?\s*)");
 

@@ -12,6 +12,7 @@
     "kissfft",
     "uchardet",
     "libiconv",
-    "dlib"
+    "dlib",
+    "faudio"
   ]
 }

@@ -702,18 +702,18 @@ void MusicPlayerLibrary::MusicPlayerNative::notify_all_frame_notifications()
 
 int MusicPlayerLibrary::MusicPlayerNative::get_audio_fifo_low_watermark()
 {
-	return static_cast<int>(sample_rate / 48000.00 * xaudio2_play_frame_size);
+	return static_cast<int>(sample_rate / 48000.00 * faudio_play_frame_size);
 }
 
 int MusicPlayerLibrary::MusicPlayerNative::get_audio_fifo_high_watermark()
 {
-	return (std::max)(xaudio2_play_frame_size * 4, get_audio_fifo_low_watermark() * 2);
+	return (std::max)(faudio_play_frame_size * 4, get_audio_fifo_low_watermark() * 2);
 }
 
 int MusicPlayerLibrary::MusicPlayerNative::get_decoded_frame_queue_high_watermark()
 {
 	const int queue_sample_rate = sample_rate > 0 ? sample_rate : 48000;
-	return (std::max)(queue_sample_rate, xaudio2_play_frame_size * 64);
+	return (std::max)(queue_sample_rate, faudio_play_frame_size * 64);
 }
 
 bool MusicPlayerLibrary::MusicPlayerNative::is_audio_pipeline_running()
@@ -814,19 +814,18 @@ inline int MusicPlayerLibrary::MusicPlayerNative::initialize_audio_engine()
 	// C++ layer now only encapsulates raw picture bytes and submit payload to C# layer.
 
 	// create com obj
-	if (FAILED(XAudio2Create(&xaudio2)))
+	if (FAILED(FAudioCreate(&faudio, 0, FAUDIO_DEFAULT_PROCESSOR)))
 	{
-		NATIVE_TRACE("err: create xaudio2 com object failed\n");
+		NATIVE_TRACE("err: create faudio object failed\n");
 		uninitialize_audio_engine();
 		return -1;
 	}
 
 	// create mastering voice
-	if (FAILED(xaudio2->CreateMasteringVoice(&mastering_voice,
+	if (FAILED(FAudio_CreateMasteringVoice(faudio, &mastering_voice,
 		2,
 		sample_rate,
-		0, nullptr, nullptr,
-		AudioCategory_GameMedia))) {
+		0, 0, nullptr))) {
 		NATIVE_TRACE("err: creating mastering voice failed\n");
 		uninitialize_audio_engine();
 		return -1;
@@ -834,14 +833,17 @@ inline int MusicPlayerLibrary::MusicPlayerNative::initialize_audio_engine()
 
 
 	// 创建source voice
-	wfx.wFormatTag = WAVE_FORMAT_PCM;                     // pcm格式
+	wfx.wFormatTag = FAUDIO_FORMAT_PCM;                     // pcm格式
 	wfx.nChannels = 2;                                    // 音频通道数
 	wfx.nSamplesPerSec = sample_rate;                           // 采样率
 	wfx.wBitsPerSample = 16;  // xaudio2支持16-bit pcm，如果不符合格式的音频，使用swscale进行转码
 	wfx.nBlockAlign = (wfx.wBitsPerSample / 8) * wfx.nChannels; // 样本大小：样本大小(16-bit)*通道数
 	wfx.nAvgBytesPerSec = wfx.nSamplesPerSec * wfx.nBlockAlign; // 每秒钟解码多少字节，样本大小*采样率
 	wfx.cbSize = sizeof(wfx);
-	if (FAILED(xaudio2->CreateSourceVoice(&source_voice, &wfx, XAUDIO2_VOICE_NOPITCH)))
+	if (FAILED(FAudio_CreateSourceVoice(faudio, 
+		&source_voice, 
+		&wfx, FAUDIO_VOICE_NOPITCH, 
+		2.0, nullptr, nullptr, nullptr)))
 	{
 		NATIVE_TRACE("err: create source voice failed\n");
 		uninitialize_audio_engine();
@@ -849,7 +851,7 @@ inline int MusicPlayerLibrary::MusicPlayerNative::initialize_audio_engine()
 	}
 
 	last_frametime = 0.0;
-	standard_frametime = xaudio2_play_frame_size * 1.0 / wfx.nSamplesPerSec * 1000; // in ms
+	standard_frametime = faudio_play_frame_size * 1.0 / wfx.nSamplesPerSec * 1000; // in ms
 	playback_state.store(audio_playback_state_init);
 	// init FFTExecuter
 	try
@@ -879,18 +881,18 @@ inline void MusicPlayerLibrary::MusicPlayerNative::uninitialize_audio_engine()
 	stop_audio_decode();
 	reset_decoded_frame_queue(true);
 	if (source_voice) {
-		UNREFERENCED_PARAMETER(source_voice->Stop(0));
-		UNREFERENCED_PARAMETER(source_voice->FlushSourceBuffers());
-		source_voice->DestroyVoice();
+		UNREFERENCED_PARAMETER(FAudioSourceVoice_Stop(source_voice, 0, FAUDIO_COMMIT_NOW));
+		UNREFERENCED_PARAMETER(FAudioSourceVoice_FlushSourceBuffers(source_voice));
+		FAudioVoice_DestroyVoice(source_voice);
 		source_voice = nullptr;
 	}
 	if (mastering_voice) {
-		mastering_voice->DestroyVoice();
+		FAudioVoice_DestroyVoice(mastering_voice);
 		mastering_voice = nullptr;
 	}
-	if (xaudio2) {
-		xaudio2->Release();
-		xaudio2 = nullptr;
+	if (faudio) {
+		FAudio_Release(faudio);
+		faudio = nullptr;
 	}
 	if (frame) {
 		av_frame_free(&frame);
@@ -911,14 +913,14 @@ inline void MusicPlayerLibrary::MusicPlayerNative::uninitialize_audio_engine()
 		fft_executer = nullptr;
 	}
 	// release xaudio2 buffer
-	xaudio2_free_buffer();
-	xaudio2_destroy_buffer();
+	faudio_free_buffer();
+	faudio_destroy_buffer();
 }
 
 void MusicPlayerLibrary::MusicPlayerNative::audio_playback_worker_thread()
 {
 	HRESULT hr;
-	XAUDIO2_VOICE_STATE state;
+	FAudioVoiceState state;
 
 	while (true) {
 		if (!wait_frame_ready(std::chrono::milliseconds(1))) {
@@ -971,7 +973,7 @@ void MusicPlayerLibrary::MusicPlayerNative::audio_playback_worker_thread()
 //			playback_state->store(audio_playback_state_stopped);
 
 
-		source_voice->GetState(&state);
+		FAudioSourceVoice_GetState(source_voice, &state, 0);
 		if (user_request_stop.load()) {
 			// immediate return
 			NATIVE_TRACE("info: user request stop, do cleaning\n");
@@ -987,24 +989,24 @@ void MusicPlayerLibrary::MusicPlayerNative::audio_playback_worker_thread()
 			{
 				NATIVE_TRACE("info: file stream ended, waiting for xaudio2 flush buffer\n");
 				std::this_thread::sleep_for(std::chrono::milliseconds(1));
-				source_voice->GetState(&state);
+				FAudioSourceVoice_GetState(source_voice, &state, 0);
 				elapsed_time = static_cast<float>(state.SamplesPlayed - base_offset) * 1.0f / static_cast<float>(wfx.nSamplesPerSec) + static_cast<float>(pts_seconds);
 				NATIVE_TRACE("info: samples played=%lld, elapsed time=%lf\n",
 					state.SamplesPlayed, elapsed_time.load());
 
-				UINT32 raw = *reinterpret_cast<UINT32*>(&elapsed_time);
-				managed_music_player->ProcessEvent(WM_PLAYER_TIME_CHANGE, raw, 0);
+				int64_t raw = *reinterpret_cast<int64_t*>(&elapsed_time);
+				managed_music_player->ProcessEvent(MPL_PLAYER_TIME_CHANGE, raw, 0);
 				// AfxGetMainWnd()->PostMessage(WM_PLAYER_TIME_CHANGE, raw);
 				continue;
 			}
 			else
 			{
 				NATIVE_TRACE("info: playback finished, destroying thread\n");
-				managed_music_player->ProcessEvent(WM_PLAYER_STOP, 0, 0);
+				managed_music_player->ProcessEvent(MPL_PLAYER_STOP, 0, 0);
 				// AfxGetMainWnd()->PostMessage(WM_PLAYER_STOP);
 				base_offset = state.SamplesPlayed;
-				xaudio2_played_samples = 0;
-				xaudio2_played_buffers = 0;
+				faudio_played_samples = 0;
+				faudio_played_buffers = 0;
 				// fix pts_seconds not clear up -> ui thread time error & resume failed
 				pts_seconds = 0.0;
 				playback_state.store(audio_playback_state_stopped);
@@ -1032,12 +1034,12 @@ void MusicPlayerLibrary::MusicPlayerNative::audio_playback_worker_thread()
 				notify_frame_underrun();
 				continue;
 			}
-			if (is_audio_pipeline_running() && !file_stream_end && fifo_size < xaudio2_play_frame_size)
+			if (is_audio_pipeline_running() && !file_stream_end && fifo_size < faudio_play_frame_size)
 			{
 				notify_frame_underrun();
 				continue;
 			}
-			const int fifo_read_size = (std::min)(xaudio2_play_frame_size, fifo_size);
+			const int fifo_read_size = (std::min)(faudio_play_frame_size, fifo_size);
 			fifo_buf = reinterpret_cast<uint8_t**>(av_calloc(fifo_audio_channels, sizeof(uint8_t*)));
 			if (!fifo_buf)
 			{
@@ -1080,7 +1082,7 @@ void MusicPlayerLibrary::MusicPlayerNative::audio_playback_worker_thread()
 			Sleep(5); // wait for producing buffer
 			continue;
 		}
-		const UINT32 audio_bytes = read_samples * wfx.nBlockAlign;
+		const uint32_t audio_bytes = read_samples * wfx.nBlockAlign;
 		// samples read
 		// remove callback func because 100% causes audio lag
 		// submit to FFTExecuter directly
@@ -1097,7 +1099,7 @@ void MusicPlayerLibrary::MusicPlayerNative::audio_playback_worker_thread()
 			if (user_request_stop.load())
 				break;
 			std::this_thread::sleep_for(std::chrono::milliseconds(1));
-			source_voice->GetState(&state);
+			FAudioSourceVoice_GetState(source_voice, &state, 0);
 		}
 		if (user_request_stop.load())
 		{
@@ -1107,13 +1109,13 @@ void MusicPlayerLibrary::MusicPlayerNative::audio_playback_worker_thread()
 		}
 
 		// 将滤镜图输出的PCM数据提交到XAudio2
-		XAUDIO2_BUFFER* buffer_pcm = xaudio2_get_available_buffer(audio_bytes);
+		FAudioBuffer* buffer_pcm = faudio_get_available_buffer(audio_bytes);
 		buffer_pcm->AudioBytes = audio_bytes; // 16-bit stereo, bytes per sample-frame = wfx.nBlockAlign
 		memcpy(const_cast<BYTE*>(buffer_pcm->pAudioData), fifo_buf[0], buffer_pcm->AudioBytes);
 		av_freep(&fifo_buf[0]);
 		av_free(fifo_buf);
 
-		hr = source_voice->SubmitSourceBuffer(buffer_pcm);
+		hr = FAudioSourceVoice_SubmitSourceBuffer(source_voice, buffer_pcm, nullptr);
 		if (FAILED(hr)) {
 			NATIVE_TRACE("err: submit source buffer failed, reason=0x%x\n", hr);
 			playback_state.store(audio_playback_state_stopped);
@@ -1125,14 +1127,14 @@ void MusicPlayerLibrary::MusicPlayerNative::audio_playback_worker_thread()
 			// if (state.BuffersQueued == 32)
 			// {
 			playback_state.store(audio_playback_state_playing);
-			UNREFERENCED_PARAMETER(source_voice->Start());
-			managed_music_player->ProcessEvent(WM_PLAYER_START, 0, 0);
+			FAudioSourceVoice_Start(source_voice, 0, FAUDIO_COMMIT_NOW);
+			managed_music_player->ProcessEvent(MPL_PLAYER_START, 0, 0);
 			// AfxGetMainWnd()->PostMessage(WM_PLAYER_START);
 			Sleep(5); // wait for consuming buffer
 			// }
 		}
 
-		source_voice->GetState(&state);
+		FAudioSourceVoice_GetState(source_voice, &state, 0);
 		// std::printf("info: submitted source buffer, buffers queued=%d\n", state.BuffersQueued);
 
 		// 播放音频
@@ -1150,24 +1152,24 @@ void MusicPlayerLibrary::MusicPlayerNative::audio_playback_worker_thread()
 		// {
 			// fix: avoid crash
 		const size_t queued_buffers = state.BuffersQueued;
-		if (xaudio2_playing_buffers.size() > queued_buffers)
+		if (faudio_playing_buffers.size() > queued_buffers)
 		{
-			const size_t played_count = xaudio2_playing_buffers.size() - queued_buffers;
-			auto played_end = xaudio2_playing_buffers.begin();
+			const size_t played_count = faudio_playing_buffers.size() - queued_buffers;
+			auto played_end = faudio_playing_buffers.begin();
 			for (size_t i = 0; i < played_count; ++i)
 			{
-				xaudio2_played_samples += (*played_end)->AudioBytes / wfx.nBlockAlign;
-				xaudio2_played_buffers++;
+				faudio_played_samples += (*played_end)->AudioBytes / wfx.nBlockAlign;
+				faudio_played_buffers++;
 				++played_end;
 			}
-			xaudio2_free_buffers.insert(xaudio2_free_buffers.end(),
-				xaudio2_playing_buffers.begin(), played_end);
-			xaudio2_playing_buffers.erase(xaudio2_playing_buffers.begin(), played_end);
+			faudio_free_buffers.insert(faudio_free_buffers.end(),
+				faudio_playing_buffers.begin(), played_end);
+			faudio_playing_buffers.erase(faudio_playing_buffers.begin(), played_end);
 		}
 
 		if (fft_executer)
 		{
-			int latency_bytes = std::transform_reduce(xaudio2_playing_buffers.begin(), xaudio2_playing_buffers.end(), 
+			int latency_bytes = std::transform_reduce(faudio_playing_buffers.begin(), faudio_playing_buffers.end(), 
 				0, 
 				std::plus{},
 				[](auto buf) {
@@ -1183,10 +1185,10 @@ void MusicPlayerLibrary::MusicPlayerNative::audio_playback_worker_thread()
 			// Compensate XAudio2 output latency by timestamp instead of frame count.
 			fft_executer->SetOutputDelayMilliseconds(latency_ms);
 		}
-		double decode_time_ms = static_cast<double>(xaudio2_played_samples - prev_decode_cycle_xaudio2_played_samples) *
+		double decode_time_ms = static_cast<double>(faudio_played_samples - prev_decode_cycle_faudio_played_samples) *
 			1000.0 / wfx.nSamplesPerSec;
-		prev_decode_cycle_xaudio2_played_samples = xaudio2_played_samples;
-		elapsed_time = static_cast<float>(static_cast<double>(xaudio2_played_samples) * 1.0 / wfx.nSamplesPerSec + this->pts_seconds);
+		prev_decode_cycle_faudio_played_samples = faudio_played_samples;
+		elapsed_time = static_cast<float>(static_cast<double>(faudio_played_samples) * 1.0 / wfx.nSamplesPerSec + this->pts_seconds);
 
 		// clock_t decode_end_time = clock();
 		// double decode_time_ms = (decode_end_time - decode_begin_time) * 1000.0 / CLOCKS_PER_SEC;
@@ -1198,7 +1200,7 @@ void MusicPlayerLibrary::MusicPlayerNative::audio_playback_worker_thread()
 			|| message_interval_timer < 0.0f)
 		{
 			message_interval_timer = 0.0f;
-			managed_music_player->ProcessEvent(WM_PLAYER_TIME_CHANGE, *reinterpret_cast<UINT32*>(&elapsed_time), 0);
+			managed_music_player->ProcessEvent(MPL_PLAYER_TIME_CHANGE, *reinterpret_cast<int64_t*>(&elapsed_time), 0);
 			// AfxGetMainWnd()->PostMessage(WM_PLAYER_TIME_CHANGE, *reinterpret_cast<UINT32*>(&elapsed_time));
 		}
 		else { message_interval_timer += static_cast<float>(decode_time_ms); }
@@ -1468,8 +1470,8 @@ void MusicPlayerLibrary::MusicPlayerNative::audio_equalize_worker_thread()
 		if (decoded_queue_has_room)
 			decoded_frame_queue_cv.notify_all();
 
-		int player_buffers_queued = is_xaudio2_initialized()
-			                             ? decoder_query_xaudio2_buffer_size()
+		int player_buffers_queued = is_faudio_initialized()
+			                             ? decoder_query_faudio_buffer_size()
 			                             : 0;
 		if (player_buffers_queued < 4 && playback_state.load() == audio_playback_state_playing) {
 			NATIVE_TRACE("info: xaudio2 buffers queued=%d, notify player thread to submit data\n", player_buffers_queued);
@@ -1513,7 +1515,7 @@ void MusicPlayerLibrary::MusicPlayerNative::init_decoder_thread() {
 		[this] {
 			SetThreadExecutionState(ES_SYSTEM_REQUIRED | ES_AWAYMODE_REQUIRED);
 			SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
-			AvSetMmThreadCharacteristics(L"Pro Audio", xaudio2_thread_task_index);
+			AvSetMmThreadCharacteristicsW(L"Pro Audio", faudio_thread_task_index);
 			try
 			{
 				audio_decode_worker_thread();
@@ -1551,7 +1553,7 @@ void MusicPlayerLibrary::MusicPlayerNative::init_equalizer_thread()
 		[this] {
 			SetThreadExecutionState(ES_SYSTEM_REQUIRED | ES_AWAYMODE_REQUIRED);
 			SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
-			AvSetMmThreadCharacteristics(L"Pro Audio", xaudio2_thread_task_index);
+			AvSetMmThreadCharacteristicsW(L"Pro Audio", faudio_thread_task_index);
 			try
 			{
 				audio_equalize_worker_thread();
@@ -1583,8 +1585,8 @@ inline void MusicPlayerLibrary::MusicPlayerNative::start_audio_playback()
 		reset_audio_context();
 	}
 	if (source_voice) {
-		XAUDIO2_VOICE_STATE state;
-		source_voice->GetState(&state);
+		FAudioVoiceState state;
+		FAudioSourceVoice_GetState(source_voice, &state, 0);
 		base_offset = state.SamplesPlayed;
 	}
 	playback_state.store(audio_playback_state_init);
@@ -1600,7 +1602,7 @@ inline void MusicPlayerLibrary::MusicPlayerNative::start_audio_playback()
 		[this] {
 			SetThreadExecutionState(ES_SYSTEM_REQUIRED | ES_AWAYMODE_REQUIRED);
 			SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
-			AvSetMmThreadCharacteristics(L"Pro Audio", xaudio2_thread_task_index);
+			AvSetMmThreadCharacteristicsW(L"Pro Audio", faudio_thread_task_index);
 			try
 			{
 				audio_playback_worker_thread();
@@ -1677,17 +1679,17 @@ void MusicPlayerLibrary::MusicPlayerNative::stop_audio_playback(int mode)
 
 		if (source_voice)
 		{
-			UNREFERENCED_PARAMETER(source_voice->Stop(0));
-			UNREFERENCED_PARAMETER(source_voice->FlushSourceBuffers());
+			UNREFERENCED_PARAMETER(FAudioSourceVoice_Stop(source_voice, 0, FAUDIO_COMMIT_NOW));
+			UNREFERENCED_PARAMETER(FAudioSourceVoice_FlushSourceBuffers(source_voice));
 		}
 	}
 	// Stop decoder after playback thread exits; pause/reset can then rebuild FIFO
 	// and filters without racing the playback worker.
 	stop_audio_decode(is_pause ? 1 : 0);
-	// terminated xaudio and ffmpeg, do cleanup
-	xaudio2_free_buffer();
-	xaudio2_destroy_buffer();
-	xaudio2_played_samples = xaudio2_played_buffers = xaudio2_played_samples = xaudio2_played_buffers = 0;
+	// terminated faudio and ffmpeg, do cleanup
+	faudio_free_buffer();
+	faudio_destroy_buffer();
+	faudio_played_samples = faudio_played_buffers = faudio_played_samples = faudio_played_buffers = 0;
 	float pts_time_f;
 	if (is_pause)
 	{
@@ -1696,9 +1698,9 @@ void MusicPlayerLibrary::MusicPlayerNative::stop_audio_playback(int mode)
 	else {
 		elapsed_time = pts_time_f = 0.0f;
 	}
-	UINT32 raw = *reinterpret_cast<UINT32*>(&pts_time_f);
+	int64_t raw = *reinterpret_cast<int64_t*>(&pts_time_f);
 	suppress_time_events = false;
-	managed_music_player->ProcessEvent(WM_PLAYER_TIME_CHANGE, raw, 0);
+	managed_music_player->ProcessEvent(MPL_PLAYER_TIME_CHANGE, raw, 0);
 	// AfxGetMainWnd()->PostMessage(WM_PLAYER_TIME_CHANGE, raw);
 	reset_frame_notifications();
 	if (mode == 0)
@@ -1789,16 +1791,16 @@ void MusicPlayerLibrary::MusicPlayerNative::uninitialize_audio_fifo()
 
 inline const char* MusicPlayerLibrary::MusicPlayerNative::get_backend_implement_version() // NOLINT(*-convert-member-functions-to-static)
 {
-	static char xaudio2_implement_version[] = XAUDIO2_DLL_A;
-	return xaudio2_implement_version;
+	static char faudio_implement_version[] = "XAudio 2.8 Compatible";
+	return faudio_implement_version;
 }
 
-void MusicPlayerLibrary::MusicPlayerNative::xaudio2_init_buffer(XAUDIO2_BUFFER* dest_buffer, int size) // NOLINT(*-convert-member-functions-to-static)
+void MusicPlayerLibrary::MusicPlayerNative::faudio_init_buffer(FAudioBuffer* dest_buffer, int size) // NOLINT(*-convert-member-functions-to-static)
 {
 	if (size < 8192) size = 8192;
 	if (int& buffer_size = *reinterpret_cast<int*>(dest_buffer->pContext); size > buffer_size)
 	{
-		NATIVE_TRACE("info: xaudio2 reallocate_buffer, reallocate_size=%d, original_size=%d\n", size, buffer_size);
+		NATIVE_TRACE("info: faudio reallocate_buffer, reallocate_size=%d, original_size=%d\n", size, buffer_size);
 		delete[] dest_buffer->pAudioData;
 		dest_buffer->pAudioData = DBG_NEW BYTE[size];
 		buffer_size = size;
@@ -1806,39 +1808,39 @@ void MusicPlayerLibrary::MusicPlayerNative::xaudio2_init_buffer(XAUDIO2_BUFFER* 
 	memset(const_cast<BYTE*>(dest_buffer->pAudioData), 0, size);
 }
 
-XAUDIO2_BUFFER* MusicPlayerLibrary::MusicPlayerNative::xaudio2_allocate_buffer(int size)
+FAudioBuffer* MusicPlayerLibrary::MusicPlayerNative::faudio_allocate_buffer(int size)
 {
 	if (size < 8192) size = 8192;
 	// ATLTRACE("info: xaudio2_allocate_buffer, allocate_size=%d\n", size);
-	XAUDIO2_BUFFER* dest_buffer = DBG_NEW XAUDIO2_BUFFER{}; // NOLINT(*-use-auto)
+	FAudioBuffer* dest_buffer = DBG_NEW FAudioBuffer{}; // NOLINT(*-use-auto)
 	dest_buffer->pAudioData = DBG_NEW BYTE[size];
 	dest_buffer->pContext = DBG_NEW int(size);
-	xaudio2_init_buffer(dest_buffer);
+	faudio_init_buffer(dest_buffer);
 	return dest_buffer;
 }
 
-XAUDIO2_BUFFER* MusicPlayerLibrary::MusicPlayerNative::xaudio2_get_available_buffer(int size)
+FAudioBuffer* MusicPlayerLibrary::MusicPlayerNative::faudio_get_available_buffer(int size)
 {
 	// std::printf("info: DBG_NEW xaudio2_buffer request, allocated=%lld, played=%lld\n", xaudio2_allocated_buffers, xaudio2_played_buffers);
-	if (!xaudio2_free_buffers.empty())
+	if (!faudio_free_buffers.empty())
 	{
 		// std::printf("info: free buffer recycled\n");
-		auto dest_buffer = xaudio2_free_buffers.front();
-		xaudio2_free_buffers.pop_front();
-		xaudio2_init_buffer(dest_buffer, size);
-		xaudio2_playing_buffers.push_back(dest_buffer);
+		auto dest_buffer = faudio_free_buffers.front();
+		faudio_free_buffers.pop_front();
+		faudio_init_buffer(dest_buffer, size);
+		faudio_playing_buffers.push_back(dest_buffer);
 		return dest_buffer;
 	}
-	// Allocate a DBG_NEW XAudio2 buffer.
-	xaudio2_playing_buffers.push_back(xaudio2_allocate_buffer(size));
-	xaudio2_allocated_buffers++;
-	// std::printf("info: DBG_NEW xaudio2 buffer allocated, current allocate: %lld\n", xaudio2_allocated_buffers);
-	return xaudio2_playing_buffers.back();
+	// Allocate a new XAudio2 buffer.
+	faudio_playing_buffers.push_back(faudio_allocate_buffer(size));
+	faudio_allocated_buffers++;
+	// std::printf("info: new xaudio2 buffer allocated, current allocate: %lld\n", xaudio2_allocated_buffers);
+	return faudio_playing_buffers.back();
 }
 
-void MusicPlayerLibrary::MusicPlayerNative::xaudio2_free_buffer()
+void MusicPlayerLibrary::MusicPlayerNative::faudio_free_buffer()
 {
-	for (auto& i : xaudio2_playing_buffers)
+	for (auto& i : faudio_playing_buffers)
 	{
 		assert(i);
 		delete[] i->pAudioData;
@@ -1846,13 +1848,13 @@ void MusicPlayerLibrary::MusicPlayerNative::xaudio2_free_buffer()
 		delete i;
 		i = nullptr;
 	}
-	xaudio2_allocated_buffers = 0; xaudio2_played_buffers = 0;
-	xaudio2_playing_buffers.clear();
+	faudio_allocated_buffers = 0; faudio_played_buffers = 0;
+	faudio_playing_buffers.clear();
 }
 
-void MusicPlayerLibrary::MusicPlayerNative::xaudio2_destroy_buffer()
+void MusicPlayerLibrary::MusicPlayerNative::faudio_destroy_buffer()
 {
-	for (auto& i : xaudio2_free_buffers)
+	for (auto& i : faudio_free_buffers)
 	{
 		assert(i);
 		delete[] i->pAudioData;
@@ -1860,28 +1862,28 @@ void MusicPlayerLibrary::MusicPlayerNative::xaudio2_destroy_buffer()
 		delete i;
 		i = nullptr;
 	}
-	xaudio2_free_buffers.clear();
+	faudio_free_buffers.clear();
 }
 
-int MusicPlayerLibrary::MusicPlayerNative::decoder_query_xaudio2_buffer_size()
+int MusicPlayerLibrary::MusicPlayerNative::decoder_query_faudio_buffer_size()
 {
 	std::lock_guard lock(audio_playback_mutex);
-	XAUDIO2_VOICE_STATE state;
-	source_voice->GetState(&state);
+	FAudioVoiceState state;
+	FAudioSourceVoice_GetState(source_voice, &state, 0);
 	int buffer_size = static_cast<int>(state.BuffersQueued);
 	return buffer_size;
 }
 
-bool MusicPlayerLibrary::MusicPlayerNative::is_xaudio2_initialized()
+bool MusicPlayerLibrary::MusicPlayerNative::is_faudio_initialized()
 {
 	return wfx.nSamplesPerSec > 0 && wfx.nBlockAlign > 0
-		&& source_voice && mastering_voice && xaudio2;
+		&& source_voice && mastering_voice && faudio;
 }
 
 size_t MusicPlayerLibrary::MusicPlayerNative::get_samples_played_per_session()
 {
-	XAUDIO2_VOICE_STATE state;
-	source_voice->GetState(&state);
+	FAudioVoiceState state;
+	FAudioSourceVoice_GetState(source_voice, &state, 0);
 	return state.SamplesPlayed - base_offset;
 }
 
@@ -1896,18 +1898,16 @@ void MusicPlayerLibrary::MusicPlayerNative::dialog_ffmpeg_critical_error(int err
 	throw gcnew System::InvalidOperationException(gcnew String(message.c_str()));
 }
 
-// this stack_unwind function is not useful, removed.
-
 MusicPlayerLibrary::MusicPlayerNative::MusicPlayerNative() :
 	playback_state(audio_playback_state_init),
-	xaudio2_thread_task_index(new DWORD(0))
+	faudio_thread_task_index(new DWORD(0))
 {
 	NATIVE_TRACE("info: decode frontend: avformat version %d, avcodec version %d, avutil version %d, swresample version %d\n",
 		avformat_version(),
 		avcodec_version(),
 		avutil_version(),
 		swresample_version());
-	NATIVE_TRACE("info: audio api backend: XAudio2 version %s\n", get_backend_implement_version());
+	NATIVE_TRACE("info: audio api backend: FAudio, version %s\n", get_backend_implement_version());
 	eq_bands.assign(EqualizerBandCount, 0);
 }
 
@@ -2100,7 +2100,7 @@ void MusicPlayerLibrary::MusicPlayerNative::reset_av_filter_equalizer()
 
 bool MusicPlayerLibrary::MusicPlayerNative::IsInitialized()
 {
-	return is_audio_context_initialized() && is_xaudio2_initialized();
+	return is_audio_context_initialized() && is_faudio_initialized();
 }
 
 bool MusicPlayerLibrary::MusicPlayerNative::IsPlaying()
@@ -2119,8 +2119,8 @@ void MusicPlayerLibrary::MusicPlayerNative::OpenFile(const std::wstring& fileNam
 		// AfxMessageBox(_T("err: audio engine initialize failed!"), MB_ICONERROR);
 		throw gcnew System::InvalidOperationException("Audio engine initialize failed!");
 	};
-	managed_music_player->ProcessEvent(WM_PLAYER_FILE_INIT, 0, 0);
-	managed_music_player->ProcessEvent(WM_PLAYER_TIME_CHANGE, 0, 0);
+	managed_music_player->ProcessEvent(MPL_PLAYER_FILE_INIT, 0, 0);
+	managed_music_player->ProcessEvent(MPL_PLAYER_TIME_CHANGE, 0, 0);
 	// AfxGetMainWnd()->PostMessage(WM_PLAYER_FILE_INIT);
 }
 
@@ -2175,7 +2175,7 @@ void MusicPlayerLibrary::MusicPlayerNative::Stop()
 	if (IsInitialized() && IsPlaying()) {
 		pts_seconds = 0;
 		stop_audio_playback(0);
-		managed_music_player->ProcessEvent(WM_PLAYER_STOP, 0, 0);
+		managed_music_player->ProcessEvent(MPL_PLAYER_STOP, 0, 0);
 	}
 }
 
@@ -2184,7 +2184,7 @@ void MusicPlayerLibrary::MusicPlayerNative::SetMasterVolume(float volume)
 	if (IsInitialized()) {
 		if (volume < 0.0f) volume = 0.0f;
 		if (volume > 1.0f) volume = 1.0f;
-		UNREFERENCED_PARAMETER(mastering_voice->SetVolume(volume));
+		UNREFERENCED_PARAMETER(FAudioVoice_SetVolume(mastering_voice, volume, FAUDIO_COMMIT_NOW));
 	}
 }
 
@@ -2206,7 +2206,7 @@ void MusicPlayerLibrary::MusicPlayerNative::SeekToPosition(float time, bool need
 					stop_audio_decode(1);
 					playback_state.store(audio_playback_state_init);
 					reset_audio_context();
-					managed_music_player->ProcessEvent(WM_PLAYER_TIME_CHANGE, *reinterpret_cast<UINT*>(&time), 0);
+					managed_music_player->ProcessEvent(MPL_PLAYER_TIME_CHANGE, *reinterpret_cast<int64_t*>(&time), 0);
 					// AfxGetMainWnd()->PostMessage(WM_PLAYER_TIME_CHANGE, *reinterpret_cast<UINT*>(&time));
 				}
 			}
@@ -2214,7 +2214,7 @@ void MusicPlayerLibrary::MusicPlayerNative::SeekToPosition(float time, bool need
 	}
 }
 
-// 根据奈奎斯特采样定律，建议至少选择44.1kHz以上的采样率获得完整听觉体验
+// 根据奈奎斯特采样定律，建议选择44.1kHz以上的采样率获得完整听觉体验
 void MusicPlayerLibrary::MusicPlayerNative::SetSampleRate(int sample_rate)
 {
 	if (IsInitialized()) {
@@ -2284,7 +2284,7 @@ void MusicPlayerLibrary::MusicPlayerNative::Pause()
 		is_pause = true;
 		pts_seconds = elapsed_time;
 		stop_audio_playback(0);
-		managed_music_player->ProcessEvent(WM_PLAYER_PAUSE, 0, 0);
+		managed_music_player->ProcessEvent(MPL_PLAYER_PAUSE, 0, 0);
 	}
 }
 
@@ -2305,7 +2305,7 @@ MusicPlayerLibrary::MusicPlayerNative::~MusicPlayerNative()
 	stop_audio_decode();
 	uninitialize_audio_engine();
 
-	delete xaudio2_thread_task_index;
+	delete faudio_thread_task_index;
 	if (audio_fifo) 				uninitialize_audio_fifo();
 	reset_av_filter_equalizer();
 	release_audio_context();
@@ -2336,18 +2336,18 @@ void MusicPlayerLibrary::MusicPlayer::check_if_null()
 		throw gcnew System::InvalidOperationException("MusicPlayerNative initialization failed!");
 }
 
-void MusicPlayerLibrary::MusicPlayer::ProcessEvent(MessageType event_type, WPARAM wParam, LPARAM lParam)
+void MusicPlayerLibrary::MusicPlayer::ProcessEvent(MessageType event_type, int64_t wParam, int64_t lParam)
 {
 	if (!native_handle)
 		return; // 析构后或尚未初始化，安静忽略
 	
-	if (event_type == WM_PLAYER_TIME_CHANGE && native_handle && native_handle->suppress_time_events)
+	if (event_type == MPL_PLAYER_TIME_CHANGE && native_handle && native_handle->suppress_time_events)
 		return;
 
 	ProcessEventState^ state = gcnew ProcessEventState();
 	state->EventType = event_type;
-	state->WParam = IntPtr(static_cast<long long>(wParam));
-	state->LParam = IntPtr(static_cast<long long>(lParam));
+	state->WParam = IntPtr(wParam);
+	state->LParam = IntPtr(lParam);
 	System::Threading::ThreadPool::QueueUserWorkItem(
 		gcnew System::Threading::WaitCallback(this, &MusicPlayer::ProcessEventCore), state);
 }
@@ -2358,7 +2358,7 @@ void MusicPlayerLibrary::MusicPlayer::ProcessAlbumArtEvent(array<System::Byte>^ 
 		return;
 
 	ProcessEventState^ state = gcnew ProcessEventState();
-	state->EventType = WM_PLAYER_ALBUM_ART_INIT;
+	state->EventType = MPL_PLAYER_ALBUM_ART_INIT;
 	state->WParam = IntPtr::Zero;
 	state->LParam = IntPtr::Zero;
 	state->Payload = encodedImage;
@@ -2372,7 +2372,7 @@ void MusicPlayerLibrary::MusicPlayer::ProcessError(System::Exception^ exception)
 		return;
 
 	ProcessEventState^ state = gcnew ProcessEventState();
-	state->EventType = WM_PLAYER_ERROR;
+	state->EventType = MPL_PLAYER_ERROR;
 	state->WParam = IntPtr::Zero;
 	state->LParam = IntPtr::Zero;
 	state->Payload = exception;
@@ -2385,38 +2385,38 @@ void MusicPlayerLibrary::MusicPlayer::ProcessEventCore(Object^ stateObj)
 	if (!native_handle)
 		return; // native 已被销毁，跳过
 	ProcessEventState^ state = safe_cast<ProcessEventState^>(stateObj);
-	WPARAM wParam = static_cast<WPARAM>(state->WParam.ToInt64());
+	uint64_t wParam = static_cast<uint64_t>(state->WParam.ToInt64());
 
 	switch (state->EventType) {
-	case WM_PLAYER_FILE_INIT:
+	case MPL_PLAYER_FILE_INIT:
 		if (OnPlayerFileInit)
 			OnPlayerFileInit();
 		break;
-	case WM_PLAYER_ALBUM_ART_INIT:
+	case MPL_PLAYER_ALBUM_ART_INIT:
 		if (OnPlayerAlbumArtInit)
 			OnPlayerAlbumArtInit(safe_cast<array<Byte>^>(state->Payload));
 		break;
-	case WM_PLAYER_START:
+	case MPL_PLAYER_START:
 		if (OnPlayerStart)
 			OnPlayerStart();
 		break;
-	case WM_PLAYER_PAUSE:
+	case MPL_PLAYER_PAUSE:
 		if (OnPlayerPause)
 			OnPlayerPause();
 		break;
-	case WM_PLAYER_STOP:
+	case MPL_PLAYER_STOP:
 		if (OnPlayerStop)
 			OnPlayerStop();
 		break;
-	case WM_PLAYER_DESTROY:
+	case MPL_PLAYER_DESTROY:
 		if (OnPlayerDestroy)
 			OnPlayerDestroy();
 		break;
-	case WM_PLAYER_ERROR:
+	case MPL_PLAYER_ERROR:
 		if (OnPlayerError)
 			OnPlayerError(safe_cast<System::Exception^>(state->Payload));
 		break;
-	case WM_PLAYER_TIME_CHANGE:
+	case MPL_PLAYER_TIME_CHANGE:
 		if (OnPlayerTimeChange) {
 			float time = *reinterpret_cast<float*>(&wParam);
 			OnPlayerTimeChange(time);

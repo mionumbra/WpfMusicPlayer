@@ -120,7 +120,7 @@ namespace
             Close();
         }
 
-        UINT Read(void* buffer, UINT count) override
+        uint32_t Read(void* buffer, uint32_t count) override
         {
             if (!source_file_ || buffer == nullptr || count == 0 || position_ >= audio_length_)
                 return 0;
@@ -153,7 +153,7 @@ namespace
             return bytes_read;
         }
 
-        void Write(const void* buffer, UINT count) override
+        void Write(const void* buffer, uint32_t count) override
         {
             UNREFERENCED_PARAMETER(buffer);
             UNREFERENCED_PARAMETER(count);
@@ -210,12 +210,12 @@ namespace
             position_ = 0;
         }
 
-        ULONGLONG GetLength() const override
+        uint64_t GetLength() const override
         {
             return audio_length_;
         }
 
-        ULONGLONG GetPosition() const override
+        uint64_t GetPosition() const override
         {
             return position_;
         }

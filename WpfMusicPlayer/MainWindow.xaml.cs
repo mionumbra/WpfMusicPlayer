@@ -34,10 +34,13 @@ namespace WpfMusicPlayer
         private DesktopLyricWindow? _desktopLyricWindow;
         private MiniPlayerWindow? _miniPlayerWindow;
         private bool _isHidingToTray;
+        private bool _hideToTrayPending;
+        private bool _windowVisualRefreshPending;
         private bool _isClosing;
         private bool _hasDesktopLyricStateBeforeMiniPlayer;
         private bool _wasDesktopLyricVisibleBeforeMiniPlayer;
         private bool _isSampleRateRestartPromptOpen;
+        private UISettings.BackgroundMode _appliedBackgroundMode;
 
         public MainWindow(MainViewModel viewModel, ISmtcService smtcService)
         {
@@ -84,27 +87,7 @@ namespace WpfMusicPlayer
         {
             if (OsVersionHelper.IsWindows11() || !_backgroundInitialized)
             {
-                switch (mode)
-                {
-                    case UISettings.BackgroundMode.Solid:
-                        GaussianBlueHelper.EnableSolid(this);
-                        BackgroundImageBorder.Visibility = Visibility.Collapsed;
-                        // byd 这里开了Black就会把标题栏一起渲染成黑的
-                        Background = Brushes.Transparent;
-                        break;
-
-                    case UISettings.BackgroundMode.Acrylic:
-                        BackgroundImageBorder.Visibility = Visibility.Collapsed;
-                        Background = Brushes.Transparent;
-                        GaussianBlueHelper.EnableAcrylic(this);
-                        break;
-
-                    case UISettings.BackgroundMode.ImageBlur:
-                        GaussianBlueHelper.EnableImageBlur(this);
-                        BackgroundImageBorder.Visibility = Visibility.Visible;
-                        Background = Brushes.Transparent;
-                        break;
-                }
+                ApplyBackgroundModeCore(mode);
             } 
             else
             {
@@ -117,6 +100,42 @@ namespace WpfMusicPlayer
                 }
             }
             _backgroundInitialized = true;
+        }
+
+        private void ApplyBackgroundModeCore(UISettings.BackgroundMode mode)
+        {
+            switch (mode)
+            {
+                case UISettings.BackgroundMode.Solid:
+                    GaussianBlueHelper.EnableSolid(this);
+                    BackgroundImageBorder.Visibility = Visibility.Collapsed;
+                    // byd 这里开了Black就会把标题栏一起渲染成黑的
+                    Background = Brushes.Transparent;
+                    break;
+
+                case UISettings.BackgroundMode.Acrylic:
+                    BackgroundImageBorder.Visibility = Visibility.Collapsed;
+                    Background = Brushes.Transparent;
+                    GaussianBlueHelper.EnableAcrylic(this);
+                    break;
+
+                case UISettings.BackgroundMode.ImageBlur:
+                    GaussianBlueHelper.EnableImageBlur(this);
+                    BackgroundImageBorder.Visibility = Visibility.Visible;
+                    Background = Brushes.Transparent;
+                    break;
+            }
+
+            _appliedBackgroundMode = mode;
+        }
+
+        private void ReapplyWindowBackground()
+        {
+            if (!_backgroundInitialized)
+                return;
+
+            GaussianBlueHelper.EnableDarkMode(this);
+            ApplyBackgroundModeCore(_appliedBackgroundMode);
         }
 
         private void OnSourceInitialized(object? sender, EventArgs e)
@@ -344,6 +363,9 @@ namespace WpfMusicPlayer
 
         private void MainWindow_SizeChanged(object sender, SizeChangedEventArgs e)
         {
+            if (WindowState == WindowState.Minimized || e.NewSize.Width <= 0 || e.NewSize.Height <= 0)
+                return;
+
             var shouldBePortrait = e.NewSize.Height > e.NewSize.Width;
 
             if (!_layoutInitialized)
@@ -860,8 +882,33 @@ namespace WpfMusicPlayer
 
         private void MainWindow_StateChanged(object sender, EventArgs e)
         {
-            if (WindowState == WindowState.Minimized && !_isHidingToTray)
+            if (_isClosing)
+                return;
+
+            if (WindowState == WindowState.Minimized)
+            {
+                QueueHideMainWindowToTray();
+                return;
+            }
+
+            QueueWindowVisualRefresh();
+        }
+
+        private void QueueHideMainWindowToTray()
+        {
+            if (_isHidingToTray || _hideToTrayPending)
+                return;
+
+            _hideToTrayPending = true;
+            Dispatcher.BeginInvoke(() =>
+            {
+                _hideToTrayPending = false;
+
+                if (_isClosing || !IsVisible || WindowState != WindowState.Minimized)
+                    return;
+
                 HideMainWindowToTray();
+            }, DispatcherPriority.Background);
         }
 
         private void HideMainWindowToTray()
@@ -870,7 +917,6 @@ namespace WpfMusicPlayer
             try
             {
                 ViewModel.DesktopTrayIcon.EnableTaskbarIcon();
-                WindowState = WindowState.Normal;
                 Hide();
                 _miniPlayerWindow?.Hide();
             }
@@ -878,6 +924,46 @@ namespace WpfMusicPlayer
             {
                 _isHidingToTray = false;
             }
+        }
+
+        private void QueueWindowVisualRefresh()
+        {
+            if (_windowVisualRefreshPending)
+                return;
+
+            _windowVisualRefreshPending = true;
+            Dispatcher.BeginInvoke(() =>
+            {
+                _windowVisualRefreshPending = false;
+
+                if (_isClosing || !IsVisible || WindowState == WindowState.Minimized)
+                    return;
+
+                ReapplyWindowBackground();
+                ResetActiveViewVisibility();
+                InvalidateVisual();
+                ContentArea.InvalidateVisual();
+                UpdateLayout();
+            }, DispatcherPriority.ContextIdle);
+        }
+
+        private void ResetActiveViewVisibility()
+        {
+            ClearLayoutAnimations();
+
+            if (ViewModel.ActiveView == ActiveView.Player)
+            {
+                LandscapeContent.Visibility = _isPortrait ? Visibility.Collapsed : Visibility.Visible;
+                PortraitContent.Visibility = _isPortrait ? Visibility.Visible : Visibility.Collapsed;
+                PlaylistContent.Visibility = Visibility.Collapsed;
+                SettingsContent.Visibility = Visibility.Collapsed;
+                return;
+            }
+
+            LandscapeContent.Visibility = Visibility.Collapsed;
+            PortraitContent.Visibility = Visibility.Collapsed;
+            PlaylistContent.Visibility = ViewModel.ActiveView == ActiveView.Playlist ? Visibility.Visible : Visibility.Collapsed;
+            SettingsContent.Visibility = ViewModel.ActiveView == ActiveView.Settings ? Visibility.Visible : Visibility.Collapsed;
         }
 
         private void ShowMiniPlayer()
@@ -927,6 +1013,7 @@ namespace WpfMusicPlayer
             Show();
             WindowState = WindowState.Normal;
             Activate();
+            QueueWindowVisualRefresh();
             RestoreDesktopLyricAfterMiniPlayer();
         }
 

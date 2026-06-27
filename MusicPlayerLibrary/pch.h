@@ -50,15 +50,10 @@
 #include <cmath>
 
 #include <windows.h>
-#include <wincodec.h>
 #include <avrt.h>
-#include <comdef.h>
-#include <xaudio2.h>
-#include <mmdeviceapi.h>
-#include <audioclient.h>
+#include <faudio.h>
 #include <shlwapi.h>
 #include <winhttp.h>
-#include <functiondiscoverykeys_devpkey.h>
 
 #include <roapi.h>
 #include <SystemMediaTransportControlsInterop.h>
