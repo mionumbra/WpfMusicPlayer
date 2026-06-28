@@ -49,8 +49,11 @@ public partial class MainViewModel : ObservableObject, IDisposable
     private bool _playCountIncrementedForCurrentSong;
     private bool _isDisposed;
     private byte[]? _pendingAlbumArtPng;
+    private int _albumArtVersion;
     private readonly ILogger<MainViewModel> _logger;
     private const int AlbumArtLogicalSize = 500;
+    private const int BlurredAlbumArtPixelSize = 320;
+    private const float BlurredAlbumArtSigma = 24f;
     private const string PauseString = "\uE769";
     private const string PlayString = "\uF5B0";
 
@@ -206,7 +209,9 @@ public partial class MainViewModel : ObservableObject, IDisposable
         _musicPlayer.Dispose();
         _musicPlayer = new MusicPlayer(_sampleRate);
         ApplyEqualizerSettingsToPlayer();
+        Interlocked.Increment(ref _albumArtVersion);
         AlbumCoverImage = null;
+        BlurredAlbumCoverImage = null;
         SongTitle = "Unknown Title";
         ArtistName = "Unknown Artist";
         ProgressValue = 0;
@@ -282,6 +287,9 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
     [ObservableProperty]
     public partial BitmapImage? AlbumCoverImage { get; private set; }
+
+    [ObservableProperty]
+    public partial BitmapSource? BlurredAlbumCoverImage { get; private set; }
 
     [ObservableProperty]
     public partial string CurrentTime { get; private set; } = "0:00";
@@ -418,7 +426,9 @@ public partial class MainViewModel : ObservableObject, IDisposable
             try
             {
                 _currentFilePath = filePath;
+                var albumArtVersion = Interlocked.Increment(ref _albumArtVersion);
                 _pendingAlbumArtPng = null;
+                _syncContext.Post(_ => ClearAlbumArt(albumArtVersion), null);
                 _currentMd5 = await ComputeFileMd5Async(filePath).ConfigureAwait(false);
                 _logger.LogInformation("File MD5 computed: {Md5}", _currentMd5);
 
@@ -428,17 +438,13 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 {
                     _logger.LogInformation("Cached album art hit for {Md5}; native album art loading will be skipped", _currentMd5);
                     var albumArt = cached!.AlbumArt!;
-                    _syncContext.Post(_ => ApplyCachedAlbumArt(albumArt), null);
-                }
-                else
-                {
-                    _syncContext.Post(_ => AlbumCoverImage = null, null);
+                    _syncContext.Post(_ => ApplyCachedAlbumArt(albumArt, albumArtVersion), null);
                 }
 
                 _musicPlayer.Dispose();
                 _musicPlayer = new MusicPlayer(_sampleRate);
                 ApplyEqualizerSettingsToPlayer();
-                SubscribePlayerEvents();
+                SubscribePlayerEvents(albumArtVersion, _currentMd5, filePath);
                 _disableAutoAdvance = false;
                 _musicPlayer.OpenFile(filePath, skipAlbumArtLoading);
                 if (!_enableAutoPlay)
@@ -568,6 +574,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
             Lyrics.UpdateCurrentLyricOffsetRequested -= OnLyricsUpdateOffsetMsRequired;
             GCSettings.LatencyMode = _previousLatencyMode;
             _musicPlayer.Dispose();
+            Interlocked.Increment(ref _albumArtVersion);
             _logger.LogInformation("MusicPlayer disposed");
             _songDatabase.Dispose();
             _logger.LogInformation("SongDatabase disposed");
@@ -595,11 +602,15 @@ public partial class MainViewModel : ObservableObject, IDisposable
         }
     }
 
-    private void SubscribePlayerEvents()
+    private void SubscribePlayerEvents(
+        int albumArtVersion = 0,
+        string? albumArtMd5 = null,
+        string? albumArtFilePath = null)
     {
         _musicPlayer.OnPlayerTimeChange += OnTimeChanged;
         _musicPlayer.OnPlayerFileInit += OnFileInit;
-        _musicPlayer.OnPlayerAlbumArtInit += OnAlbumArtInit;
+        _musicPlayer.OnPlayerAlbumArtInit += encodedImage =>
+            OnAlbumArtInit(encodedImage, albumArtVersion, albumArtMd5, albumArtFilePath);
         _musicPlayer.OnPlayerStart += OnStart;
         _musicPlayer.OnPlayerPause += OnPause;
         _musicPlayer.OnPlayerStop += OnStop;
@@ -704,19 +715,26 @@ public partial class MainViewModel : ObservableObject, IDisposable
         }, null);
     }
 
-    private void OnAlbumArtInit(byte[]? encodedImage)
+    private void OnAlbumArtInit(
+        byte[]? encodedImage,
+        int albumArtVersion,
+        string? albumArtMd5,
+        string? albumArtFilePath)
     {
         _syncContext.Post(_ =>
         {
+            if (albumArtVersion != Volatile.Read(ref _albumArtVersion))
+                return;
+
             try
             {
-                var cached = _currentMd5 is not null ? _songDatabase.FindByMd5(_currentMd5) : null;
+                var cached = albumArtMd5 is not null ? _songDatabase.FindByMd5(albumArtMd5) : null;
                 byte[]? albumArtPng = null;
 
                 if (cached?.AlbumArt is { Length: > 0 })
                 {
                     albumArtPng = cached.AlbumArt;
-                    ApplyCachedAlbumArt(albumArtPng);
+                    ApplyCachedAlbumArt(albumArtPng, albumArtVersion);
                     _logger.LogInformation("Cached MD5 hit, discarding native album art stream");
                 }
                 else
@@ -726,10 +744,11 @@ public partial class MainViewModel : ObservableObject, IDisposable
                         ? DecodeAlbumArtToPng(encodedImage)
                         : null;
                     AlbumCoverImage = albumArtPng is not null ? LoadBitmapImageFromBytes(albumArtPng) : null;
+                    QueueBlurredAlbumArtRender(albumArtPng, albumArtVersion);
 
                     if (AlbumCoverImage is not null)
                     {
-                        Playlist.UpdateItemMetadata(_currentFilePath, null, null, AlbumCoverImage);
+                        Playlist.UpdateItemMetadata(albumArtFilePath, null, null, AlbumCoverImage);
                     }
 
                     if (cached is not null)
@@ -1101,7 +1120,9 @@ public partial class MainViewModel : ObservableObject, IDisposable
             WpfMessageBox.Show($"{ex.Message}\n{path}", "Error",
                 WpfMessageBoxIcon.Error);
             // reset state
+            Interlocked.Increment(ref _albumArtVersion);
             AlbumCoverImage = null;
+            BlurredAlbumCoverImage = null;
             SongTitle = "Unknown Title";
             ArtistName = "Unknown Artist";
             ProgressValue = 0;
@@ -1139,17 +1160,99 @@ public partial class MainViewModel : ObservableObject, IDisposable
         Playlist.SetPlayingItem(_currentFilePath);
     }
 
-    private void ApplyCachedAlbumArt(byte[] albumArt)
+    private void ClearAlbumArt(int albumArtVersion)
     {
+        if (albumArtVersion != Volatile.Read(ref _albumArtVersion))
+            return;
+
+        AlbumCoverImage = null;
+        BlurredAlbumCoverImage = null;
+    }
+
+    private void ApplyCachedAlbumArt(byte[] albumArt, int albumArtVersion)
+    {
+        if (albumArtVersion != Volatile.Read(ref _albumArtVersion))
+            return;
+
         try
         {
             AlbumCoverImage = LoadBitmapImageFromBytes(albumArt);
             Playlist.UpdateItemMetadata(_currentFilePath, null, null, AlbumCoverImage);
+            QueueBlurredAlbumArtRender(albumArt, albumArtVersion);
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Failed to load cached album art");
         }
+    }
+
+    private void QueueBlurredAlbumArtRender(byte[]? albumArtPng, int albumArtVersion)
+    {
+        if (albumArtPng is not { Length: > 0 })
+        {
+            BlurredAlbumCoverImage = null;
+            return;
+        }
+
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                var blurredImage = RenderBlurredAlbumArt(albumArtPng);
+                _syncContext.Post(_ =>
+                {
+                    if (!_isDisposed && albumArtVersion == Volatile.Read(ref _albumArtVersion))
+                        BlurredAlbumCoverImage = blurredImage;
+                }, null);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to pre-render blurred album art");
+            }
+        });
+    }
+
+    private static BitmapSource RenderBlurredAlbumArt(byte[] albumArtPng)
+    {
+        using var source = SKBitmap.Decode(albumArtPng)
+            ?? throw new InvalidDataException("Album art image stream could not be decoded for background rendering.");
+
+        var targetInfo = new SKImageInfo(
+            BlurredAlbumArtPixelSize,
+            BlurredAlbumArtPixelSize,
+            SKColorType.Bgra8888,
+            SKAlphaType.Premul);
+        using var target = new SKBitmap(targetInfo);
+        using var canvas = new SKCanvas(target);
+        using var blur = SKImageFilter.CreateBlur(
+            BlurredAlbumArtSigma,
+            BlurredAlbumArtSigma,
+            SKShaderTileMode.Clamp);
+        using var paint = new SKPaint
+        {
+            IsAntialias = true,
+            ImageFilter = blur
+        };
+
+        var sourceBounds = new SKRect(0, 0, source.Width, source.Height);
+        var targetBounds = new SKRect(0, 0, target.Width, target.Height);
+        var sampling = new SKSamplingOptions(SKFilterMode.Linear, SKMipmapMode.Linear);
+        canvas.Clear(SKColors.Transparent);
+        canvas.DrawBitmap(source, sourceBounds, targetBounds, sampling, paint);
+        canvas.Flush();
+
+        var bitmapSource = BitmapSource.Create(
+            target.Width,
+            target.Height,
+            96,
+            96,
+            PixelFormats.Bgra32,
+            null,
+            target.GetPixels(),
+            target.ByteCount,
+            target.RowBytes);
+        bitmapSource.Freeze();
+        return bitmapSource;
     }
 
     private static byte[] DecodeAlbumArtToPng(byte[] encodedImage)

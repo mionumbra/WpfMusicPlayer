@@ -80,14 +80,9 @@
             ClipToBounds="True"
             MouseLeftButtonDown="RootBorder_MouseLeftButtonDown">
         <Grid>
-            <Image Source="{Binding AlbumCoverImage}"
+            <Image Source="{Binding BlurredAlbumCoverImage}"
                    Stretch="UniformToFill"
-                   Opacity="0.75"
-                   Margin="-26">
-                <Image.Effect>
-                    <BlurEffect Radius="20" KernelType="Gaussian"/>
-                </Image.Effect>
-            </Image>
+                   Opacity="0.75"/>
 
             <Border Background="#9070636B"/>
 
