@@ -68,12 +68,8 @@
                     <GradientStop Color="#CCFFFFFF" Offset="1.0"/>
                 </LinearGradientBrush>
             </Border.OpacityMask>
-            <Image Source="{Binding AlbumCoverImage}" Stretch="UniformToFill" Opacity="0.8"
-                   Margin="-100" VerticalAlignment="Center" HorizontalAlignment="Center">
-                <Image.Effect>
-                    <BlurEffect Radius="80" KernelType="Gaussian"/>
-                </Image.Effect>
-            </Image>
+            <Image Source="{Binding BlurredAlbumCoverImage}" Stretch="UniformToFill" Opacity="0.8"
+                   VerticalAlignment="Center" HorizontalAlignment="Center"/>
         </Border>
 
         <StackPanel Orientation="Horizontal" VerticalAlignment="Top" HorizontalAlignment="Left"

@@ -17,6 +17,12 @@
 
 A simple music player.
 
+## Notice
+- This project has entered maintenance mode.
+- All planned TODO items and future feature development will be carried out in a new project.
+- No further functional updates will be made to this repository, but bug fixes will continue to be accepted.
+- New project will remove all windows dependencies, and become cross-platform deployable.
+
 ## Technical stack
 - **Frontend:** WPF / C#  
 - **Backend:** Standard C++/CLI  
