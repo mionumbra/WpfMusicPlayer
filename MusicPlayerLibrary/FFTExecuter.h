@@ -22,7 +22,7 @@ namespace MusicPlayerLibrary
 		static constexpr size_t MAX_FFT_SIZE = 8192;
 		static constexpr int FFT_FRAME_INTERVAL_MS = 16;
 	public:
-		void AddSamplesToRingBuffer(uint8_t* samples, int sample_size);
+		void AddSamplesToRingBuffer(const uint8_t* samples, int sample_size);
 		[[nodiscard]] int GetRingBufferSize() const;
 		// XAudio2 output latency compensation.
 		void SetOutputDelayMilliseconds(int milliseconds);
@@ -43,7 +43,7 @@ namespace MusicPlayerLibrary
 
 	public:
 		void ExecuteAudioFFT();
-		const std::vector<float> GetAudioFFTData();
+		int CopyAudioFFTData(float* destination, int destination_length);
 		void ResetBuffers();
 		void StartFFTThread();
 		void StopFFTThread();

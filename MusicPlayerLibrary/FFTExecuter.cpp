@@ -24,22 +24,30 @@ size_t MusicPlayerLibrary::FFTExecuter::GetRingBufferMaxSize() const
     return fft_size * BYTES_PER_FRAME;
 }
 
-void MusicPlayerLibrary::FFTExecuter::AddSamplesToRingBuffer(uint8_t* samples, int sample_size)
+void MusicPlayerLibrary::FFTExecuter::AddSamplesToRingBuffer(const uint8_t* samples, int sample_size)
 {
-    std::lock_guard ring_buffer_lock(ring_buffer_mutex);
     if (samples == nullptr || sample_size <= 0)
         return;
 
-    for (int i = 0; i < sample_size; ++i)
-    {
-        spectrum_data_ring_buffer.push_back(samples[i]);
-    }
-
+    std::unique_lock ring_buffer_lock(ring_buffer_mutex, std::try_to_lock);
+    if (!ring_buffer_lock.owns_lock())
+        return;
+    
     const size_t ring_buffer_max_size = GetRingBufferMaxSize();
-    // ReSharper disable once CppDFALoopConditionNotUpdated
+    const auto requested_size = static_cast<size_t>(sample_size);
+    const size_t copy_size = (std::min)(requested_size, ring_buffer_max_size);
+    const uint8_t* copy_begin = samples + (requested_size - copy_size);
+    spectrum_data_ring_buffer.insert(
+        spectrum_data_ring_buffer.end(),
+        copy_begin,
+        copy_begin + copy_size);
+
     while (spectrum_data_ring_buffer.size() > ring_buffer_max_size)
     {
-        spectrum_data_ring_buffer.pop_front();
+        const size_t overflow = spectrum_data_ring_buffer.size() - ring_buffer_max_size;
+        const auto erase_end = spectrum_data_ring_buffer.begin()
+            + static_cast<std::deque<uint8_t>::difference_type>(overflow);
+        spectrum_data_ring_buffer.erase(spectrum_data_ring_buffer.begin(), erase_end);
     }
     ring_buffer_has_unprocessed_data = true;
 
@@ -235,11 +243,14 @@ void MusicPlayerLibrary::FFTExecuter::ExecuteAudioFFT()
 }
 
 
-const std::vector<float> MusicPlayerLibrary::FFTExecuter::GetAudioFFTData()
+int MusicPlayerLibrary::FFTExecuter::CopyAudioFFTData(float* destination, int destination_length)
 {
+    if (destination == nullptr || destination_length <= 0)
+        return 0;
+
     std::lock_guard lock(spectrum_data_mutex);
     if (spectrum_delay_queue.empty())
-        return {};
+        return 0;
 
     const auto target_time = std::chrono::steady_clock::now()
         - std::chrono::milliseconds(delay_ms.load());
@@ -253,7 +264,12 @@ const std::vector<float> MusicPlayerLibrary::FFTExecuter::GetAudioFFTData()
             break;
         }
     }
-    return spectrum_delay_queue[target].data;
+
+    const auto& data = spectrum_delay_queue[target].data;
+    const int copy_count = (std::min)(destination_length, static_cast<int>(data.size()));
+    if (copy_count > 0)
+        std::copy_n(data.data(), copy_count, destination);
+    return copy_count;
 }
 
 void MusicPlayerLibrary::FFTExecuter::ResetBuffers()

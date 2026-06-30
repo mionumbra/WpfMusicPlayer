@@ -12,6 +12,7 @@
 #include <numeric>
 #include <string_view>
 #include "LocaleConverter.h"
+#include "MMCSSHelper.h"
 
 using namespace System::Runtime::InteropServices;
 
@@ -65,6 +66,7 @@ namespace
 		ToLowerInPlace(result);
 		return result;
 	}
+
 
 }
 
@@ -1088,16 +1090,6 @@ void MusicPlayerLibrary::MusicPlayerNative::audio_playback_worker_thread()
 			continue;
 		}
 		const uint32_t audio_bytes = read_samples * wfx.nBlockAlign;
-		// samples read
-		// remove callback func because 100% causes audio lag
-		// submit to FFTExecuter directly
-		if (fft_executer)
-		{
-			fft_executer->AddSamplesToRingBuffer(
-				fifo_buf[0],
-				static_cast<int>(audio_bytes));
-		}
-
 
 		while (state.BuffersQueued >= 32)
 		{
@@ -1125,6 +1117,14 @@ void MusicPlayerLibrary::MusicPlayerNative::audio_playback_worker_thread()
 			NATIVE_TRACE("err: submit source buffer failed, reason=0x%x\n", hr);
 			playback_state.store(audio_playback_state_stopped);
 			break;
+		}
+
+		// Visualization is best-effort and runs after the audio buffer is queued.
+		if (fft_executer)
+		{
+			fft_executer->AddSamplesToRingBuffer(
+				buffer_pcm->pAudioData,
+				static_cast<int>(audio_bytes));
 		}
 
 		if (playback_state.load() == audio_playback_state_init)
@@ -1519,8 +1519,7 @@ void MusicPlayerLibrary::MusicPlayerNative::init_decoder_thread() {
 	audio_decoder_worker_thread = std::jthread(
 		[this] {
 			SetThreadExecutionState(ES_SYSTEM_REQUIRED | ES_AWAYMODE_REQUIRED);
-			SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
-			AvSetMmThreadCharacteristicsW(L"Pro Audio", faudio_thread_task_index);
+			MMCSSHelper mmcss(L"Audio", AVRT_PRIORITY_HIGH, "decoder");
 			try
 			{
 				audio_decode_worker_thread();
@@ -1557,8 +1556,7 @@ void MusicPlayerLibrary::MusicPlayerNative::init_equalizer_thread()
 	audio_equalizer_worker_thread = std::jthread(
 		[this] {
 			SetThreadExecutionState(ES_SYSTEM_REQUIRED | ES_AWAYMODE_REQUIRED);
-			SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
-			AvSetMmThreadCharacteristicsW(L"Pro Audio", faudio_thread_task_index);
+			MMCSSHelper mmcss(L"Pro Audio", AVRT_PRIORITY_HIGH, "equalizer");
 			try
 			{
 				audio_equalize_worker_thread();
@@ -1606,8 +1604,7 @@ inline void MusicPlayerLibrary::MusicPlayerNative::start_audio_playback()
 	audio_player_worker_thread = std::jthread(
 		[this] {
 			SetThreadExecutionState(ES_SYSTEM_REQUIRED | ES_AWAYMODE_REQUIRED);
-			SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
-			AvSetMmThreadCharacteristicsW(L"Pro Audio", faudio_thread_task_index);
+			MMCSSHelper mmcss(L"Pro Audio", AVRT_PRIORITY_CRITICAL, "playback");
 			try
 			{
 				audio_playback_worker_thread();
@@ -1903,8 +1900,7 @@ void MusicPlayerLibrary::MusicPlayerNative::dialog_ffmpeg_critical_error(int err
 }
 
 MusicPlayerLibrary::MusicPlayerNative::MusicPlayerNative() :
-	playback_state(audio_playback_state_init),
-	faudio_thread_task_index(new DWORD(0))
+	playback_state(audio_playback_state_init)
 {
 	NATIVE_TRACE("info: decode frontend: avformat version %d, avcodec version %d, avutil version %d, swresample version %d\n",
 		avformat_version(),
@@ -2309,7 +2305,6 @@ MusicPlayerLibrary::MusicPlayerNative::~MusicPlayerNative()
 	stop_audio_decode();
 	uninitialize_audio_engine();
 
-	delete faudio_thread_task_index;
 	if (audio_fifo) 				uninitialize_audio_fifo();
 	reset_av_filter_equalizer();
 	release_audio_context();
@@ -2547,17 +2542,17 @@ void MusicPlayerLibrary::MusicPlayer::SetEqualizerBand(int index, int value)
 	native_handle->SetEqualizerBand(index, value);
 }
 
-array<float>^ MusicPlayerLibrary::MusicPlayer::GetAudioFFTData()
+int MusicPlayerLibrary::MusicPlayer::CopyAudioFFTData(array<float>^ destination)
 {
 	if (!is_native_valid())
-		return gcnew array<float>(0);
+		return 0;
 	if (!native_handle->fft_executer)
-		return gcnew array<float>(0);
-	auto data = native_handle->fft_executer->GetAudioFFTData();
-	array<float>^ result = gcnew array<float>(static_cast<int>(data.size()));
-	for (int i = 0; i < static_cast<int>(data.size()); ++i)
-		result[i] = data[i];
-	return result;
+		return 0;
+	if (destination == nullptr || destination->Length <= 0)
+		return 0;
+
+	pin_ptr<float> destination_ptr = &destination[0];
+	return native_handle->fft_executer->CopyAudioFFTData(destination_ptr, destination->Length);
 }
 
 // {ddb0472d-c911-4a1f-86d9-dc3d71a95f5a} ISystemMediaTransportControlsInterop

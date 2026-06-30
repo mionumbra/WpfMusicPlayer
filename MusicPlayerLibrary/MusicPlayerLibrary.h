@@ -114,7 +114,6 @@ namespace MusicPlayerLibrary {
 		// use avaudiofifo to avoid lag on low-cpu performance system, like jasper lake/alder lake-n
 		AVAudioFifo* audio_fifo = nullptr;
 		int faudio_play_frame_size = 256;
-		LPDWORD faudio_thread_task_index = nullptr;
 		double standard_frametime = 0.0, last_frametime = 0.0;
 		float message_interval = 16.67f, message_interval_timer = 0.0f;
 		size_t prev_decode_cycle_faudio_played_samples = 0;
@@ -322,7 +321,7 @@ namespace MusicPlayerLibrary {
 		System::String^ GetID3Lyric();
 
 		// FFT spectrum data
-		array<float>^ GetAudioFFTData();
+		int CopyAudioFFTData(array<float>^ destination);
 
 		// Equalizer interfaces
 		int GetEqualizerBand(int index);
