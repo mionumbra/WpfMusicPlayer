@@ -54,8 +54,10 @@ public partial class MainViewModel : ObservableObject, IDisposable
     private const int AlbumArtLogicalSize = 500;
     private const int BlurredAlbumArtPixelSize = 320;
     private const float BlurredAlbumArtSigma = 24f;
+    private const int SpectrumSegmentCount = 32;
     private const string PauseString = "\uE769";
     private const string PlayString = "\uF5B0";
+    private bool _spectrumBufferHasData;
 
     public MainViewModel(
         IConfigProvider configProvider,
@@ -336,7 +338,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
     }
 
     [ObservableProperty]
-    public partial float[] SpectrumData { get; private set; } = [];
+    public partial float[] SpectrumData { get; private set; } = new float[SpectrumSegmentCount];
 
     public PlaylistViewModel Playlist { get; }
 
@@ -550,15 +552,24 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
     public void PollSpectrumData()
     {
+        Span<float> spectrum = SpectrumData;
         if (!_musicPlayer.IsInitialized() || !_musicPlayer.IsPlaying())
         {
-            if (SpectrumData.Length > 0)
-                SpectrumData = [];
+            if (_spectrumBufferHasData)
+            {
+                spectrum.Clear();
+                _spectrumBufferHasData = false;
+            }
             return;
         }
-        var data = _musicPlayer.GetAudioFFTData();
-        if (data is { Length: > 0 })
-            SpectrumData = data;
+
+        int copied = _musicPlayer.CopyAudioFFTData(SpectrumData);
+        if (copied <= 0)
+            return;
+
+        if (copied < spectrum.Length)
+            spectrum[copied..].Clear();
+        _spectrumBufferHasData = true;
     }
 
     public void Dispose()

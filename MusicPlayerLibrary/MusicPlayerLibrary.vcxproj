@@ -132,6 +132,7 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="MMCSSHelper.h" />
     <ClInclude Include="NativeTraceRedirect.h" />
     <ClInclude Include="FileAbstractionLayer.h" />
     <ClInclude Include="FFTExecuter.h" />
@@ -144,6 +145,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="AssemblyInfo.cpp" />
+    <ClCompile Include="MMCSSHelper.cpp" />
     <ClCompile Include="NativeTraceRedirect.cpp" />
     <ClCompile Include="FileAbstractionLayer.cpp" />
     <ClCompile Include="FFTExecuter.cpp" />
