@@ -48,9 +48,12 @@ public partial class App : Application
                     services.AddSingleton<ILyricParser, LrcFileParser>();
                     services.AddSingleton<LyricParserFactory>();
 
+                    services.AddTransient<INcmAlbumArtDownloader, NcmAlbumArtDownloader>();
                     services.AddTransient<IFileDialogService, FileDialogService>();
                     services.AddTransient<ICommandLineParser>(_ =>
                         new CommandLineParser(Environment.GetCommandLineArgs()));
+                    services.AddTransient<Func<INcmAlbumArtDownloader>>(serviceProvider =>
+                        () => serviceProvider.GetRequiredService<INcmAlbumArtDownloader>());
 
                     services.AddSingleton<PlaylistViewModel>();
                     services.AddSingleton<LyricsViewModel>();
