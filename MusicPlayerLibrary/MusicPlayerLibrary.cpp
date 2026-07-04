@@ -67,7 +67,6 @@ namespace
 		return result;
 	}
 
-
 }
 
 int MusicPlayerLibrary::MusicPlayerNative::read_func(uint8_t* buf, int buf_size) {
@@ -147,7 +146,7 @@ inline int MusicPlayerLibrary::MusicPlayerNative::load_audio_context(const std::
 			file_stream->SeekToBegin();
 			if (!skip_album_art_loading)
 			{
-				download_ncm_album_art_async(decryptor_result.metadata.pictureUrl);
+				require_download_ncm_album_art(decryptor_result.metadata.pictureUrl);
 			}
 		}
 		catch (std::exception& e)
@@ -396,176 +395,6 @@ bool MusicPlayerLibrary::MusicPlayerNative::is_audio_context_initialized()
 		&& file_stream;
 }
 
-array<System::Byte>^ MusicPlayerLibrary::MusicPlayerNative::download_ncm_album_art(const std::wstring& url)
-{
-	if (url.empty()) return nullptr;
-
-	auto file = GetDefaultFileSystem().CreateMemoryFile();
-	if (!file)
-		return nullptr;
-	ULONGLONG totalBytesRead = 0;
-	HINTERNET hSession = nullptr;
-	HINTERNET hConnect = nullptr;
-	HINTERNET hRequest = nullptr;
-	auto close_winhttp_handles = [&]()
-	{
-		if (hRequest)
-		{
-			WinHttpCloseHandle(hRequest);
-			hRequest = nullptr;
-		}
-		if (hConnect)
-		{
-			WinHttpCloseHandle(hConnect);
-			hConnect = nullptr;
-		}
-		if (hSession)
-		{
-			WinHttpCloseHandle(hSession);
-			hSession = nullptr;
-		}
-	};
-
-	bool downloadSucceeded = false;
-	do
-	{
-		URL_COMPONENTS urlComponents = {};
-		urlComponents.dwStructSize = sizeof(urlComponents);
-		urlComponents.dwSchemeLength = static_cast<DWORD>(-1);
-		urlComponents.dwHostNameLength = static_cast<DWORD>(-1);
-		urlComponents.dwUrlPathLength = static_cast<DWORD>(-1);
-		urlComponents.dwExtraInfoLength = static_cast<DWORD>(-1);
-		if (!WinHttpCrackUrl(url.c_str(), static_cast<DWORD>(url.size()), 0, &urlComponents))
-		{
-			NATIVE_TRACE("err: crack album art url failed, gle=%lu\n", GetLastError());
-			break;
-		}
-
-		if (urlComponents.nScheme != INTERNET_SCHEME_HTTP && urlComponents.nScheme != INTERNET_SCHEME_HTTPS)
-		{
-			NATIVE_TRACE("err: unsupported album art url scheme=%d\n", urlComponents.nScheme);
-			break;
-		}
-
-		std::wstring host(urlComponents.lpszHostName, urlComponents.dwHostNameLength);
-		std::wstring requestPath(urlComponents.lpszUrlPath, urlComponents.dwUrlPathLength);
-		if (requestPath.empty())
-			requestPath = L"/";
-		if (urlComponents.dwExtraInfoLength > 0)
-			requestPath.append(urlComponents.lpszExtraInfo, urlComponents.dwExtraInfoLength);
-
-		NATIVE_TRACE("info: establishing connection with ncm server\n");
-		hSession = WinHttpOpen(
-			L"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
-			WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
-			WINHTTP_NO_PROXY_NAME,
-			WINHTTP_NO_PROXY_BYPASS,
-			0);
-		if (!hSession)
-		{
-			NATIVE_TRACE("err: open winhttp session failed, gle=%lu\n", GetLastError());
-			break;
-		}
-
-		hConnect = WinHttpConnect(hSession, host.c_str(), urlComponents.nPort, 0);
-		if (!hConnect)
-		{
-			NATIVE_TRACE("err: connect album art host failed, gle=%lu\n", GetLastError());
-			break;
-		}
-
-		DWORD requestFlags = urlComponents.nScheme == INTERNET_SCHEME_HTTPS ? WINHTTP_FLAG_SECURE : 0;
-		hRequest = WinHttpOpenRequest(
-			hConnect,
-			L"GET",
-			requestPath.c_str(),
-			nullptr,
-			WINHTTP_NO_REFERER,
-			WINHTTP_DEFAULT_ACCEPT_TYPES,
-			requestFlags);
-		if (!hRequest)
-		{
-			NATIVE_TRACE("err: open album art request failed, gle=%lu\n", GetLastError());
-			break;
-		}
-
-		static constexpr wchar_t cacheHeaders[] = L"Cache-Control: no-cache\r\nPragma: no-cache\r\n";
-		if (!WinHttpSendRequest(
-			hRequest,
-			cacheHeaders,
-			static_cast<DWORD>(wcslen(cacheHeaders)),
-			WINHTTP_NO_REQUEST_DATA,
-			0,
-			0,
-			0))
-		{
-			NATIVE_TRACE("err: send album art request failed, gle=%lu\n", GetLastError());
-			break;
-		}
-
-		if (!WinHttpReceiveResponse(hRequest, nullptr))
-		{
-			NATIVE_TRACE("err: receive album art response failed, gle=%lu\n", GetLastError());
-			break;
-		}
-
-		DWORD statusCode = 0;
-		DWORD statusCodeSize = sizeof(statusCode);
-		if (WinHttpQueryHeaders(
-			hRequest,
-			WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
-			WINHTTP_HEADER_NAME_BY_INDEX,
-			&statusCode,
-			&statusCodeSize,
-			WINHTTP_NO_HEADER_INDEX)
-			&& (statusCode < 200 || statusCode >= 300))
-		{
-			NATIVE_TRACE("err: album art response status=%lu\n", statusCode);
-			break;
-		}
-
-		BYTE buf[4096];
-		DWORD nRead = 0;
-		bool readSucceeded = true;
-		do
-		{
-			if (!WinHttpReadData(hRequest, buf, sizeof(buf), &nRead))
-			{
-				NATIVE_TRACE("err: read album art response failed, gle=%lu\n", GetLastError());
-				readSucceeded = false;
-				nRead = 0;
-				break;
-			}
-
-			if (nRead == 0)
-				break;
-
-			totalBytesRead += nRead;
-			file->Write(buf, nRead);
-		} while (nRead > 0);
-
-		downloadSucceeded = readSucceeded && totalBytesRead > 0;
-	} while (false);
-
-	close_winhttp_handles();
-	if (!downloadSucceeded)
-	{
-		return nullptr;
-	}
-
-	NATIVE_TRACE("info: downloaded %llu bytes\n", totalBytesRead);
-
-	file->SeekToBegin();
-	void* pBufStart = nullptr;
-	void* pBufMax = nullptr;
-	if (!file->GetReadBuffer(&pBufStart, &pBufMax))
-	{
-		NATIVE_TRACE("err: get album art memory buffer failed\n");
-		return nullptr;
-	}
-	return CopyImageBufferToManagedArray(static_cast<BYTE*>(pBufStart), file->GetLength());
-}
-
 array<System::Byte>^ MusicPlayerLibrary::MusicPlayerNative::get_id3_album_art_stream(const int stream_index)
 {
 	if (!format_context) return nullptr;
@@ -577,25 +406,10 @@ array<System::Byte>^ MusicPlayerLibrary::MusicPlayerNative::get_id3_album_art_st
 		static_cast<ULONGLONG>(pkt.size));
 }
 
-void MusicPlayerLibrary::MusicPlayerNative::download_ncm_album_art_async(const std::wstring& url)
+void MusicPlayerLibrary::MusicPlayerNative::require_download_ncm_album_art(const std::wstring& url)
 {
-	if (album_art_worker_thread.joinable())
-	{
-		album_art_worker_thread.request_stop();
-		album_art_worker_thread.join();
-	}
-
-	album_art_worker_thread = std::jthread([this, url](std::stop_token stop_token)
-		{
-			if (stop_token.stop_requested())
-				return;
-
-			array<System::Byte>^ imageBytes = download_ncm_album_art(url);
-			if (stop_token.stop_requested())
-				return;
-
-			managed_music_player->ProcessAlbumArtEvent(imageBytes);
-		});
+	managed_music_player->ProcessEvent(MPL_PLAYER_NCM_REQUIRE_ALBUM_ART_DOWNLOAD, 
+		gcnew System::String(url.c_str()));
 }
 
 void MusicPlayerLibrary::MusicPlayerNative::read_metadata()
@@ -2288,16 +2102,8 @@ void MusicPlayerLibrary::MusicPlayerNative::Pause()
 	}
 }
 
-
-
 MusicPlayerLibrary::MusicPlayerNative::~MusicPlayerNative()
 {
-	if (album_art_worker_thread.joinable())
-	{
-		album_art_worker_thread.request_stop();
-		album_art_worker_thread.join();
-	}
-
 	if (playback_state.load() == audio_playback_state_playing) {
 		user_request_stop.store(true);
 		stop_audio_playback(-1);
@@ -2375,6 +2181,10 @@ void MusicPlayerLibrary::MusicPlayer::ProcessEventCore(Object^ stateObj)
 	case MPL_PLAYER_ALBUM_ART_INIT:
 		if (OnPlayerAlbumArtInit)
 			OnPlayerAlbumArtInit(safe_cast<array<Byte>^>(encoded_payload));
+		break;
+	case MPL_PLAYER_NCM_REQUIRE_ALBUM_ART_DOWNLOAD:
+		if (OnPlayerNcmRequireAlbumArtDownload)
+			OnPlayerNcmRequireAlbumArtDownload(safe_cast<String^>(encoded_payload));
 		break;
 	case MPL_PLAYER_START:
 		if (OnPlayerStart)

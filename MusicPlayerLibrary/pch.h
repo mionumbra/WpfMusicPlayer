@@ -49,18 +49,19 @@
 #include <cinttypes>
 #include <cmath>
 
+#if !defined(WIN32_LEAN_AND_MEAN)
+#define WIN32_LEAN_AND_MEAN
+#endif
 #include <windows.h>
 #include <avrt.h>
 #include <faudio.h>
 #include <shlwapi.h>
-#include <winhttp.h>
 
 #include <roapi.h>
 #include <SystemMediaTransportControlsInterop.h>
 #include <winstring.h>
 
 #pragma comment(lib, "runtimeobject.lib")
-#pragma comment(lib, "winhttp.lib")
 
 #if defined(__cplusplus)
 extern "C" {

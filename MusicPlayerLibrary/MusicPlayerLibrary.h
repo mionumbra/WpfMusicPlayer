@@ -36,8 +36,9 @@ namespace MusicPlayerLibrary {
 		MPL_PLAYER_PAUSE = 103,
 		MPL_PLAYER_STOP = 104,
 		MPL_PLAYER_ALBUM_ART_INIT = 105,
-		MPL_PLAYER_DESTROY = 106,
-		MPL_PLAYER_ERROR = 107
+		MPL_PLAYER_NCM_REQUIRE_ALBUM_ART_DOWNLOAD = 106,
+		MPL_PLAYER_DESTROY = 107,
+		MPL_PLAYER_ERROR = 108
 	};
 
 	ref class MusicPlayer;
@@ -104,7 +105,6 @@ namespace MusicPlayerLibrary {
 		std::jthread audio_player_worker_thread;
 		std::jthread audio_decoder_worker_thread;
 		std::jthread audio_equalizer_worker_thread;
-		std::jthread album_art_worker_thread;
 
 		std::list<FAudioBuffer*> faudio_playing_buffers = {};
 		std::list<FAudioBuffer*> faudio_free_buffers = {};
@@ -133,9 +133,8 @@ namespace MusicPlayerLibrary {
 		void release_audio_context();
 		void reset_audio_context();
 		bool is_audio_context_initialized();
-		static array<System::Byte>^ download_ncm_album_art(const std::wstring& url);
 		array<System::Byte>^ get_id3_album_art_stream(int stream_index);
-		void download_ncm_album_art_async(const std::wstring& url);
+		void require_download_ncm_album_art(const std::wstring& url);
 		void read_metadata();
 
 		// playback area
@@ -260,6 +259,7 @@ namespace MusicPlayerLibrary {
 	public delegate void PlayerTimeChangeDelegate(double time);
 	public delegate void PlayerDestroyDelegate();
 	public delegate void PlayerErrorDelegate(System::Exception^ exception);
+	public delegate void PlayerNcmRequireAlbumArtDownloadDelegate(String^ url);
 
 	public ref class MusicPlayer:
 		System::ICloneable, System::IDisposable
@@ -275,7 +275,8 @@ namespace MusicPlayerLibrary {
 		property PlayerTimeChangeDelegate^ OnPlayerTimeChange;
 		property PlayerDestroyDelegate^ OnPlayerDestroy;
 		property PlayerErrorDelegate^ OnPlayerError;
-	public:
+		property PlayerNcmRequireAlbumArtDownloadDelegate^ OnPlayerNcmRequireAlbumArtDownload;
+		
 		MusicPlayer();
 		MusicPlayer(int sample_rate);
 

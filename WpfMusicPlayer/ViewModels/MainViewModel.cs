@@ -33,6 +33,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
     private readonly ISmtcService _smtcService;
     private readonly ISongDatabaseService _songDatabase;
     private readonly ICommandLineParser _commandLineParser;
+    private readonly Func<INcmAlbumArtDownloader> _ncmAlbumArtDownloaderFactory;
     private readonly SynchronizationContext _syncContext;
     private readonly Random _shuffleRandom = new();
     private readonly Stack<string> _shuffleHistory = new();
@@ -65,6 +66,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
         ISmtcService smtcService,
         ISongDatabaseService songDatabase,
         ICommandLineParser commandLineParser,
+        Func<INcmAlbumArtDownloader> ncmAlbumArtDownloaderFactory,
         PlaylistViewModel playlist,
         LyricsViewModel lyrics,
         DesktopLyricViewModel desktopLyric,
@@ -76,6 +78,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
         _smtcService = smtcService;
         _songDatabase = songDatabase;
         _commandLineParser = commandLineParser;
+        _ncmAlbumArtDownloaderFactory = ncmAlbumArtDownloaderFactory;
         _logger = logger;
         _previousLatencyMode = GCSettings.LatencyMode;
         _syncContext = SynchronizationContext.Current!;
@@ -621,7 +624,9 @@ public partial class MainViewModel : ObservableObject, IDisposable
         _musicPlayer.OnPlayerTimeChange += OnTimeChanged;
         _musicPlayer.OnPlayerFileInit += OnFileInit;
         _musicPlayer.OnPlayerAlbumArtInit += encodedImage =>
-            OnAlbumArtInit(encodedImage, albumArtVersion, albumArtMd5, albumArtFilePath);
+            ApplyIncomingAlbumArt(encodedImage, albumArtVersion, albumArtMd5, albumArtFilePath);
+        _musicPlayer.OnPlayerNcmRequireAlbumArtDownload += url =>
+            QueueNcmAlbumArtDownload(url, albumArtVersion, albumArtMd5, albumArtFilePath);
         _musicPlayer.OnPlayerStart += OnStart;
         _musicPlayer.OnPlayerPause += OnPause;
         _musicPlayer.OnPlayerStop += OnStop;
@@ -682,7 +687,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
             AddToPlaylist();
 
-            // 坑：UpdateMetadata会清除缩略图，对非NCM文件，FileInit总是晚于AlbumArtInit，导致设置的缩略图被清空
+            // 坑：UpdateMetadata会清除缩略图；内嵌封面通常早于 FileInit 到达，NCM 下载封面也可能早于此处完成。
             _smtcService.UpdateTextMetadata(SongTitle, ArtistName);
             var smtcAlbumArt = cached?.AlbumArt ?? _pendingAlbumArtPng;
             if (smtcAlbumArt is { Length: > 0 })
@@ -726,7 +731,41 @@ public partial class MainViewModel : ObservableObject, IDisposable
         }, null);
     }
 
-    private void OnAlbumArtInit(
+    private void QueueNcmAlbumArtDownload(
+        string? url,
+        int albumArtVersion,
+        string? albumArtMd5,
+        string? albumArtFilePath)
+    {
+        if (albumArtVersion != Volatile.Read(ref _albumArtVersion))
+            return;
+
+        _ = DownloadNcmAlbumArtAsync(url, albumArtVersion, albumArtMd5, albumArtFilePath);
+    }
+
+    private async Task DownloadNcmAlbumArtAsync(
+        string? url,
+        int albumArtVersion,
+        string? albumArtMd5,
+        string? albumArtFilePath)
+    {
+        try
+        {
+            var downloader = _ncmAlbumArtDownloaderFactory();
+            var encodedImage = await downloader.DownloadAsync(url ?? string.Empty).ConfigureAwait(false);
+            if (albumArtVersion != Volatile.Read(ref _albumArtVersion))
+                return;
+
+            ApplyIncomingAlbumArt(encodedImage, albumArtVersion, albumArtMd5, albumArtFilePath);
+        }
+        catch (Exception ex)
+        {
+            if (albumArtVersion == Volatile.Read(ref _albumArtVersion))
+                _logger.LogWarning(ex, "Failed to download NCM album art from {Url}", url);
+        }
+    }
+
+    private void ApplyIncomingAlbumArt(
         byte[]? encodedImage,
         int albumArtVersion,
         string? albumArtMd5,
@@ -746,7 +785,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 {
                     albumArtPng = cached.AlbumArt;
                     ApplyCachedAlbumArt(albumArtPng, albumArtVersion);
-                    _logger.LogInformation("Cached MD5 hit, discarding native album art stream");
+                    _logger.LogInformation("Cached MD5 hit, discarding incoming album art stream");
                 }
                 else
                 {
