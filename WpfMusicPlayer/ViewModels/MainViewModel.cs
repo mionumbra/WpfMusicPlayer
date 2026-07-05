@@ -981,8 +981,8 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
         if (CurrentPlayMode == PlayMode.SingleLoop)
         {
-            _logger.LogInformation("Single Loop triggered, playing current song");
-            PlaySongByPath(items[currentIndex].FilePath);
+            _logger.LogInformation("Single Loop triggered, restarting current song from beginning");
+            _ = RestartCurrentSongFromBeginningAsync();
             return;
         }
 
@@ -1051,8 +1051,8 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
         if (CurrentPlayMode == PlayMode.SingleLoop)
         {
-            _logger.LogInformation("Single Loop triggered, playing current song");
-            PlaySongByPath(items[curIndex].FilePath);
+            _logger.LogInformation("Single Loop triggered, restarting current song from beginning");
+            _ = RestartCurrentSongFromBeginningAsync();
             return;
         }
 
@@ -1084,8 +1084,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
         switch (CurrentPlayMode)
         {
             case PlayMode.SingleLoop:
-                if (_currentFilePath != null)
-                    PlaySongByPath(_currentFilePath);
+                _ = RestartCurrentSongFromBeginningAsync();
                 break;
             case PlayMode.Sequential:
             case PlayMode.ListLoop:
@@ -1094,6 +1093,49 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 break;
             default:
                 throw new ArgumentOutOfRangeException();
+        }
+    }
+
+    private async Task RestartCurrentSongFromBeginningAsync()
+    {
+        var filePath = _currentFilePath;
+        if (filePath is null)
+        {
+            _logger.LogInformation("Single Loop triggered without current file path, ignoring");
+            return;
+        }
+
+        var player = _musicPlayer;
+        if (!player.IsInitialized())
+        {
+            _logger.LogInformation("Single Loop fallback: player is not initialized, reopening current song");
+            PlaySongByPath(filePath);
+            return;
+        }
+
+        _logger.LogInformation("Single Loop triggered, seeking current song to beginning");
+        _playCountIncrementedForCurrentSong = false;
+        IsDraggingSlider = true;
+
+        try
+        {
+            await Task.Run(() => player.SeekToPosition(0, true));
+            if (_isDisposed || !ReferenceEquals(player, _musicPlayer) || filePath != _currentFilePath)
+                return;
+
+            ProgressValue = 0;
+            CurrentTime = "0:00";
+            Lyrics.UpdateLyricProgress(0);
+            player.Start();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to restart current song from beginning");
+            OnPlayerError(ex);
+        }
+        finally
+        {
+            IsDraggingSlider = false;
         }
     }
 

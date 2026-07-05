@@ -332,18 +332,9 @@ namespace MusicPlayerLibrary {
 			throw gcnew System::NotSupportedException("This object cannot be cloned.");
 		}
 
-		~MusicPlayer() {
-			delete native_handle;
-			native_handle = nullptr;
-			OnPlayerFileInit = nullptr;
-			OnPlayerAlbumArtInit = nullptr;
-			OnPlayerStart = nullptr;
-			OnPlayerPause = nullptr;
-			OnPlayerStop = nullptr;
-			OnPlayerTimeChange = nullptr;
-			OnPlayerDestroy = nullptr;
-			OnPlayerError = nullptr;
-		}
+		~MusicPlayer();
+
+		!MusicPlayer();
 	};
 
 	public ref class SmtcInteropHelper abstract sealed

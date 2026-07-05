@@ -17,6 +17,9 @@ NativeTraceRedirect::NativeTraceRedirect(System::Object^ loggerObj)
     , timestamp_enable(true)
     , info_enable(true)
 {
+    System::Type^ loggerType = logger->GetType();
+    array<System::Type^>^ paramTypes = gcnew array<System::Type^>(1) { System::String::typeid };
+    logMethod = loggerType->GetMethod("LogInformation", paramTypes);
 }
 
 NativeTraceRedirect::~NativeTraceRedirect()
@@ -102,16 +105,11 @@ void NativeTraceRedirect::write_log(const char* file_name_full, int line_num, co
         log_line.pop_back();
     }
 
-    System::String^ managedLog = gcnew System::String(log_line.c_str(),
+    auto managedLog = gcnew System::String(log_line.c_str(),
         0, static_cast<int>(log_line.size()), System::Text::Encoding::UTF8);
-
-    System::Type^ loggerType = logger->GetType();
-    array<System::Type^>^ paramTypes = gcnew array<System::Type^>(1) { System::String::typeid };
-    System::Reflection::MethodInfo^ logMethod = loggerType->GetMethod("LogInformation", paramTypes);
-
-    if (logMethod != nullptr)
+    if (logMethod)
     {
-        array<System::Object^>^ args = gcnew array<System::Object^>(1) { managedLog };
+        auto args = gcnew array<System::Object^>(1) { managedLog };
         logMethod->Invoke(logger, args);
     }
 }

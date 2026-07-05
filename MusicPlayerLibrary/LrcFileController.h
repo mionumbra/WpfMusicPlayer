@@ -161,7 +161,7 @@ public:
 
 	LrcMultiNode(int t, const std::vector<std::string>& texts,
 		LrcLanguageHelper::LanguageClassification classification,
-		std::vector<LrcLanguageHelper::LanguageType> recommend_slot);
+		const std::vector<LrcLanguageHelper::LanguageType>& recommend_slot);
 
 	[[nodiscard]] int get_lrc_str_count() const override {
 		return str_count;
@@ -285,6 +285,7 @@ public:
 	System::String^ ParseLrcToIntermediateJson(System::String^ lrcString);
 
 	~LrcFileController();
+	!LrcFileController();
 };
 	
 }
