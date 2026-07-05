@@ -76,7 +76,7 @@ int MusicPlayerLibrary::MusicPlayerNative::read_func(uint8_t* buf, int buf_size)
 	int gcount = static_cast<int>(file_stream->Read(buf, buf_size));
 	if (gcount == 0) {
 		file_stream_end = true;
-		return -1;
+		return AVERROR_EOF;
 	}
 	return gcount;
 }
@@ -95,9 +95,9 @@ int64_t MusicPlayerLibrary::MusicPlayerNative::seek_func(int64_t offset, int whe
 	case SEEK_SET: origin = FileSeekOrigin::Begin; break;
 	case SEEK_CUR: origin = FileSeekOrigin::Current; break;
 	case SEEK_END: origin = FileSeekOrigin::End; break;
-	default: return -1; // unsupported
+	default: return AVERROR(EINVAL); // unsupported
 	}
-	ULONGLONG pos = file_stream->Seek(offset, origin);
+	uint64_t pos = file_stream->Seek(offset, origin);
 	return static_cast<int64_t>(pos);
 }
 
@@ -811,12 +811,9 @@ void MusicPlayerLibrary::MusicPlayerNative::audio_playback_worker_thread()
 
 			if (fifo_size == 0 && state.BuffersQueued > 0)
 			{
-				NATIVE_TRACE("info: file stream ended, waiting for xaudio2 flush buffer\n");
 				std::this_thread::sleep_for(std::chrono::milliseconds(1));
 				FAudioSourceVoice_GetState(source_voice, &state, 0);
 				elapsed_time = static_cast<float>(state.SamplesPlayed - base_offset) * 1.0f / static_cast<float>(wfx.nSamplesPerSec) + static_cast<float>(pts_seconds);
-				NATIVE_TRACE("info: samples played=%lld, elapsed time=%lf\n",
-					state.SamplesPlayed, elapsed_time.load());
 
 				managed_music_player->ProcessEvent(MPL_PLAYER_TIME_CHANGE, elapsed_time.load());
 				// AfxGetMainWnd()->PostMessage(WM_PLAYER_TIME_CHANGE, raw);
@@ -1497,6 +1494,14 @@ void MusicPlayerLibrary::MusicPlayerNative::stop_audio_playback(int mode)
 		{
 			UNREFERENCED_PARAMETER(FAudioSourceVoice_Stop(source_voice, 0, FAUDIO_COMMIT_NOW));
 			UNREFERENCED_PARAMETER(FAudioSourceVoice_FlushSourceBuffers(source_voice));
+			
+			FAudioVoiceState state;
+			FAudioSourceVoice_GetState(source_voice, &state, 0);
+			
+			while (state.BuffersQueued > 0)
+			{
+				FAudioSourceVoice_GetState(source_voice, &state, 0);
+			}
 		}
 	}
 	// Stop decoder after playback thread exits; pause/reset can then rebuild FIFO
@@ -2350,6 +2355,36 @@ void MusicPlayerLibrary::MusicPlayer::SetEqualizerBand(int index, int value)
 {
 	check_if_null();
 	native_handle->SetEqualizerBand(index, value);
+}
+
+MusicPlayerLibrary::MusicPlayer::~MusicPlayer()
+{
+	delete native_handle;
+	native_handle = nullptr;
+	OnPlayerFileInit = nullptr;
+	OnPlayerAlbumArtInit = nullptr;
+	OnPlayerStart = nullptr;
+	OnPlayerPause = nullptr;
+	OnPlayerStop = nullptr;
+	OnPlayerTimeChange = nullptr;
+	OnPlayerDestroy = nullptr;
+	OnPlayerError = nullptr;
+	System::GC::SuppressFinalize(this);
+}
+
+void MusicPlayerLibrary::MusicPlayer::!MusicPlayer()
+{
+	if (native_handle)
+		delete native_handle;
+	native_handle = nullptr;
+	OnPlayerFileInit = nullptr;
+	OnPlayerAlbumArtInit = nullptr;
+	OnPlayerStart = nullptr;
+	OnPlayerPause = nullptr;
+	OnPlayerStop = nullptr;
+	OnPlayerTimeChange = nullptr;
+	OnPlayerDestroy = nullptr;
+	OnPlayerError = nullptr;
 }
 
 int MusicPlayerLibrary::MusicPlayer::CopyAudioFFTData(array<float>^ destination)

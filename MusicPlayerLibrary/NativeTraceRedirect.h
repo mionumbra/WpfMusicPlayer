@@ -44,6 +44,8 @@ private:
     std::string format_message_va(const char* format, va_list args);
 
     gcroot<System::Object^> logger;
+    gcroot<System::Reflection::MethodInfo^> logMethod;
+
     bool enable_redirect;
     bool timestamp_enable;
     bool info_enable;

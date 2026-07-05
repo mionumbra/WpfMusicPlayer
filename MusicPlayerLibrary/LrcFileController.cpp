@@ -236,7 +236,7 @@ bool TrySplitBracketInlineTranslation(const std::string& text, std::string& orig
         }
 
         std::string after_marker = TrimWhitespace(std::string_view(inner).substr(TranslationMarker.size()));
-        size_t colon_size = 0;
+        size_t colon_size;
         if (StartsWith(after_marker, ":"))
             colon_size = 1;
         else if (StartsWith(after_marker, FullWidthColon))
@@ -318,7 +318,7 @@ std::vector<std::string> SplitLrcForProgressMultiNode2(const std::vector<std::st
 
 LrcMultiNode::LrcMultiNode(int t, const std::vector<std::string>& texts, 
     LrcLanguageHelper::LanguageClassification classification,
-    std::vector<LrcLanguageHelper::LanguageType> recommend_slot) :
+    const std::vector<LrcLanguageHelper::LanguageType>& recommend_slot) :
     LrcAbstractNode(t), str_count(static_cast<int>(texts.size())), lrc_texts(texts)
 {
     for (int i = 0; i < str_count; ++i)
@@ -705,7 +705,7 @@ LrcLanguageHelper::extract_song_features(const std::vector<LrcLanguageHelper::La
     song_sample_type feat(84, 1); 
     feat = 0;
 
-    // 语言计数
+    // language count map
     std::vector count(LANGS, 0);
     for (auto& s : seq)
     {
@@ -722,16 +722,16 @@ LrcLanguageHelper::extract_song_features(const std::vector<LrcLanguageHelper::La
 
     int idx = 0;
 
-    // 语言计数（8维）
+    // language count (8 rows)
     for (int i = 0; i < LANGS; i++)
         feat(idx++) = count[i];
 
-    // 语言比例（8维）
+    // language proportion (8 rows)
     double total = seq.size();
     for (int i = 0; i < LANGS; i++)
         feat(idx++) = count[i] / total;
 
-    // bigram矩阵（64维）
+    // bigram matrix (64 rows)
     std::vector trans(LANGS, std::vector(LANGS, 0));
     for (size_t i = 1; i < seq.size(); i++)
     {
@@ -756,21 +756,25 @@ LrcLanguageHelper::extract_song_features(const std::vector<LrcLanguageHelper::La
         for (int j = 0; j < LANGS; j++)
             feat(idx++) = trans[i][j];
 
-    // 语言切换次数（1维）
+    // language switching count (1 row)
     int switches = 0;
     for (size_t i = 1; i < seq.size(); i++)
         if (seq[i] != seq[i - 1])
             switches++;
     feat(idx++) = switches;
 
-    // 是否包含翻译（1维）
-    feat(idx++) = count[0] > 0 && (count[1] > 0 || count[2] > 0 || count[3] > 0);
+    // translation included? (1 row)
+    feat(idx++) = count[0] > 0 && 
+        (count[1] > 0 
+            || count[2] > 0 
+            || count[3] > 0 
+            || count[4] > 0);
 
-    // 是否包含罗马音（1维）
-    feat(idx++) = count[6] > 0;
+    // jyutping included? (1 row)
+    feat(idx++) = count[5] > 0;
 
-    // 是否包含粤拼（1维）
-    feat(idx) = count[5] > 0;
+    // romaji included? (1 row)
+    feat(idx) = count[6] > 0;
 
     return feat;
 }
@@ -1206,19 +1210,30 @@ void LrcFileControllerNative::parse_lrc_file_stream(IFile* file_stream)
                 lyric_text = TrimWhitespace(std::string_view(lyric_text).substr(time_tag_end_index_multi + 1));
                 continue;
             }
-            int minutes = std::stoi(m[1].str());
-            int seconds = std::stoi(m[2].str());
+            // fix issue #51, problem H2
+            // previously, empty milliseconds part can break the decoding pipeline.
+            // proceed with std::invalid_argument manually.
+            auto try_to_stoi = [](const std::string& str, const int default_value = 0)
+            {
+                try { return std::stoi(str); }
+                catch (std::invalid_argument) { return default_value; }
+            };
+            int minutes = try_to_stoi(m[1].str());
+            int seconds = try_to_stoi(m[2].str());
             std::string milliseconds_str = m[3].str();
-            int milliseconds = std::stoi(milliseconds_str);
-            if (milliseconds_str.size() < 3)
+            int milliseconds = try_to_stoi(milliseconds_str);
+            if (milliseconds != 0)
             {
-                auto multiples = 3 - milliseconds_str.size();
-                milliseconds *= std::floor(pow(10, multiples));
-            }
-            if (milliseconds_str.size() >= 4)
-            {
-                auto multiples = milliseconds_str.size() - 3;
-                milliseconds /= std::floor(pow(10, multiples));
+                if (milliseconds_str.size() < 3)
+                {
+                    auto multiples = 3 - milliseconds_str.size();
+                    milliseconds *= std::floor(pow(10, multiples));
+                }
+                if (milliseconds_str.size() >= 4)
+                {
+                    auto multiples = milliseconds_str.size() - 3;
+                    milliseconds /= std::floor(pow(10, multiples));
+                }
             }
             int total_ms_multi = minutes * 60000 + seconds * 1000 + milliseconds;
             if (total_ms_multi < 0) total_ms_multi = 0;
@@ -1562,6 +1577,14 @@ System::String^ LrcFileController::ParseLrcToIntermediateJson(System::String^ lr
 LrcFileController::~LrcFileController()
 {
     delete native_handle;
+    native_handle = nullptr;
+    System::GC::SuppressFinalize(this);
+}
+
+void LrcFileController::!LrcFileController()
+{
+    if (native_handle)
+        delete native_handle;
     native_handle = nullptr;
 }
 
