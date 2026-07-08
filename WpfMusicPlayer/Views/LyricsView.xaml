@@ -520,7 +520,7 @@
                             <Setter.Value>
                                 <ControlTemplate TargetType="Button">
                                     <Border x:Name="Bg" Background="{TemplateBinding Background}" CornerRadius="5">
-                                        <TextBlock x:Name="BtnText" Text="あ" FontSize="18" Foreground="{TemplateBinding Foreground}"
+                                        <TextBlock x:Name="BtnText" Text="{Binding RomanjiButtonContent}" FontSize="18" Foreground="{TemplateBinding Foreground}"
                                                    HorizontalAlignment="Center" VerticalAlignment="Center"/>
                                     </Border>
                                     <ControlTemplate.Triggers>

@@ -100,6 +100,7 @@ public:
 class LrcAbstractNode {
 protected:
 	int time_ms;            // time in milliseconds
+	int explicit_end_time_ms = 0;
 public:
 	explicit LrcAbstractNode(int time) : time_ms(time) {}
 	virtual ~LrcAbstractNode() = default;
@@ -108,7 +109,7 @@ public:
 	virtual int get_lrc_str_at(int index, std::string& out_str) const = 0;
 	[[nodiscard]] virtual LrcAuxiliaryInfoNative get_auxiliary_info(int index) const = 0;
 	[[nodiscard]] virtual LrcLanguageHelper::LanguageType get_language_type(int index) const;
-	[[nodiscard]] virtual int get_intrinsic_end_time_ms() const { return time_ms; }
+	[[nodiscard]] virtual int get_intrinsic_end_time_ms() const { return explicit_end_time_ms > 0 ? explicit_end_time_ms : time_ms; }
 	[[nodiscard]] virtual int get_controller_node_count(int line_index) const { return 0; }
 	virtual int get_controller_node_at(
 		int line_index,
@@ -116,7 +117,8 @@ public:
 		int& start_time_ms,
 		int& end_time_ms,
 		std::string& out_str) const { return -1; }
-	virtual void set_lrc_end_timestamp(int end_time_ms) { }
+	virtual void set_lrc_end_timestamp(int end_time_ms) { explicit_end_time_ms = end_time_ms; }
+	[[nodiscard]] virtual bool is_progress_node() const { return false; }
 
 	bool operator<(const LrcAbstractNode& other) const {
 		return time_ms < other.time_ms;
@@ -221,6 +223,7 @@ public:
 		int& end_time_ms,
 		std::string& out_str) const override;
 	void set_lrc_end_timestamp(int time_ms) override { this->end_time_ms = time_ms; }
+	[[nodiscard]] bool is_progress_node() const override { return true; }
 };
 
 class LrcProgressMultiNode final:
@@ -257,11 +260,14 @@ public:
 class LrcFileControllerNative {
 	std::vector<LrcAbstractNode*> lrc_nodes;
 	int lrc_offset_ms = 0;
+	int song_end_time_ms = 0;
+	std::string romanization_schema{};
 	struct
 	{
 		std::string artist, album, author, by, title;
 	} metadata;
 public:
+	explicit LrcFileControllerNative(int song_end_time_ms = 0);
 	~LrcFileControllerNative();
 	void parse_lrc_file_stream(IFile* file_stream);
 	void clear_lrc_nodes();
@@ -281,6 +287,7 @@ public ref class LrcFileController:
 
 public:
 	LrcFileController();
+	LrcFileController(int songEndTimeMs);
 
 	System::String^ ParseLrcToIntermediateJson(System::String^ lrcString);
 

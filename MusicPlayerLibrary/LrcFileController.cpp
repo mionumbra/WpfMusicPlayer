@@ -78,6 +78,19 @@ const char* LanguageTypeToString(LrcLanguageHelper::LanguageType type)
     }
 }
 
+std::string RomanizationSchemaFromClassification(LrcLanguageHelper::LanguageClassification classification)
+{
+    using LC = LrcLanguageHelper::LanguageClassification;
+    switch (classification)
+    {
+    case LC::zh_jyut: return "jyutping";
+    case LC::jp_roma: case LC::jp_zh_trans_roma:
+    case LC::kr_roma: case LC::kr_zh_trans_roma: return "romaji";
+    default: return std::string{};    
+    }
+    
+}
+
 template <typename TWriter>
 void WriteMetadataField(TWriter& writer, const char* key, const std::string& value)
 {
@@ -1034,6 +1047,11 @@ LrcProgressMultiNode::LrcProgressMultiNode
     LrcMultiNode(t, SplitLrcForProgressMultiNode2(str_arr_2), classification, recommend_slot),
     LrcProgressNode(t, str_arr_2[SelectBestControllerLine(str_arr_2)], SelectBestControllerLine(str_arr_2)) { }
 
+LrcFileControllerNative::LrcFileControllerNative(int song_end_time_ms)
+    : song_end_time_ms(song_end_time_ms)
+{
+}
+
 LrcFileControllerNative::~LrcFileControllerNative()
 {
     clear_lrc_nodes();
@@ -1310,6 +1328,7 @@ void LrcFileControllerNative::parse_lrc_file_stream(IFile* file_stream)
         for (const auto& single_line_tag : multi_line_tag)
             lang_types.push_back(single_line_tag);
     auto classification = detector_instance.detect_song_language_classification(lang_types);
+    romanization_schema = RomanizationSchemaFromClassification(classification);
     NATIVE_TRACE("info: detected classification = %d\n", classification);
     auto slot_type = detector_instance.detect_language_slot(lang_types_node_seq);
     
@@ -1327,7 +1346,7 @@ void LrcFileControllerNative::parse_lrc_file_stream(IFile* file_stream)
             return;
         if (LrcAbstractNode* node = LrcNodeFactory::CreateLrcNode(recorded_ms, lrc_texts, classification, slot_type))
         {
-            if (!lrc_nodes.empty())
+            if (!lrc_nodes.empty() && !lrc_nodes.back()->is_progress_node())
             {
                 lrc_nodes[lrc_nodes.size() - 1]->set_lrc_end_timestamp(recorded_ms);
             }
@@ -1356,6 +1375,13 @@ void LrcFileControllerNative::parse_lrc_file_stream(IFile* file_stream)
     // 处理最后一组
     if (!lyrics_in_ms.empty())
         pump_stack();
+
+    if (!lrc_nodes.empty()
+        && !lrc_nodes.back()->is_progress_node()
+        && song_end_time_ms > lrc_nodes.back()->get_time_ms())
+    {
+        lrc_nodes.back()->set_lrc_end_timestamp(song_end_time_ms);
+    }
 }
 
 void LrcFileControllerNative::clear_lrc_nodes()
@@ -1374,7 +1400,12 @@ std::string LrcFileControllerNative::to_intermediate_json(bool pretty) const
     {
         writer.StartObject();
         writer.Key("format_version");
-        writer.Int(1);
+        writer.Int(2);
+        if (!romanization_schema.empty())
+        {
+            writer.Key("romanization_schema");
+            writer.String(romanization_schema.c_str());
+        }
         writer.Key("offset");
         writer.Int(lrc_offset_ms);
         writer.Key("metadata");
@@ -1391,14 +1422,22 @@ std::string LrcFileControllerNative::to_intermediate_json(bool pretty) const
         {
             const auto* node = lrc_nodes[i];
             const int start_ms = node->get_time_ms();
+            const int intrinsic_end_ms = node->get_intrinsic_end_time_ms();
             int end_ms = start_ms;
             if (i + 1 < static_cast<int>(lrc_nodes.size()))
             {
-                end_ms = lrc_nodes[i + 1]->get_time_ms();
+                const int next_start_ms = lrc_nodes[i + 1]->get_time_ms();
+                end_ms = next_start_ms;
+                if (node->is_progress_node()
+                    && intrinsic_end_ms > start_ms
+                    && intrinsic_end_ms < next_start_ms)
+                {
+                    end_ms = intrinsic_end_ms;
+                }
             }
             else
             {
-                end_ms = std::max(start_ms, node->get_intrinsic_end_time_ms());
+                end_ms = std::max(start_ms, intrinsic_end_ms);
             }
             if (end_ms <= start_ms)
             {
@@ -1426,19 +1465,6 @@ std::string LrcFileControllerNative::to_intermediate_json(bool pretty) const
                 writer.StartObject();
                 writer.Key("role");
                 writer.String(AuxInfoToRole(aux_info));
-                if (aux_info == LrcAuxiliaryInfoNative::Romanization)
-                {
-                    if (language == LrcLanguageHelper::LanguageType::jyut)
-                    {
-                        writer.Key("scheme");
-                        writer.String("jyutping");
-                    }
-                    else if (language == LrcLanguageHelper::LanguageType::roma)
-                    {
-                        writer.Key("scheme");
-                        writer.String("romaji");
-                    }
-                }
                 if (controller_node_count > 0)
                 {
                     writer.Key("sync");
@@ -1551,6 +1577,11 @@ std::string LrcFileControllerNative::get_metadata_value(const std::string& str)
 LrcFileController::LrcFileController()
 {
     native_handle = new LrcFileControllerNative();
+}
+
+LrcFileController::LrcFileController(int songEndTimeMs)
+{
+    native_handle = new LrcFileControllerNative(songEndTimeMs);
 }
 
 void LrcFileController::check_if_null()

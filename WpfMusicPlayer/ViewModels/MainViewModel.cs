@@ -637,11 +637,11 @@ public partial class MainViewModel : ObservableObject, IDisposable
     {
         _smtcService.PlayRequested += () => _syncContext.Post(_ =>
         {
-            if (!_musicPlayer.IsPlaying()) PlayPause();
+            if (!_musicPlayer.IsPlaying()) PlayPause().ConfigureAwait(false);
         }, null);
         _smtcService.PauseRequested += () => _syncContext.Post(_ =>
         {
-            if (_musicPlayer.IsPlaying()) PlayPause();
+            if (_musicPlayer.IsPlaying()) PlayPause().ConfigureAwait(false);
         }, null);
         _smtcService.NextRequested += () => _syncContext.Post(_ => NextSongCommand.Execute(null), null);
         _smtcService.PreviousRequested += () => _syncContext.Post(_ => PrevSongCommand.Execute(null), null);
@@ -710,22 +710,29 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
             var offsetMs = cached?.CustomLyricOffsetMs ?? 0;
             _logger.LogInformation("OnFileInit: custom lyric offset: {OffsetMs}ms", offsetMs);
-            Lyrics.LoadLyrics(
+            float curSeekTime = _pendingSeekTime ?? 0.0f;
+            if (_pendingSeekTime is not null)
+            {
+                _logger.LogInformation("OnFileInit: applying pending seek to {SeekTime}s", curSeekTime);
+                _pendingSeekTime = null;
+                _musicPlayer.SeekToPosition(curSeekTime, true);
+                ProgressValue = curSeekTime;
+                CurrentTime = FormatTime(curSeekTime);
+            }
+
+            // let lyrics load in background
+            Lyrics.LoadLyricsAsync(
                 _currentFilePath,
                 customLyric,
                 _musicPlayer.GetSongTitle(),
                 _musicPlayer.GetMusicTimeLength(),
                 offsetMs,
-                customLyricSource);
-            if (_pendingSeekTime is { } seekTime)
-            {
-                _logger.LogInformation("OnFileInit: applying pending seek to {SeekTime}s", seekTime);
-                _pendingSeekTime = null;
-                _musicPlayer.SeekToPosition(seekTime, true);
-                ProgressValue = seekTime;
-                CurrentTime = FormatTime(seekTime);
-                Lyrics.UpdateLyricProgress(seekTime);
-            }
+                customLyricSource)
+                .ContinueWith(_ =>
+                {
+                    Lyrics.UpdateLyricProgress(curSeekTime);
+                }, TaskScheduler.FromCurrentSynchronizationContext())
+                .ConfigureAwait(false);
             if (_enableAutoPlay)
                 _musicPlayer.Start();
         }, null);
