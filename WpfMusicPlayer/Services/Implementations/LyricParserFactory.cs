@@ -21,13 +21,29 @@ public sealed class LyricParserFactory
 
     public IReadOnlyList<string> SupportedOpenExtensions { get; }
 
-    public string ParseToIntermediateJson(string input, string? sourcePath = null)
+    public string ParseToIntermediateJson(string input, string? sourcePath = null, int songEndTimeMs = 0)
     {
-        var source = new LyricParserSource(input, sourcePath);
+        return Parse(input, sourcePath, songEndTimeMs).IntermediateJson;
+    }
+
+    public LyricParseResult Parse(string input, string? sourcePath = null, int songEndTimeMs = 0)
+    {
+        var source = new LyricParserSource(input, sourcePath, songEndTimeMs);
         var parser = _parsers.FirstOrDefault(candidate => candidate.CanParse(source))
             ?? throw new InvalidOperationException("Unsupported lyric format.");
 
-        return parser.ParseToIntermediateJson(source);
+        return parser.Parse(source);
+    }
+
+    public async Task<string> ParseToIntermediateJsonAsync(string input, string? sourcePath = null, int songEndTimeMs = 0)
+    {
+        var result = await ParseAsync(input, sourcePath, songEndTimeMs);
+        return result.IntermediateJson;
+    }
+
+    public async Task<LyricParseResult> ParseAsync(string input, string? sourcePath = null, int songEndTimeMs = 0)
+    {
+        return await Task.Run(() => Parse(input, sourcePath, songEndTimeMs));
     }
 
     private static string NormalizeExtension(string extension)

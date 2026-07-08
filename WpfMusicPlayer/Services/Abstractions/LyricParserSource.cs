@@ -7,15 +7,18 @@ namespace WpfMusicPlayer.Services.Abstractions;
 
 public sealed class LyricParserSource
 {
-    public LyricParserSource(string input, string? sourcePath = null)
+    public LyricParserSource(string input, string? sourcePath = null, int songEndTimeMs = 0)
     {
         Input = input;
         SourcePath = sourcePath;
+        SongEndTimeMs = songEndTimeMs;
     }
 
     public string Input { get; }
 
     public string? SourcePath { get; }
+
+    public int SongEndTimeMs { get; }
 
     public string? EffectiveFilePath
     {

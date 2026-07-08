@@ -27,6 +27,8 @@ public partial class LyricsViewModel(
     LyricParserFactory lyricParserFactory) : ObservableObject
 {
     private const string WplrcExtension = ".wplrc";
+    private const string InterludeLyricText = "♪ ♪ ♪ ♪ ♪ ♪";
+    private const int InterludeLyricGapThresholdMs = 5000;
 
     private static readonly IReadOnlyDictionary<string, IReadOnlyList<string>> WplrcSaveFileTypeChoices =
         new Dictionary<string, IReadOnlyList<string>>
@@ -84,6 +86,13 @@ public partial class LyricsViewModel(
     [ObservableProperty]
     public partial bool HasRomanjiAvailable { get; private set; }
 
+    [ObservableProperty]
+    public partial RomanizationSchema CurrentRomanizationSchema { get; private set; } =
+        RomanizationSchema.ErrorOrNotEnabled;
+
+    public string RomanjiButtonContent =>
+        CurrentRomanizationSchema == RomanizationSchema.Jyutping ? "拼" : "あ";
+
     [RelayCommand]
     private void ToggleTranslation()
     {
@@ -116,6 +125,7 @@ public partial class LyricsViewModel(
         OnPropertyChanged(nameof(CurrentLyric));
         HasTranslationAvailable = false;
         HasRomanjiAvailable = false;
+        CurrentRomanizationSchema = RomanizationSchema.ErrorOrNotEnabled;
         ExportWplrcCommand.NotifyCanExecuteChanged();
     }
 
@@ -162,7 +172,7 @@ public partial class LyricsViewModel(
         Lyrics[CurrentLyricIndex].Progress = 0;
     }
 
-    public void LoadLyrics(
+    public async Task LoadLyricsAsync(
         string? filePath,
         string? suppliedLyric,
         string? songTitle,
@@ -177,6 +187,7 @@ public partial class LyricsViewModel(
         OnPropertyChanged(nameof(CurrentLyric));
         HasTranslationAvailable = false;
         HasRomanjiAvailable = false;
+        CurrentRomanizationSchema = RomanizationSchema.ErrorOrNotEnabled;
         _currentLyricDuration = songDuration;
         _lastPlaybackTimeSec = 0;
         _currentLyricOffsetMs = 0;
@@ -189,14 +200,14 @@ public partial class LyricsViewModel(
             try
             {
                 logger.LogInformation("LoadLyrics: found stored or embedded lyrics");
-                var intermediateLyricJson = ParseAndAddLocalLyric(suppliedLyric, offsetMs);
-                if (ShouldWriteBackSuppliedLyric(suppliedLyric, suppliedLyricSource))
+                var loadedLyric = await ParseAndAddLocalLyricAsync(suppliedLyric, offsetMs);
+                if (loadedLyric.ShouldWriteBack)
                 {
-                    RequestCurrentLyricWriteBack(intermediateLyricJson);
+                    RequestCurrentLyricWriteBack(loadedLyric.IntermediateLyricJson);
                 }
                 else
                 {
-                    logger.LogInformation("LoadLyrics: loaded intermediate lyric JSON from database cache; skipping write-back");
+                    logger.LogInformation("LoadLyrics: loaded current intermediate lyric JSON; skipping write-back");
                 }
                 return;
             }
@@ -212,8 +223,9 @@ public partial class LyricsViewModel(
             logger.LogInformation("LoadLyrics: found best match lyric file: {LyricPath}", lyricPath);
             try
             {
-                var intermediateLyricJson = ParseAndAddLocalLyric(lyricPath, offsetMs);
-                RequestCurrentLyricWriteBack(intermediateLyricJson);
+                var loadedLyric = await ParseAndAddLocalLyricAsync(lyricPath, offsetMs);
+                if (loadedLyric.ShouldWriteBack)
+                    RequestCurrentLyricWriteBack(loadedLyric.IntermediateLyricJson);
                 return;
             }
             catch (Exception ex)
@@ -228,8 +240,9 @@ public partial class LyricsViewModel(
             logger.LogInformation("LoadLyrics: fallback to exact lyric path: {LyricPath}", exactLyricPath);
             try
             {
-                var intermediateLyricJson = ParseAndAddLocalLyric(exactLyricPath, offsetMs);
-                RequestCurrentLyricWriteBack(intermediateLyricJson);
+                var loadedLyric = await ParseAndAddLocalLyricAsync(exactLyricPath, offsetMs);
+                if (loadedLyric.ShouldWriteBack)
+                    RequestCurrentLyricWriteBack(loadedLyric.IntermediateLyricJson);
                 return;
             }
             catch (InvalidOperationException ex)
@@ -245,6 +258,11 @@ public partial class LyricsViewModel(
     partial void OnCurrentLyricIndexChanged(int value)
     {
         OnPropertyChanged(nameof(CurrentLyric));
+    }
+
+    partial void OnCurrentRomanizationSchemaChanged(RomanizationSchema value)
+    {
+        OnPropertyChanged(nameof(RomanjiButtonContent));
     }
 
     private double CalculateLinearLyricProgress(int index, double currentTimeSec)
@@ -268,16 +286,22 @@ public partial class LyricsViewModel(
         return Math.Clamp(elapsedMs / (endMs - startMs), 0, 1);
     }
 
-    private string ParseAndAddLocalLyric(string content, int offsetMs)
+    private async Task<LocalLyricLoadResult> ParseAndAddLocalLyricAsync(string content, int offsetMs)
     {
         Lyrics.Clear();
         _lyricStates.Clear();
         _currentIntermediateLyricJson = null;
+        CurrentLyricIndex = -1;
+        OnPropertyChanged(nameof(CurrentLyric));
         ExportWplrcCommand.NotifyCanExecuteChanged();
 
-        var intermediateLyricJson = lyricParserFactory.ParseToIntermediateJson(content);
+        var parseResult = await lyricParserFactory.ParseAsync(
+            content,
+            songEndTimeMs: (int)Math.Round(_currentLyricDuration * 1000));
+        var intermediateLyricJson = parseResult.IntermediateJson;
         var intermediateLyric = IntermediateLyricDocument.FromJson(intermediateLyricJson);
 
+        CurrentRomanizationSchema = intermediateLyric.RomanizationSchema;
         _currentLyricOffsetMs = offsetMs != 0 ? offsetMs : intermediateLyric.Offset;
         if (_currentLyricOffsetMs != intermediateLyric.Offset)
         {
@@ -295,18 +319,12 @@ public partial class LyricsViewModel(
 
         _currentIntermediateLyricJson = intermediateLyricJson;
         ExportWplrcCommand.NotifyCanExecuteChanged();
-        return intermediateLyricJson;
+        return new LocalLyricLoadResult(intermediateLyricJson, parseResult.ShouldWriteBack);
     }
 
     private void RequestCurrentLyricWriteBack(string intermediateLyricJson)
     {
         UpdateCurrentLyricRequested?.Invoke(intermediateLyricJson, _currentLyricOffsetMs);
-    }
-
-    private static bool ShouldWriteBackSuppliedLyric(string suppliedLyric, SuppliedLyricSource source)
-    {
-        return source != SuppliedLyricSource.DatabaseCache
-            || !IntermediateLyricDocument.HasIntermediateSchema(suppliedLyric);
     }
 
     private static string? FindBestLyricFile(
@@ -401,8 +419,10 @@ public partial class LyricsViewModel(
         
         try
         {
-            var intermediateLyricJson = ParseAndAddLocalLyric(path, 0);
-            RequestCurrentLyricWriteBack(intermediateLyricJson);
+            var loadedLyric = await ParseAndAddLocalLyricAsync(path, 0);
+            UpdateLyricProgress(_lastPlaybackTimeSec);
+            if (loadedLyric.ShouldWriteBack)
+                RequestCurrentLyricWriteBack(loadedLyric.IntermediateLyricJson);
         }
         catch (InvalidOperationException ex)
         {
@@ -504,21 +524,82 @@ public partial class LyricsViewModel(
     private List<LyricState> BuildLyricStates(IntermediateLyricDocument document)
     {
         var states = new List<LyricState>(document.LyricLines.Count);
-        states.AddRange(
-            from line in document.LyricLines
-                let lyricLine = FindRoleLine(line, "lyric") ?? line.Lines.FirstOrDefault()
-                let controllerLine = line.ControllerLineIndex != -1 ? line.Lines[line.ControllerLineIndex] : null
-            let lyricText = GetLineText(lyricLine)
-            where !string.IsNullOrWhiteSpace(lyricText)
-            let translation = GetOptionalLineText(FindRoleLine(line, "translation"))
-            let romanji = GetOptionalLineText(FindRoleLine(line, "romanization"))
-            let controllerNodes = BuildControllerNodes(controllerLine)
-            let viewModel =
-                new LyricLineViewModel(lyricText, line.TimeStartMs + _currentLyricOffsetMs, translation, romanji)
-                    { IsProgressEnabled = controllerNodes is { Count: > 0 } }
-            select new LyricState(line.TimeStartMs, line.TimeEndMs, controllerNodes, viewModel));
+        foreach (var state in
+                 document.LyricLines
+                     .Select(BuildLyricState)
+                     .OfType<LyricState>())
+        {
+            AddInterludeStateIfNeeded(states, state);
+            states.Add(state);
+        }
 
         return states;
+    }
+
+    private LyricState? BuildLyricState(IntermediateLyricLine line)
+    {
+        var lyricLine = FindRoleLine(line, "lyric") ?? line.Lines.FirstOrDefault();
+        if (lyricLine is null) return null;
+
+        var lyricText = GetLineText(lyricLine);
+        if (string.IsNullOrWhiteSpace(lyricText)) return null;
+
+        var controllerLine = line.ControllerLineIndex != -1 ? line.Lines[line.ControllerLineIndex] : null;
+        var translation = GetOptionalLineText(FindRoleLine(line, "translation"));
+        var romanji = GetOptionalLineText(FindRoleLine(line, "romanization"));
+        var controllerNodes = BuildControllerNodes(controllerLine);
+        var viewModel = new LyricLineViewModel(
+            lyricText,
+            line.TimeStartMs + _currentLyricOffsetMs,
+            translation,
+            romanji)
+        {
+            IsProgressEnabled = controllerNodes is { Count: > 0 }
+        };
+
+        return new LyricState(line.TimeStartMs, line.TimeEndMs, controllerNodes, viewModel);
+    }
+
+    private void AddInterludeStateIfNeeded(List<LyricState> states, LyricState nextState)
+    {
+        if (states.Count == 0) return;
+
+        var previousState = states[^1];
+        var gapMs = nextState.RawStartTimeMs - previousState.RawEndTimeMs;
+        if (previousState.RawEndTimeMs <= previousState.RawStartTimeMs
+            || gapMs <= InterludeLyricGapThresholdMs)
+        {
+            return;
+        }
+
+        states.Add(CreateInterludeState(previousState.RawEndTimeMs, nextState.RawStartTimeMs));
+    }
+
+    private LyricState CreateInterludeState(int startMs, int endMs)
+    {
+        var controllerNodes = BuildInterpolatedControllerNodes(startMs, endMs);
+        var viewModel = new LyricLineViewModel(InterludeLyricText, startMs + _currentLyricOffsetMs)
+        {
+            IsProgressEnabled = true
+        };
+
+        return new LyricState(startMs, endMs, controllerNodes, viewModel);
+    }
+
+    private static IReadOnlyList<LyricControllerNode> BuildInterpolatedControllerNodes(int startMs, int endMs)
+    {
+        var nodes = new LyricControllerNode[InterludeLyricText.Length];
+        var durationMs = endMs - startMs;
+        for (var i = 0; i < nodes.Length; i++)
+        {
+            var nodeStartMs = startMs + (int)Math.Round((double)durationMs * i / nodes.Length);
+            var nodeEndMs = i == nodes.Length - 1
+                ? endMs
+                : startMs + (int)Math.Round((double)durationMs * (i + 1) / nodes.Length);
+            nodes[i] = new LyricControllerNode(nodeStartMs, nodeEndMs, InterludeLyricText.Substring(i, 1));
+        }
+
+        return nodes;
     }
 
     private static IntermediateLineNode? FindRoleLine(IntermediateLyricLine line, string role)
@@ -536,12 +617,10 @@ public partial class LyricsViewModel(
 
     private static string GetLineText(IntermediateLineNode line)
     {
-        if (!string.IsNullOrEmpty(line.Text))
-            return line.Text;
+        if (line.HasControllerNodesSync && line.ControllerNodes.Count > 0)
+            return string.Concat(line.ControllerNodes.Select(node => node.Text ?? string.Empty));
 
-        return !line.HasControllerNodesSync || line.ControllerNodes.Count == 0
-            ? string.Empty
-            : string.Concat(line.ControllerNodes.Select(node => node.Text));
+        return line.Text ?? string.Empty;
     }
 
     private static IReadOnlyList<LyricControllerNode>? BuildControllerNodes(IntermediateLineNode? line)
@@ -630,6 +709,8 @@ public partial class LyricsViewModel(
         int RawEndTimeMs,
         IReadOnlyList<LyricControllerNode>? ControllerNodes,
         LyricLineViewModel ViewModel);
+
+    private sealed record LocalLyricLoadResult(string IntermediateLyricJson, bool ShouldWriteBack);
 
     private sealed record LyricControllerNode(int RawStartTimeMs, int RawEndTimeMs, string Text);
     

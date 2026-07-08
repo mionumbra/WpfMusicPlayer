@@ -106,6 +106,10 @@ powercfg -attributes SUB_PROCESSOR bae08b81-2d5e-4688-ad6a-13243356654b -ATTRIB_
 ## 对中国大陆用户：
 您可以通过 [GitCode 镜像](https://gitcode.com/lucas150670/WpfMusicPlayer) 访问本项目。
 
+## About Intermediate Lyric Format (WPLRC v2)
+- See: [WPLRC.scheme.md](WPLRC.scheme.md).
+- Or you can use the online version: [English](https://lucas150670.com/blog/wplrc-schema-en/), [简体中文](https://lucas150670.com/blog/wplrc-schema-zh-cn/)
+
 ## Icon Copyright Notice
 - File path: `WpfMusicPlayer/Assets/ApplicationIcon.ico`
 - See: [LICENSE.icon.txt](LICENSE.icon.txt)

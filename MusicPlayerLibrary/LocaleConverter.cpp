@@ -9,6 +9,145 @@
 
 #include <limits>
 
+namespace
+{
+bool IsUtf8ContinuationByte(unsigned char value)
+{
+    return (value & 0xC0) == 0x80;
+}
+
+bool IsValidUtf8Bytes(const char* input, size_t size)
+{
+    const auto* bytes = reinterpret_cast<const unsigned char*>(input);
+    size_t i = 0;
+    while (i < size)
+    {
+        const unsigned char current = bytes[i];
+        if (current <= 0x7F)
+        {
+            ++i;
+            continue;
+        }
+
+        if (current >= 0xC2 && current <= 0xDF)
+        {
+            if (i + 1 >= size || !IsUtf8ContinuationByte(bytes[i + 1]))
+                return false;
+            i += 2;
+            continue;
+        }
+
+        if (current == 0xE0)
+        {
+            if (i + 2 >= size
+                || bytes[i + 1] < 0xA0
+                || bytes[i + 1] > 0xBF
+                || !IsUtf8ContinuationByte(bytes[i + 2]))
+            {
+                return false;
+            }
+            i += 3;
+            continue;
+        }
+
+        if ((current >= 0xE1 && current <= 0xEC)
+            || (current >= 0xEE && current <= 0xEF))
+        {
+            if (i + 2 >= size
+                || !IsUtf8ContinuationByte(bytes[i + 1])
+                || !IsUtf8ContinuationByte(bytes[i + 2]))
+            {
+                return false;
+            }
+            i += 3;
+            continue;
+        }
+
+        if (current == 0xED)
+        {
+            if (i + 2 >= size
+                || bytes[i + 1] < 0x80
+                || bytes[i + 1] > 0x9F
+                || !IsUtf8ContinuationByte(bytes[i + 2]))
+            {
+                return false;
+            }
+            i += 3;
+            continue;
+        }
+
+        if (current == 0xF0)
+        {
+            if (i + 3 >= size
+                || bytes[i + 1] < 0x90
+                || bytes[i + 1] > 0xBF
+                || !IsUtf8ContinuationByte(bytes[i + 2])
+                || !IsUtf8ContinuationByte(bytes[i + 3]))
+            {
+                return false;
+            }
+            i += 4;
+            continue;
+        }
+
+        if (current >= 0xF1 && current <= 0xF3)
+        {
+            if (i + 3 >= size
+                || !IsUtf8ContinuationByte(bytes[i + 1])
+                || !IsUtf8ContinuationByte(bytes[i + 2])
+                || !IsUtf8ContinuationByte(bytes[i + 3]))
+            {
+                return false;
+            }
+            i += 4;
+            continue;
+        }
+
+        if (current == 0xF4)
+        {
+            if (i + 3 >= size
+                || bytes[i + 1] < 0x80
+                || bytes[i + 1] > 0x8F
+                || !IsUtf8ContinuationByte(bytes[i + 2])
+                || !IsUtf8ContinuationByte(bytes[i + 3]))
+            {
+                return false;
+            }
+            i += 4;
+            continue;
+        }
+
+        return false;
+    }
+
+    return true;
+}
+
+bool IsAsciiBytes(const char* input, size_t size)
+{
+    const auto* bytes = reinterpret_cast<const unsigned char*>(input);
+    for (size_t i = 0; i < size; ++i)
+    {
+        if (bytes[i] > 0x7F)
+            return false;
+    }
+
+    return true;
+}
+
+bool IsUtf8CompatibleCharset(const char* charset)
+{
+    if (!charset || strlen(charset) == 0)
+        return true;
+
+    return _stricmp(charset, "UTF-8") == 0
+        || _stricmp(charset, "ASCII") == 0
+        || _stricmp(charset, "US-ASCII") == 0
+        || _stricmp(charset, "ANSI") == 0
+        || _stricmp(charset, "ANSI_X3.4-1968") == 0;
+}
+}
+
 std::string MusicPlayerLibrary::LocaleConverterNative::GetUtf8StringFromBytesNative(const char* input, size_t size)
 {
     if (!input || size == 0) return {};
@@ -60,6 +199,22 @@ std::string MusicPlayerLibrary::LocaleConverterNative::GetUtf8StringFromBytesNat
     outbuf.resize(actualSize); 
 
     return outbuf;
+}
+
+bool MusicPlayerLibrary::LocaleConverterNative::IsUtf8CompatibleBytesNative(const char* input, size_t size)
+{
+    if (!input || size == 0) return true;
+
+    auto uc_checker = uchardet_new();
+    uchardet_handle_data(uc_checker, input, size);
+    uchardet_data_end(uc_checker);
+    const char* charset = uchardet_get_charset(uc_checker);
+    NATIVE_TRACE("info: detected charset for UTF-8 validation = %s\n", charset);
+
+    const bool charset_compatible = IsUtf8CompatibleCharset(charset);
+    const bool bytes_compatible = IsValidUtf8Bytes(input, size);
+    uchardet_delete(uc_checker);
+    return bytes_compatible && (charset_compatible || IsAsciiBytes(input, size));
 }
 
 std::wstring MusicPlayerLibrary::LocaleConverterNative::GetUtf16StringFromUtf8String(const std::string& input)
@@ -129,3 +284,14 @@ System::String^ MusicPlayerLibrary::LocaleConverter::GetSystemStringFromBytes(ar
     return gcnew System::String(s.c_str());
 }
 
+bool MusicPlayerLibrary::LocaleConverter::IsUtf8CompatibleBytes(array<byte>^ input)
+{
+    if (input == nullptr || input->Length == 0)
+        return true;
+
+    std::vector<char> buffer(input->Length);
+    for (int i = 0; i < input->Length; ++i)
+        buffer[i] = input[i];
+
+    return LocaleConverterNative::IsUtf8CompatibleBytesNative(buffer.data(), buffer.size());
+}

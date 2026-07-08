@@ -27,7 +27,7 @@ public class SongDatabaseService : ISongDatabaseService
                 _songs.EnsureIndex(s => s.Md5, unique: true);
                 return;
             }
-            catch (IOException e)
+            catch (IOException)
             {
                 Thread.Sleep(500);
             }

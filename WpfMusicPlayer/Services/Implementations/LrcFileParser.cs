@@ -24,8 +24,23 @@ public sealed partial class LrcFileParser : ILyricParser
     public string ParseToIntermediateJson(LyricParserSource source)
     {
         var lrc = ReadLrcText(source);
-        using var controller = new LrcFileController();
+        using var controller = new LrcFileController(source.SongEndTimeMs);
         return controller.ParseLrcToIntermediateJson(lrc);
+    }
+
+    public LyricParseResult Parse(LyricParserSource source)
+    {
+        return new LyricParseResult(ParseToIntermediateJson(source), ShouldWriteBack: true);
+    }
+
+    public async Task<string> ParseToIntermediateJsonAsync(LyricParserSource source)
+    {
+        return await Task.Run(() => ParseToIntermediateJson(source));
+    }
+
+    public async Task<LyricParseResult> ParseAsync(LyricParserSource source)
+    {
+        return await Task.Run(() => Parse(source));
     }
 
     private static string ReadLrcText(LyricParserSource source)

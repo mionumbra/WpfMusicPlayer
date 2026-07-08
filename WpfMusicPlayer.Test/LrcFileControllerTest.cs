@@ -25,10 +25,10 @@ public sealed class LrcFileControllerTest
         [00:10.00]Third line
         """;
 
-    private static JsonDocument ParseToJson(string lrc)
+    private static JsonDocument ParseToJson(string lrc, int songEndTimeMs = 0)
     {
         var parser = new LrcFileParser();
-        var json = parser.ParseToIntermediateJson(new LyricParserSource(lrc));
+        var json = parser.ParseToIntermediateJson(new LyricParserSource(lrc, songEndTimeMs: songEndTimeMs));
         Assert.IsFalse(string.IsNullOrWhiteSpace(json));
         return JsonDocument.Parse(json);
     }
@@ -54,6 +54,16 @@ public sealed class LrcFileControllerTest
         return GetLineNodes(lyricLine).Single(line => line.GetProperty("role").GetString() == role);
     }
 
+    private static void AssertNoLineNodeSchema(JsonDocument doc)
+    {
+        foreach (var line in GetLyricLines(doc))
+        foreach (var lineNode in GetLineNodes(line))
+        {
+            Assert.IsFalse(lineNode.TryGetProperty("scheme", out _));
+            Assert.IsFalse(lineNode.TryGetProperty("schema", out _));
+        }
+    }
+
     private static LyricsViewModel CreateLyricsViewModel()
     {
         return new LyricsViewModel(
@@ -68,7 +78,7 @@ public sealed class LrcFileControllerTest
         using var doc = ParseToJson(SimpleLrc);
 
         var root = doc.RootElement;
-        Assert.AreEqual(1, root.GetProperty("format_version").GetInt32());
+        Assert.AreEqual(2, root.GetProperty("format_version").GetInt32());
         Assert.AreEqual(0, root.GetProperty("offset").GetInt32());
         Assert.AreEqual("TestArtist", root.GetProperty("metadata").GetProperty("artist").GetString());
         Assert.AreEqual("TestTitle", root.GetProperty("metadata").GetProperty("title").GetString());
@@ -84,6 +94,7 @@ public sealed class LrcFileControllerTest
         Assert.AreEqual("Second line", GetRoleLine(lines[1], "lyric").GetProperty("text").GetString());
         Assert.AreEqual(10000, lines[2].GetProperty("time_start_ms").GetInt32());
         Assert.AreEqual("Third line", GetRoleLine(lines[2], "lyric").GetProperty("text").GetString());
+        AssertNoLineNodeSchema(doc);
     }
 
     [TestMethod]
@@ -98,6 +109,32 @@ public sealed class LrcFileControllerTest
 
         Assert.AreEqual(10000, startMs);
         Assert.IsGreaterThan(startMs, endMs, $"Expected last line end time to be greater than start time, got {startMs}..{endMs}.");
+    }
+
+    [TestMethod]
+    public void ParseLrcToIntermediateJson_LastPlainLine_UsesSongEndTime()
+    {
+        const string lrc = "[00:10.00]Last line";
+
+        using var doc = ParseToJson(lrc, 15000);
+        var line = GetLyricLines(doc).Single();
+
+        Assert.AreEqual(10000, line.GetProperty("time_start_ms").GetInt32());
+        Assert.AreEqual(15000, line.GetProperty("time_end_ms").GetInt32());
+    }
+
+    [TestMethod]
+    public void ParseLrcToIntermediateJson_LastProgressLine_DoesNotUseSongEndTime()
+    {
+        const string lrc = "[00:00.00]A<00:00.250>B<00:00.500>";
+
+        using var doc = ParseToJson(lrc, 10000);
+        var line = GetLyricLines(doc).Single();
+        var controllerNodes = GetLineNodes(line).Single().GetProperty("controller_nodes").EnumerateArray().ToArray();
+
+        Assert.AreEqual(0, line.GetProperty("time_start_ms").GetInt32());
+        Assert.AreEqual(500, line.GetProperty("time_end_ms").GetInt32());
+        Assert.HasCount(2, controllerNodes);
     }
 
     [TestMethod]
@@ -221,7 +258,8 @@ public sealed class LrcFileControllerTest
         {
             var ast = IntermediateLyricDocument.FromJson(json);
 
-            Assert.AreEqual(1, ast.FormatVersion);
+            Assert.AreEqual(2, ast.FormatVersion);
+            Assert.AreEqual(RomanizationSchema.ErrorOrNotEnabled, ast.RomanizationSchema);
             Assert.AreEqual(250, ast.Offset);
             Assert.AreEqual("Internal", ast.Metadata.Title);
             Assert.HasCount(1, ast.LyricLines);
@@ -258,9 +296,170 @@ public sealed class LrcFileControllerTest
 
         var ast = IntermediateLyricDocument.FromJson(json);
 
+        Assert.AreEqual(2, ast.FormatVersion);
+        Assert.AreEqual(RomanizationSchema.ErrorOrNotEnabled, ast.RomanizationSchema);
         Assert.HasCount(1, ast.LyricLines);
         Assert.AreEqual(3000, ast.LyricLines[0].TimeStartMs);
         Assert.AreEqual("Schema matched", ast.LyricLines[0].Lines[0].Text);
+    }
+
+    [TestMethod]
+    public void IntermediateLyricParser_V1PromotesMostCommonSchemaAndRemovesLineSchemas()
+    {
+        const string json = """
+                            {
+                              "format_version": 1,
+                              "offset": 0,
+                              "lyric_lines": [
+                                {
+                                  "time_start_ms": 0,
+                                  "time_end_ms": 1000,
+                                  "lines": [
+                                    {
+                                      "role": "lyric",
+                                      "text": "粤语"
+                                    },
+                                    {
+                                      "role": "romanization",
+                                      "scheme": "jyutping",
+                                      "text": "jyut one"
+                                    }
+                                  ]
+                                },
+                                {
+                                  "time_start_ms": 1000,
+                                  "time_end_ms": 2000,
+                                  "lines": [
+                                    {
+                                      "role": "lyric",
+                                      "text": "你的母亲"
+                                    },
+                                    {
+                                      "role": "romanization",
+                                      "scheme": "jyutping",
+                                      "text": "jyut two"
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                            """;
+
+        var result = new IntermediateLyricParser().Parse(new LyricParserSource(json));
+
+        Assert.IsTrue(result.ShouldWriteBack);
+        using var doc = JsonDocument.Parse(result.IntermediateJson);
+        Assert.AreEqual(2, doc.RootElement.GetProperty("format_version").GetInt32());
+        Assert.AreEqual("jyutping", doc.RootElement.GetProperty("romanization_schema").GetString());
+        AssertNoLineNodeSchema(doc);
+    }
+
+    [TestMethod]
+    public void IntermediateLyricParser_WplrcFileRejectsNonUtf8Bytes()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.wplrc");
+        var prefix = Encoding.ASCII.GetBytes("""
+                                             {"format_version":2,"offset":0,"metadata":{},"lyric_lines":[
+                                             """);
+        var suffix = Encoding.ASCII.GetBytes("]}");
+        var invalidBytes = new byte[prefix.Length + 1 + suffix.Length];
+        Buffer.BlockCopy(prefix, 0, invalidBytes, 0, prefix.Length);
+        invalidBytes[prefix.Length] = 0xFF;
+        Buffer.BlockCopy(suffix, 0, invalidBytes, prefix.Length + 1, suffix.Length);
+
+        try
+        {
+            File.WriteAllBytes(path, invalidBytes);
+
+            Assert.ThrowsExactly<InvalidOperationException>(() =>
+                new IntermediateLyricParser().Parse(new LyricParserSource(path)));
+        }
+        finally
+        {
+            if (File.Exists(path))
+                File.Delete(path);
+        }
+    }
+
+    [TestMethod]
+    public void IntermediateLyricParser_V2RejectsLegacyLineSchema()
+    {
+        const string json = """
+                            {
+                              "format_version": 2,
+                              "offset": 0,
+                              "lyric_lines": [
+                                {
+                                  "time_start_ms": 0,
+                                  "time_end_ms": 1000,
+                                  "lines": [
+                                    {
+                                      "role": "romanization",
+                                      "scheme": "romaji",
+                                      "text": "legacy"
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                            """;
+
+        Assert.ThrowsExactly<InvalidOperationException>(() =>
+            new IntermediateLyricParser().Parse(new LyricParserSource(json)));
+    }
+
+    [TestMethod]
+    public void IntermediateLyricParser_RejectsLineWithStartAfterEnd()
+    {
+        const string json = """
+                            {
+                              "format_version": 2,
+                              "offset": 0,
+                              "lyric_lines": [
+                                {
+                                  "time_start_ms": 2000,
+                                  "time_end_ms": 1000,
+                                  "lines": [
+                                    {
+                                      "role": "lyric",
+                                      "text": "bad range"
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                            """;
+
+        Assert.ThrowsExactly<InvalidOperationException>(() => IntermediateLyricDocument.FromJson(json));
+    }
+
+    [TestMethod]
+    public void IntermediateLyricParser_AllowsLineWithEqualStartAndEnd()
+    {
+        const string json = """
+                            {
+                              "format_version": 2,
+                              "offset": 0,
+                              "lyric_lines": [
+                                {
+                                  "time_start_ms": 1000,
+                                  "time_end_ms": 1000,
+                                  "lines": [
+                                    {
+                                      "role": "lyric",
+                                      "text": "legacy equal range"
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                            """;
+
+        var document = IntermediateLyricDocument.FromJson(json);
+
+        Assert.HasCount(1, document.LyricLines);
+        Assert.AreEqual(1000, document.LyricLines[0].TimeStartMs);
+        Assert.AreEqual(1000, document.LyricLines[0].TimeEndMs);
     }
 
     [TestMethod]
@@ -412,8 +611,10 @@ public sealed class LrcFileControllerTest
         using var doc = ParseToJson(lrc);
         var lines = GetLyricLines(doc);
 
+        Assert.AreEqual("jyutping", doc.RootElement.GetProperty("romanization_schema").GetString());
         Assert.AreEqual("romanization", GetLineNodes(lines[0])[0].GetProperty("role").GetString());
         Assert.AreEqual("romanization", GetLineNodes(lines[1])[0].GetProperty("role").GetString());
+        AssertNoLineNodeSchema(doc);
     }
 
     [TestMethod]
@@ -441,7 +642,7 @@ public sealed class LrcFileControllerTest
                            """;
 
         var vm = CreateLyricsViewModel();
-        vm.LoadLyrics(null, lrc, null, 10f, 0);
+        vm.LoadLyricsAsync(null, lrc, null, 10f, 0).Wait();
         vm.UpdateLyricProgress(0.375f);
 
         Assert.HasCount(2, vm.Lyrics);
@@ -449,6 +650,49 @@ public sealed class LrcFileControllerTest
         Assert.IsTrue(vm.Lyrics[0].IsProgressEnabled);
         Assert.AreEqual(0, vm.CurrentLyricIndex);
         Assert.AreEqual(0.5, vm.Lyrics[0].Progress, 0.001);
+    }
+
+    [TestMethod]
+    public void LyricsViewModel_LoadLyrics_RebuildsControllerTextWhenTextIsPresent()
+    {
+        const string json = """
+                            {
+                              "format_version": 2,
+                              "offset": 0,
+                              "lyric_lines": [
+                                {
+                                  "time_start_ms": 0,
+                                  "time_end_ms": 1000,
+                                  "lines": [
+                                    {
+                                      "role": "lyric",
+                                      "sync": "controller_nodes",
+                                      "text": "wrong text",
+                                      "controller_nodes": [
+                                        {
+                                          "time_start_ms": 0,
+                                          "time_end_ms": 500,
+                                          "text": "A"
+                                        },
+                                        {
+                                          "time_start_ms": 500,
+                                          "time_end_ms": 1000,
+                                          "text": "B"
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                            """;
+
+        var vm = CreateLyricsViewModel();
+        vm.LoadLyricsAsync(null, json, null, 10f, 0).Wait();
+
+        Assert.HasCount(1, vm.Lyrics);
+        Assert.AreEqual("AB", vm.Lyrics[0].Text);
+        Assert.IsTrue(vm.Lyrics[0].IsProgressEnabled);
     }
 
     [TestMethod]
@@ -460,7 +704,7 @@ public sealed class LrcFileControllerTest
                            """;
 
         var vm = CreateLyricsViewModel();
-        vm.LoadLyrics(null, lrc, null, 10f, 0);
+        vm.LoadLyricsAsync(null, lrc, null, 10f, 0).Wait();
         vm.UpdateLyricProgress(1.5f);
 
         Assert.HasCount(2, vm.Lyrics);
@@ -480,10 +724,10 @@ public sealed class LrcFileControllerTest
                            """;
 
         var metadataOffsetVm = CreateLyricsViewModel();
-        metadataOffsetVm.LoadLyrics(null, lrc, null, 10f, 0);
+        metadataOffsetVm.LoadLyricsAsync(null, lrc, null, 10f, 0).Wait();
 
         var overrideOffsetVm = CreateLyricsViewModel();
-        overrideOffsetVm.LoadLyrics(null, lrc, null, 10f, 200);
+        overrideOffsetVm.LoadLyricsAsync(null, lrc, null, 10f, 200).Wait();
 
         Assert.AreEqual(1500, metadataOffsetVm.Lyrics[0].TimeMs);
         Assert.AreEqual(1200, overrideOffsetVm.Lyrics[0].TimeMs);
@@ -502,17 +746,18 @@ public sealed class LrcFileControllerTest
             storedOffset = offsetMs;
         };
 
-        vm.LoadLyrics(null, lrc, null, 10f, 0, SuppliedLyricSource.DatabaseCache);
+        vm.LoadLyricsAsync(null, lrc, null, 10f, 0, SuppliedLyricSource.DatabaseCache).Wait();
 
         Assert.IsNotNull(storedLyric);
         Assert.AreEqual(0, storedOffset);
         using var doc = JsonDocument.Parse(storedLyric);
+        Assert.AreEqual(2, doc.RootElement.GetProperty("format_version").GetInt32());
         var line = GetLyricLines(doc).Single();
         Assert.AreEqual("Stored", GetRoleLine(line, "lyric").GetProperty("text").GetString());
     }
 
     [TestMethod]
-    public void LyricsViewModel_LoadLyrics_DoesNotPersistDatabaseCachedIntermediateJson()
+    public void LyricsViewModel_LoadLyrics_PersistsDatabaseCachedV1IntermediateJsonAsV2()
     {
         const string json = """
                             {
@@ -533,12 +778,49 @@ public sealed class LrcFileControllerTest
                             }
                             """;
         var vm = CreateLyricsViewModel();
+        string? storedLyric = null;
+        vm.UpdateCurrentLyricRequested += (content, _) => storedLyric = content;
+
+        vm.LoadLyricsAsync(null, json, null, 10f, 0, SuppliedLyricSource.DatabaseCache).Wait();
+
+        Assert.IsNotNull(storedLyric);
+        using var doc = JsonDocument.Parse(storedLyric);
+        Assert.AreEqual(2, doc.RootElement.GetProperty("format_version").GetInt32());
+        AssertNoLineNodeSchema(doc);
+        Assert.HasCount(1, vm.Lyrics);
+        Assert.AreEqual("Cached JSON", vm.Lyrics[0].Text);
+    }
+
+    [TestMethod]
+    public void LyricsViewModel_LoadLyrics_DoesNotPersistDatabaseCachedV2IntermediateJson()
+    {
+        const string json = """
+                            {
+                              "format_version": 2,
+                              "romanization_schema": "romaji",
+                              "offset": 0,
+                              "lyric_lines": [
+                                {
+                                  "time_start_ms": 1000,
+                                  "time_end_ms": 2000,
+                                  "lines": [
+                                    {
+                                      "role": "lyric",
+                                      "text": "Cached JSON"
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                            """;
+        var vm = CreateLyricsViewModel();
         var writeBackRequested = false;
         vm.UpdateCurrentLyricRequested += (_, _) => writeBackRequested = true;
 
-        vm.LoadLyrics(null, json, null, 10f, 0, SuppliedLyricSource.DatabaseCache);
+        vm.LoadLyricsAsync(null, json, null, 10f, 0, SuppliedLyricSource.DatabaseCache).Wait();
 
         Assert.IsFalse(writeBackRequested);
+        Assert.AreEqual(RomanizationSchema.Romaji, vm.CurrentRomanizationSchema);
         Assert.HasCount(1, vm.Lyrics);
         Assert.AreEqual("Cached JSON", vm.Lyrics[0].Text);
     }
@@ -564,11 +846,12 @@ public sealed class LrcFileControllerTest
                 storedOffset = offsetMs;
             };
 
-            vm.LoadLyrics(audioPath, null, "Local Song", 10f, 0);
+            vm.LoadLyricsAsync(audioPath, null, "Local Song", 10f, 0).Wait();
 
             Assert.IsNotNull(storedLyric);
             Assert.AreEqual(0, storedOffset);
             using var doc = JsonDocument.Parse(storedLyric);
+            Assert.AreEqual(2, doc.RootElement.GetProperty("format_version").GetInt32());
             var line = GetLyricLines(doc).Single();
             Assert.AreEqual("Local", GetRoleLine(line, "lyric").GetProperty("text").GetString());
         }
@@ -618,11 +901,12 @@ public sealed class LrcFileControllerTest
                 storedOffset = offsetMs;
             };
 
-            vm.LoadLyrics(audioPath, null, "Local Json", 10f, 0);
+            vm.LoadLyricsAsync(audioPath, null, "Local Json", 10f, 0).Wait();
 
             Assert.IsNotNull(storedLyric);
             Assert.AreEqual(0, storedOffset);
             using var doc = JsonDocument.Parse(storedLyric);
+            Assert.AreEqual(2, doc.RootElement.GetProperty("format_version").GetInt32());
             var line = GetLyricLines(doc).Single();
             Assert.AreEqual("Local JSON", GetRoleLine(line, "lyric").GetProperty("text").GetString());
         }
@@ -630,6 +914,186 @@ public sealed class LrcFileControllerTest
         {
             if (Directory.Exists(tempDir))
                 Directory.Delete(tempDir, true);
+        }
+    }
+
+    [TestMethod]
+    public void LyricsViewModel_LoadLyrics_DoesNotPersistAutoLoadedLocalV2IntermediateJson()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        var audioPath = Path.Combine(tempDir, "Local V2 Json.mp3");
+        var lyricPath = Path.Combine(tempDir, "Local V2 Json.wplrc");
+        const string json = """
+                            {
+                              "format_version": 2,
+                              "romanization_schema": "romaji",
+                              "offset": 0,
+                              "lyric_lines": [
+                                {
+                                  "time_start_ms": 1000,
+                                  "time_end_ms": 2000,
+                                  "lines": [
+                                    {
+                                      "role": "lyric",
+                                      "text": "Local V2 JSON"
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                            """;
+        Directory.CreateDirectory(tempDir);
+        var writeBackRequested = false;
+
+        try
+        {
+            File.WriteAllText(audioPath, string.Empty, Encoding.UTF8);
+            File.WriteAllText(lyricPath, json, Encoding.UTF8);
+            var vm = CreateLyricsViewModel();
+            vm.UpdateCurrentLyricRequested += (_, _) => writeBackRequested = true;
+
+            vm.LoadLyricsAsync(audioPath, null, "Local V2 Json", 10f, 0).Wait();
+
+            Assert.IsFalse(writeBackRequested);
+            Assert.HasCount(1, vm.Lyrics);
+            Assert.AreEqual("Local V2 JSON", vm.Lyrics[0].Text);
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir))
+                Directory.Delete(tempDir, true);
+        }
+    }
+
+    [TestMethod]
+    public void LyricsViewModel_LoadLyrics_RomanjiButtonContentFollowsGlobalSchema()
+    {
+        const string jyutpingJson = """
+                                    {
+                                      "format_version": 2,
+                                      "romanization_schema": "jyutping",
+                                      "offset": 0,
+                                      "lyric_lines": [
+                                        {
+                                          "time_start_ms": 0,
+                                          "time_end_ms": 1000,
+                                          "lines": [
+                                            {
+                                              "role": "lyric",
+                                              "text": "粤语"
+                                            },
+                                            {
+                                              "role": "romanization",
+                                              "text": "jyut ping"
+                                            }
+                                          ]
+                                        }
+                                      ]
+                                    }
+                                    """;
+        const string romajiJson = """
+                                  {
+                                    "format_version": 2,
+                                    "romanization_schema": "romaji",
+                                    "offset": 0,
+                                    "lyric_lines": [
+                                      {
+                                        "time_start_ms": 0,
+                                        "time_end_ms": 1000,
+                                        "lines": [
+                                          {
+                                            "role": "lyric",
+                                            "text": "日本語"
+                                          },
+                                          {
+                                            "role": "romanization",
+                                            "text": "romaji"
+                                          }
+                                        ]
+                                      }
+                                    ]
+                                  }
+                                  """;
+
+        var jyutpingVm = CreateLyricsViewModel();
+        jyutpingVm.LoadLyricsAsync(null, jyutpingJson, null, 10f, 0).Wait();
+
+        Assert.IsTrue(jyutpingVm.HasRomanjiAvailable);
+        Assert.AreEqual("拼", jyutpingVm.RomanjiButtonContent);
+
+        var romajiVm = CreateLyricsViewModel();
+        romajiVm.LoadLyricsAsync(null, romajiJson, null, 10f, 0).Wait();
+
+        Assert.IsTrue(romajiVm.HasRomanjiAvailable);
+        Assert.AreEqual("あ", romajiVm.RomanjiButtonContent);
+    }
+
+    [TestMethod]
+    public async Task LyricsViewModel_LoadLyrics_InsertsInterludeLineWithoutExportingToWplrc()
+    {
+        var savePath = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.txt");
+        var exportedPath = Path.ChangeExtension(savePath, ".wplrc");
+        var fileDialogService = new NoopFileDialogService
+        {
+            SavePath = savePath
+        };
+        var vm = new LyricsViewModel(
+            NullLogger<LyricsViewModel>.Instance,
+            fileDialogService,
+            CreateLyricParserFactory());
+        const string json = """
+                            {
+                              "format_version": 1,
+                              "offset": 0,
+                              "lyric_lines": [
+                                {
+                                  "time_start_ms": 0,
+                                  "time_end_ms": 1000,
+                                  "lines": [
+                                    {
+                                      "role": "lyric",
+                                      "text": "A"
+                                    }
+                                  ]
+                                },
+                                {
+                                  "time_start_ms": 7000,
+                                  "time_end_ms": 8000,
+                                  "lines": [
+                                    {
+                                      "role": "lyric",
+                                      "text": "B"
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                            """;
+
+        try
+        {
+            vm.LoadLyricsAsync(null, json, "Gap Song", 9f, 0).Wait();
+            vm.UpdateLyricProgress(4.0f);
+
+            Assert.HasCount(3, vm.Lyrics);
+            Assert.AreEqual("♪ ♪ ♪ ♪ ♪ ♪", vm.Lyrics[1].Text);
+            Assert.IsTrue(vm.Lyrics[1].IsProgressEnabled);
+            Assert.AreEqual(1, vm.CurrentLyricIndex);
+            Assert.AreEqual(0.5, vm.Lyrics[1].Progress, 0.001);
+
+            await vm.ExportWplrcCommand.ExecuteAsync(null);
+
+            var exported = await File.ReadAllTextAsync(exportedPath, Encoding.UTF8);
+            Assert.IsFalse(exported.Contains("♪♪♪♪♪♪", StringComparison.Ordinal));
+            using var document = JsonDocument.Parse(exported);
+            Assert.HasCount(2, GetLyricLines(document));
+        }
+        finally
+        {
+            if (File.Exists(savePath))
+                File.Delete(savePath);
+            if (File.Exists(exportedPath))
+                File.Delete(exportedPath);
         }
     }
 
@@ -652,7 +1116,7 @@ public sealed class LrcFileControllerTest
 
         try
         {
-            vm.LoadLyrics(null, json, "Export Song", 10f, 0);
+            vm.LoadLyricsAsync(null, json, "Export Song", 10f, 0).Wait();
 
             Assert.IsTrue(vm.ExportWplrcCommand.CanExecute(null));
 
@@ -660,7 +1124,7 @@ public sealed class LrcFileControllerTest
 
             Assert.IsTrue(File.Exists(exportedPath));
             var exported = await File.ReadAllTextAsync(exportedPath, Encoding.UTF8);
-            Assert.IsTrue(exported.Contains("\n  \"format_version\": 1", StringComparison.Ordinal));
+            Assert.IsTrue(exported.Contains("\n  \"format_version\": 2", StringComparison.Ordinal));
             StringAssert.Contains(exported, "中文歌词");
             Assert.IsFalse(exported.Contains(@"\u4e2d", StringComparison.OrdinalIgnoreCase));
 
