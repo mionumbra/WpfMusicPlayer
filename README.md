@@ -69,7 +69,7 @@ You can download the latest build from Github CI/CD, but if you want to build by
 2. Install vcpkg and integrate it with Visual Studio 2026
 - You need the following workloads:
 > Desktop development with C++
-> 
+> <br>
 > Desktop development with .NET
 - Execute `vcpkg integrate install` in the Developer Powershell
 3. Open the solution file `WpfMusicPlayer.slnx` in Visual Studio
@@ -89,9 +89,9 @@ powercfg -attributes SUB_PROCESSOR bae08b81-2d5e-4688-ad6a-13243356654b -ATTRIB_
 ```
 - the enable the following config inside your control panel's Power Options:
 > `Heterogeneous policy in effect` -> `Use heterogeneous policy 0`
->
+> <br>
 > `Heterogeneous thread scheduling policy` -> `Prefer performant processors`
->
+> <br>
 > `Heterogeneous short running thread scheduling policy` -> `Prefer performant processors`
 5. Copy the built DLLs from x64(ARM64)/Debug(Release) to the same folder as the built executable.
 6. Enjoy!
@@ -134,20 +134,22 @@ FFmpeg can be built under **LGPL** or **GPL**, depending on the configuration.
 Make sure you understand the implications before distributing a GPL‑linked build.
 
 >
+> [!important] 
+> 
 > NOTICE!
 > 
 > A critical vulnerability has been disclosed in FFmpeg’s MagicYUV decoder that allows attackers to weaponize seemingly harmless media files and, in some scenarios, achieve remote code execution (RCE).
-> 
+> <br>
 > The flaw, tracked as CVE-2026-8461 and dubbed “PixelSmash,” is a heap out-of-bounds write in FFmpeg’s `libavcodec` component, with a CVSS score of 8.8 (High).
-> 
+> <br>
 > Although this music player does not support video files directly, attackers can still rename a crafted video file with one of the supporting extensions in this player.
-> 
+> <br>
 > Then, the player will try to scan the streams inside the crafted files (in `MusicPlayerNative.cpp`, `MusicPlayerLibrary::MusicPlayerNative::load_audio_context_from_file_stream()`) using `libavcodec`, and it will try to find the best audio stream for decoding.
-> 
+> <br>
 > It will scan the video streams inside the malicious file, which causes the override of `AVBuffer` struct, replacing the `AVBuffer.free` opaque to libc `system` function, at the same time overrides `AVBuffer.refcount` to 1, causes RCE when FFmpeg triggers normal frame cleanup, and no authentication or elevated privileges are needed.
->
+> <br>
 > For users of this software, please update to the versions after commit `29058f2`, which locks vcpkg's FFmpeg version to over 8.1.2, fixing this issue.
-> 
+> <br>
 > For other information about this bug, please visit [CVE-2026-8461](https://nvd.nist.gov/vuln/detail/CVE-2026-8461).
 > 
 

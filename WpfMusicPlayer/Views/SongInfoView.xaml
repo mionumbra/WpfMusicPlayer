@@ -6,21 +6,90 @@
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
              xmlns:vm="clr-namespace:WpfMusicPlayer.ViewModels"
              xmlns:local="clr-namespace:WpfMusicPlayer.Views"
+             xmlns:helpers="clr-namespace:WpfMusicPlayer.Helpers"
              mc:Ignorable="d"
+             HorizontalContentAlignment="Stretch"
              d:DataContext="{d:DesignInstance Type=vm:MainViewModel}">
-    <StackPanel>
-        <Viewbox StretchDirection="DownOnly"
-                 MaxHeight="{Binding TitleMaxHeight, RelativeSource={RelativeSource AncestorType=local:SongInfoView}}"
-                 HorizontalAlignment="Left"
-                 Margin="{Binding TitleBottomMargin, RelativeSource={RelativeSource AncestorType=local:SongInfoView}}">
-            <TextBlock Text="{Binding SongTitle}" Foreground="White"
-                       FontSize="{Binding TitleFontSize, RelativeSource={RelativeSource AncestorType=local:SongInfoView}}"
-                       FontWeight="Bold" TextWrapping="NoWrap"/>
-        </Viewbox>
-        <Viewbox StretchDirection="DownOnly"
-                 MaxHeight="{Binding ArtistMaxHeight, RelativeSource={RelativeSource AncestorType=local:SongInfoView}}"
-                 HorizontalAlignment="Left">
-            <TextBlock Text="{Binding ArtistName}" Foreground="#BBBBBB" FontSize="14" TextWrapping="NoWrap"/>
-        </Viewbox>
+    <StackPanel HorizontalAlignment="Stretch">
+        <Grid ClipToBounds="True"
+              MaxHeight="{Binding TitleMaxHeight, RelativeSource={RelativeSource AncestorType=local:SongInfoView}}"
+              Margin="{Binding TitleBottomMargin, RelativeSource={RelativeSource AncestorType=local:SongInfoView}}">
+            <helpers:MarqueeContainer IsUnbounded="True">
+                <StackPanel x:Name="TitleMarqueeTrack"
+                            Orientation="Horizontal"
+                            helpers:AutoMarqueeBehavior.IsEnabled="True"
+                            helpers:AutoMarqueeBehavior.Gap="40"
+                            helpers:AutoMarqueeBehavior.PauseMilliseconds="2000">
+                    <StackPanel.Resources>
+                        <Style TargetType="TextBlock">
+                            <Setter Property="Foreground" Value="White"/>
+                            <Setter Property="FontSize"
+                                    Value="{Binding TitleFontSize, RelativeSource={RelativeSource AncestorType=local:SongInfoView}}"/>
+                            <Setter Property="FontWeight" Value="Bold"/>
+                            <Setter Property="TextTrimming" Value="None"/>
+                            <Setter Property="TextWrapping" Value="NoWrap"/>
+                            <Setter Property="VerticalAlignment" Value="Center"/>
+                        </Style>
+                    </StackPanel.Resources>
+
+                    <TextBlock x:Name="PrimaryTitleText"
+                               Text="{Binding SongTitle, NotifyOnTargetUpdated=True}"/>
+                    <StackPanel Orientation="Horizontal">
+                        <StackPanel.Style>
+                            <Style TargetType="StackPanel">
+                                <Setter Property="Visibility" Value="Collapsed"/>
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding Path=(helpers:AutoMarqueeBehavior.IsOverflowing), ElementName=TitleMarqueeTrack}"
+                                                 Value="True">
+                                        <Setter Property="Visibility" Value="Visible"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </StackPanel.Style>
+                        <Border Width="{Binding Path=(helpers:AutoMarqueeBehavior.Gap), ElementName=TitleMarqueeTrack}"/>
+                        <TextBlock Text="{Binding Text, ElementName=PrimaryTitleText}"/>
+                    </StackPanel>
+                </StackPanel>
+            </helpers:MarqueeContainer>
+        </Grid>
+
+        <Grid ClipToBounds="True"
+              MaxHeight="{Binding ArtistMaxHeight, RelativeSource={RelativeSource AncestorType=local:SongInfoView}}">
+            <helpers:MarqueeContainer IsUnbounded="True">
+                <StackPanel x:Name="ArtistMarqueeTrack"
+                            Orientation="Horizontal"
+                            helpers:AutoMarqueeBehavior.IsEnabled="True"
+                            helpers:AutoMarqueeBehavior.Gap="40"
+                            helpers:AutoMarqueeBehavior.PauseMilliseconds="2000">
+                    <StackPanel.Resources>
+                        <Style TargetType="TextBlock">
+                            <Setter Property="Foreground" Value="#BBBBBB"/>
+                            <Setter Property="FontSize" Value="14"/>
+                            <Setter Property="TextTrimming" Value="None"/>
+                            <Setter Property="TextWrapping" Value="NoWrap"/>
+                            <Setter Property="VerticalAlignment" Value="Center"/>
+                        </Style>
+                    </StackPanel.Resources>
+
+                    <TextBlock x:Name="PrimaryArtistText"
+                               Text="{Binding ArtistName, NotifyOnTargetUpdated=True}"/>
+                    <StackPanel Orientation="Horizontal">
+                        <StackPanel.Style>
+                            <Style TargetType="StackPanel">
+                                <Setter Property="Visibility" Value="Collapsed"/>
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding Path=(helpers:AutoMarqueeBehavior.IsOverflowing), ElementName=ArtistMarqueeTrack}"
+                                                 Value="True">
+                                        <Setter Property="Visibility" Value="Visible"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </StackPanel.Style>
+                        <Border Width="{Binding Path=(helpers:AutoMarqueeBehavior.Gap), ElementName=ArtistMarqueeTrack}"/>
+                        <TextBlock Text="{Binding Text, ElementName=PrimaryArtistText}"/>
+                    </StackPanel>
+                </StackPanel>
+            </helpers:MarqueeContainer>
+        </Grid>
     </StackPanel>
 </UserControl>

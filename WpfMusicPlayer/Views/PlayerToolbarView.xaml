@@ -34,7 +34,7 @@
                     <ColumnDefinition Width="1*"/>
                 </Grid.ColumnDefinitions>
 
-                <local:SongInfoView x:Name="InternalLandscapeSongInfo" Grid.Column="0" VerticalAlignment="Center" HorizontalAlignment="Left" Margin="10,0,0,0">
+                <local:SongInfoView x:Name="InternalLandscapeSongInfo" Grid.Column="0" VerticalAlignment="Center" Margin="10,0,0,0">
                     <local:SongInfoView.RenderTransform>
                         <TranslateTransform/>
                     </local:SongInfoView.RenderTransform>
