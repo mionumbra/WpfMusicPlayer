@@ -133,6 +133,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="EqualizerDsp.h" />
+    <ClInclude Include="FapoEqualizer.h" />
     <ClInclude Include="MMCSSHelper.h" />
     <ClInclude Include="NativeTraceRedirect.h" />
     <ClInclude Include="FileAbstractionLayer.h" />
@@ -147,6 +148,9 @@
   <ItemGroup>
     <ClCompile Include="AssemblyInfo.cpp" />
     <ClCompile Include="EqualizerDsp.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="FapoEqualizer.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
     </ClCompile>
     <ClCompile Include="MMCSSHelper.cpp" />

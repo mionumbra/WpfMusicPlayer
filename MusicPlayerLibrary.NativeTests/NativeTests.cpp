@@ -1,4 +1,7 @@
 #include "../MusicPlayerLibrary/EqualizerDsp.h"
+#include "../MusicPlayerLibrary/FapoEqualizer.h"
+
+#include <FAPOBase.h>
 
 #include <algorithm>
 #include <array>
@@ -6,6 +9,8 @@
 #include <cstdint>
 #include <functional>
 #include <iostream>
+#include <limits>
+#include <memory>
 #include <numbers>
 #include <stdexcept>
 #include <string>
@@ -15,6 +20,15 @@
 namespace
 {
     using namespace MusicPlayerLibrary::AudioDsp;
+
+    constexpr FAudioGUID PcmSubFormat{
+        0x00000001, 0x0000, 0x0010,
+        {0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71}
+    };
+    constexpr FAudioGUID IeeeFloatSubFormat{
+        0x00000003, 0x0000, 0x0010,
+        {0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71}
+    };
 
     void Require(bool condition, std::string_view message)
     {
@@ -27,6 +41,85 @@ namespace
     {
         if (!std::isfinite(actual) || std::abs(expected - actual) > tolerance)
             throw std::runtime_error(std::string(message));
+    }
+
+    struct FapoReleaser
+    {
+        void operator()(FAPO* effect) const noexcept
+        {
+            if (effect != nullptr)
+                effect->Release(effect);
+        }
+    };
+    using UniqueFapo = std::unique_ptr<FAPO, FapoReleaser>;
+
+    UniqueFapo MakeFapo(
+        const EqualizerDspSnapshot& initial,
+        const LimiterConfig& limiter)
+    {
+        FAPO* effect = nullptr;
+        Require(CreateEqualizerFapo(initial, limiter, &effect) == FAUDIO_OK,
+                "CreateEqualizerFapo failed");
+        Require(effect != nullptr, "CreateEqualizerFapo returned a null effect");
+        return UniqueFapo(effect);
+    }
+
+    FAudioWaveFormatExtensible MakeFloatFormat(
+        std::uint32_t sampleRate = 48'000,
+        std::uint16_t channelCount = 2)
+    {
+        FAudioWaveFormatExtensible format{};
+        format.Format.wFormatTag = FAUDIO_FORMAT_EXTENSIBLE;
+        format.Format.nChannels = channelCount;
+        format.Format.nSamplesPerSec = sampleRate;
+        format.Format.nBlockAlign = static_cast<std::uint16_t>(
+            channelCount * sizeof(float));
+        format.Format.nAvgBytesPerSec =
+            sampleRate * format.Format.nBlockAlign;
+        format.Format.wBitsPerSample = 32;
+        format.Format.cbSize = static_cast<std::uint16_t>(
+            sizeof(FAudioWaveFormatExtensible) - sizeof(FAudioWaveFormatEx));
+        format.Samples.wValidBitsPerSample = 32;
+        format.dwChannelMask = channelCount == 2
+            ? SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT
+            : 0;
+        format.SubFormat = IeeeFloatSubFormat;
+        return format;
+    }
+
+    std::uint32_t LockFapo(
+        FAPO* effect,
+        const FAudioWaveFormatExtensible& inputFormat,
+        const FAudioWaveFormatExtensible& outputFormat,
+        std::uint32_t maxFrameCount = 1'024,
+        std::uint32_t inputCount = 1,
+        std::uint32_t outputCount = 1,
+        std::uint32_t outputMaxFrameCount = 0)
+    {
+        const FAPOLockForProcessBufferParameters input{
+            &inputFormat.Format, maxFrameCount};
+        const FAPOLockForProcessBufferParameters output{
+            &outputFormat.Format,
+            outputMaxFrameCount == 0 ? maxFrameCount : outputMaxFrameCount};
+        return effect->LockForProcess(
+            effect, inputCount, &input, outputCount, &output);
+    }
+
+    FAPOProcessBufferParameters ProcessFapo(
+        FAPO* effect,
+        float* input,
+        FAPOBufferFlags inputFlags,
+        float* output,
+        std::uint32_t frameCount,
+        bool enabled)
+    {
+        const FAPOProcessBufferParameters inputParameters{
+            input, inputFlags, frameCount};
+        FAPOProcessBufferParameters outputParameters{
+            output, FAPO_BUFFER_SILENT, 0};
+        effect->Process(
+            effect, 1, &inputParameters, 1, &outputParameters, enabled ? 1 : 0);
+        return outputParameters;
     }
 
     std::vector<float> StereoSine(
@@ -390,6 +483,304 @@ namespace
         }
     }
 
+    void TestFapoFactoryAndRegistration()
+    {
+        constexpr std::uint32_t SampleRate = 48'000;
+        const auto snapshot = CompileEqualizerSnapshot(
+            MakeDefaultTenBandConfig(), SampleRate, 20);
+        LimiterConfig limiter;
+        limiter.enabled = false;
+        auto effect = MakeFapo(snapshot, limiter);
+
+        Require(effect->AddRef(effect.get()) == 2,
+                "factory reference count was not one");
+        Require(effect->Release(effect.get()) == 1,
+                "factory reference count did not return to one");
+
+        FAPORegistrationProperties* properties = nullptr;
+        Require(effect->GetRegistrationProperties(
+                    effect.get(), &properties) == FAUDIO_OK &&
+                properties != nullptr,
+                "FAPO registration properties were unavailable");
+        constexpr std::uint32_t RequiredFlags =
+            FAPO_FLAG_CHANNELS_MUST_MATCH |
+            FAPO_FLAG_FRAMERATE_MUST_MATCH |
+            FAPO_FLAG_BITSPERSAMPLE_MUST_MATCH |
+            FAPO_FLAG_BUFFERCOUNT_MUST_MATCH |
+            FAPO_FLAG_INPLACE_SUPPORTED;
+        Require(properties->Flags == RequiredFlags,
+                "FAPO registration flags were incorrect");
+        Require((properties->Flags & FAPO_FLAG_INPLACE_REQUIRED) == 0,
+                "FAPO incorrectly required in-place processing");
+        reinterpret_cast<FAPOBase*>(effect.get())->pFree(properties);
+    }
+
+    void TestFapoInPlaceMatchesOutOfPlace()
+    {
+        constexpr std::uint32_t SampleRate = 48'000;
+        constexpr std::uint32_t FrameCount = 2'048;
+        const auto initial = CompileEqualizerSnapshot(
+            MakeDefaultTenBandConfig(), SampleRate, 21);
+        auto config = MakeDefaultTenBandConfig();
+        config.bands[5].gain_db = 6.0f;
+        const auto updated = CompileEqualizerSnapshot(config, SampleRate, 22);
+        LimiterConfig limiter;
+        limiter.enabled = false;
+        auto inPlaceEffect = MakeFapo(initial, limiter);
+        auto outOfPlaceEffect = MakeFapo(initial, limiter);
+        inPlaceEffect->SetParameters(
+            inPlaceEffect.get(), &updated, sizeof(updated));
+        outOfPlaceEffect->SetParameters(
+            outOfPlaceEffect.get(), &updated, sizeof(updated));
+
+        const auto format = MakeFloatFormat(SampleRate);
+        Require(LockFapo(inPlaceEffect.get(), format, format, FrameCount) == FAUDIO_OK,
+                "in-place FAPO lock failed");
+        Require(LockFapo(outOfPlaceEffect.get(), format, format, FrameCount) == FAUDIO_OK,
+                "out-of-place FAPO lock failed");
+
+        auto input = StereoSine(SampleRate, 1'000.0f, 0.1f, FrameCount);
+        for (std::uint32_t frame = 0; frame < FrameCount; ++frame)
+            input[static_cast<std::size_t>(frame) * 2 + 1] +=
+                0.03f * std::cos(0.11f * frame);
+        auto inPlace = input;
+        std::vector<float> outOfPlace(
+            input.size(), std::numeric_limits<float>::quiet_NaN());
+
+        const auto inPlaceResult = ProcessFapo(
+            inPlaceEffect.get(), inPlace.data(), FAPO_BUFFER_VALID,
+            inPlace.data(), FrameCount, true);
+        const auto outOfPlaceResult = ProcessFapo(
+            outOfPlaceEffect.get(), input.data(), FAPO_BUFFER_VALID,
+            outOfPlace.data(), FrameCount, true);
+        Require(inPlaceResult.BufferFlags == FAPO_BUFFER_VALID &&
+                outOfPlaceResult.BufferFlags == FAPO_BUFFER_VALID &&
+                inPlaceResult.ValidFrameCount == FrameCount &&
+                outOfPlaceResult.ValidFrameCount == FrameCount,
+                "FAPO did not report the complete valid output");
+        for (std::size_t index = 0; index < inPlace.size(); ++index)
+        {
+            RequireClose(inPlace[index], outOfPlace[index], 1.0e-6f,
+                         "in-place and out-of-place FAPO output differed");
+        }
+        Require(std::any_of(
+                    outOfPlace.begin(), outOfPlace.end(),
+                    [&input, index = std::size_t{0}](float sample) mutable
+                    { return sample != input[index++]; }),
+                "full-size parameter update was not applied");
+
+        inPlaceEffect->UnlockForProcess(inPlaceEffect.get());
+        outOfPlaceEffect->UnlockForProcess(outOfPlaceEffect.get());
+    }
+
+    void TestFapoDisabledValidPassThrough()
+    {
+        constexpr std::uint32_t SampleRate = 48'000;
+        constexpr std::uint32_t FrameCount = 257;
+        auto config = MakeDefaultTenBandConfig();
+        config.bands[5].gain_db = 9.0f;
+        const auto snapshot = CompileEqualizerSnapshot(config, SampleRate, 23);
+        auto effect = MakeFapo(snapshot, LimiterConfig{});
+        const auto format = MakeFloatFormat(SampleRate);
+        Require(LockFapo(effect.get(), format, format, FrameCount) == FAUDIO_OK,
+                "disabled pass-through FAPO lock failed");
+
+        auto input = StereoSine(SampleRate, 777.0f, 0.37f, FrameCount);
+        std::vector<float> output(
+            input.size(), std::numeric_limits<float>::quiet_NaN());
+        const auto result = ProcessFapo(
+            effect.get(), input.data(), FAPO_BUFFER_VALID,
+            output.data(), FrameCount, false);
+        Require(result.BufferFlags == FAPO_BUFFER_VALID &&
+                result.ValidFrameCount == FrameCount,
+                "disabled pass-through did not preserve valid metadata");
+        Require(output == input,
+                "disabled out-of-place FAPO was not an exact pass-through");
+        effect->UnlockForProcess(effect.get());
+    }
+
+    void TestFapoSilentInputNeverReadsBuffer()
+    {
+        constexpr std::uint32_t SampleRate = 48'000;
+        constexpr std::uint32_t FrameCount = 127;
+        auto config = MakeDefaultTenBandConfig();
+        config.bands[5].gain_db = 6.0f;
+        const auto snapshot = CompileEqualizerSnapshot(config, SampleRate, 24);
+        LimiterConfig limiter;
+        limiter.enabled = false;
+        const auto format = MakeFloatFormat(SampleRate);
+        std::vector<float> nanInput(
+            static_cast<std::size_t>(FrameCount) * 2,
+            std::numeric_limits<float>::quiet_NaN());
+
+        for (const bool enabled : {false, true})
+        {
+            auto effect = MakeFapo(snapshot, limiter);
+            Require(LockFapo(effect.get(), format, format, FrameCount) == FAUDIO_OK,
+                    "silent-input FAPO lock failed");
+            std::vector<float> output(
+                nanInput.size(), std::numeric_limits<float>::quiet_NaN());
+            const auto result = ProcessFapo(
+                effect.get(), nanInput.data(), FAPO_BUFFER_SILENT,
+                output.data(), FrameCount, enabled);
+            Require(result.BufferFlags == FAPO_BUFFER_SILENT &&
+                    result.ValidFrameCount == FrameCount,
+                    "drained silent input was not reported silent");
+            Require(std::all_of(
+                        output.begin(), output.end(),
+                        [](float sample) { return sample == 0.0f; }),
+                    "silent NaN input was read or output was not fully written");
+            effect->UnlockForProcess(effect.get());
+        }
+    }
+
+    void TestFapoRejectsInvalidParameterBlocks()
+    {
+        constexpr std::uint32_t SampleRate = 48'000;
+        constexpr std::uint32_t FrameCount = 1'024;
+        const auto initial = CompileEqualizerSnapshot(
+            MakeDefaultTenBandConfig(), SampleRate, 25);
+        auto config = MakeDefaultTenBandConfig();
+        config.bands[5].gain_db = 12.0f;
+        const auto validUpdate = CompileEqualizerSnapshot(config, SampleRate, 26);
+        LimiterConfig limiter;
+        limiter.enabled = false;
+        const auto format = MakeFloatFormat(SampleRate);
+        const auto input = StereoSine(SampleRate, 1'000.0f, 0.1f, FrameCount);
+
+        const auto verifyRejected = [&](EqualizerDspSnapshot update,
+                                        std::uint32_t byteCount,
+                                        std::string_view message)
+        {
+            auto effect = MakeFapo(initial, limiter);
+            effect->SetParameters(effect.get(), &update, byteCount);
+            Require(LockFapo(effect.get(), format, format, FrameCount) == FAUDIO_OK,
+                    "parameter-validation FAPO lock failed");
+            std::vector<float> output(
+                input.size(), std::numeric_limits<float>::quiet_NaN());
+            const auto result = ProcessFapo(
+                effect.get(), const_cast<float*>(input.data()), FAPO_BUFFER_VALID,
+                output.data(), FrameCount, true);
+            Require(result.BufferFlags == FAPO_BUFFER_VALID && output == input,
+                    message);
+            effect->UnlockForProcess(effect.get());
+        };
+
+        verifyRejected(
+            validUpdate, sizeof(EqualizerDspSnapshot) - 1,
+            "short FAPO parameter block changed parameters");
+        auto wrongByteSize = validUpdate;
+        wrongByteSize.byte_size = sizeof(EqualizerDspSnapshot) - 1;
+        verifyRejected(
+            wrongByteSize, sizeof(wrongByteSize),
+            "FAPO accepted a snapshot with the wrong byte_size");
+        auto wrongAbi = validUpdate;
+        ++wrongAbi.abi_version;
+        verifyRejected(
+            wrongAbi, sizeof(wrongAbi),
+            "FAPO accepted a snapshot with the wrong ABI version");
+    }
+
+    void TestFapoLockRejectsInvalidFormats()
+    {
+        constexpr std::uint32_t SampleRate = 48'000;
+        const auto snapshot = CompileEqualizerSnapshot(
+            MakeDefaultTenBandConfig(), SampleRate, 27);
+        auto effect = MakeFapo(snapshot, LimiterConfig{});
+        const auto valid = MakeFloatFormat(SampleRate);
+
+        Require(LockFapo(effect.get(), valid, valid, 128, 0, 1) != FAUDIO_OK,
+                "FAPO accepted zero input buffers");
+        Require(LockFapo(effect.get(), valid, valid, 128, 1, 2) != FAUDIO_OK,
+                "FAPO accepted two output buffers");
+
+        auto mismatchedChannels = valid;
+        mismatchedChannels.Format.nChannels = 1;
+        mismatchedChannels.Format.nBlockAlign = sizeof(float);
+        mismatchedChannels.Format.nAvgBytesPerSec = SampleRate * sizeof(float);
+        mismatchedChannels.dwChannelMask = 0;
+        Require(LockFapo(effect.get(), valid, mismatchedChannels) != FAUDIO_OK,
+                "FAPO accepted mismatched channel formats");
+
+        auto legacyFloat = valid;
+        legacyFloat.Format.wFormatTag = FAUDIO_FORMAT_IEEE_FLOAT;
+        legacyFloat.Format.cbSize = 0;
+        Require(LockFapo(effect.get(), legacyFloat, legacyFloat) != FAUDIO_OK,
+                "FAPO accepted a non-extensible float format");
+
+        auto pcm = valid;
+        pcm.SubFormat = PcmSubFormat;
+        Require(LockFapo(effect.get(), pcm, pcm) != FAUDIO_OK,
+                "FAPO accepted a non-float32 extensible format");
+
+        auto mismatchedRate = valid;
+        mismatchedRate.Format.nSamplesPerSec = 44'100;
+        mismatchedRate.Format.nAvgBytesPerSec =
+            mismatchedRate.Format.nBlockAlign * 44'100;
+        Require(LockFapo(effect.get(), valid, mismatchedRate) != FAUDIO_OK,
+                "FAPO accepted mismatched sample rates");
+
+        auto mismatchedMask = valid;
+        mismatchedMask.dwChannelMask = 0;
+        Require(LockFapo(effect.get(), valid, mismatchedMask) != FAUDIO_OK,
+                "FAPO accepted nonmatching extensible formats");
+        Require(LockFapo(effect.get(), valid, valid, 128, 1, 1, 256) != FAUDIO_OK,
+                "FAPO accepted mismatched maximum frame counts");
+
+        Require(LockFapo(effect.get(), valid, valid) == FAUDIO_OK,
+                "FAPO rejected an exact float32 extensible format pair");
+        effect->UnlockForProcess(effect.get());
+    }
+
+    void TestFapoSilentInputDrainsTail()
+    {
+        constexpr std::uint32_t SampleRate = 48'000;
+        constexpr std::uint32_t DelayFrames = 239;
+        const auto snapshot = CompileEqualizerSnapshot(
+            MakeDefaultTenBandConfig(), SampleRate, 28);
+        auto effect = MakeFapo(snapshot, LimiterConfig{});
+        const auto format = MakeFloatFormat(SampleRate);
+        Require(LockFapo(effect.get(), format, format, DelayFrames) == FAUDIO_OK,
+                "tail-drain FAPO lock failed");
+
+        std::array<float, 2> impulse{0.5f, 0.5f};
+        std::array<float, 2> initialOutput{
+            std::numeric_limits<float>::quiet_NaN(),
+            std::numeric_limits<float>::quiet_NaN()};
+        const auto initialResult = ProcessFapo(
+            effect.get(), impulse.data(), FAPO_BUFFER_VALID,
+            initialOutput.data(), 1, true);
+        Require(initialResult.BufferFlags == FAPO_BUFFER_VALID,
+                "valid input did not keep FAPO output valid");
+
+        std::vector<float> silentInput(
+            static_cast<std::size_t>(DelayFrames) * 2,
+            std::numeric_limits<float>::quiet_NaN());
+        std::vector<float> drained(
+            silentInput.size(), std::numeric_limits<float>::quiet_NaN());
+        const auto drainResult = ProcessFapo(
+            effect.get(), silentInput.data(), FAPO_BUFFER_SILENT,
+            drained.data(), DelayFrames, true);
+        Require(drainResult.BufferFlags == FAPO_BUFFER_VALID,
+                "FAPO stopped reporting valid output before its tail ended");
+        RequireClose(0.5f, drained[(static_cast<std::size_t>(DelayFrames) - 1) * 2],
+                     1.0e-6f, "FAPO did not drain its limiter tail");
+
+        std::array<float, 2> finalInput{
+            std::numeric_limits<float>::quiet_NaN(),
+            std::numeric_limits<float>::quiet_NaN()};
+        std::array<float, 2> finalOutput{
+            std::numeric_limits<float>::quiet_NaN(),
+            std::numeric_limits<float>::quiet_NaN()};
+        const auto finalResult = ProcessFapo(
+            effect.get(), finalInput.data(), FAPO_BUFFER_SILENT,
+            finalOutput.data(), 1, true);
+        Require(finalResult.BufferFlags == FAPO_BUFFER_SILENT &&
+                finalOutput[0] == 0.0f && finalOutput[1] == 0.0f,
+                "FAPO did not become silent after its tail ended");
+        effect->UnlockForProcess(effect.get());
+    }
+
     struct TestCase { const char* group; const char* name; void (*run)(); };
     const TestCase Tests[] = {
         {"eq", "zero dB identity", TestZeroDbIdentity},
@@ -401,7 +792,14 @@ namespace
         {"limiter", "linear release", TestLimiterReleaseIsLinear},
         {"limiter", "silent tail drain", TestLimiterSilentInputDrainsTail},
         {"limiter", "reset generation drops tail", TestLimiterResetGenerationDropsTail},
-        {"limiter", "chunk invariance", TestLimiterIsChunkInvariant}
+        {"limiter", "chunk invariance", TestLimiterIsChunkInvariant},
+        {"fapo", "factory and registration", TestFapoFactoryAndRegistration},
+        {"fapo", "in-place matches out-of-place", TestFapoInPlaceMatchesOutOfPlace},
+        {"fapo", "disabled valid pass-through", TestFapoDisabledValidPassThrough},
+        {"fapo", "silent input is never read", TestFapoSilentInputNeverReadsBuffer},
+        {"fapo", "invalid parameter blocks rejected", TestFapoRejectsInvalidParameterBlocks},
+        {"fapo", "invalid lock formats rejected", TestFapoLockRejectsInvalidFormats},
+        {"fapo", "silent input drains tail", TestFapoSilentInputDrainsTail}
     };
 }
 

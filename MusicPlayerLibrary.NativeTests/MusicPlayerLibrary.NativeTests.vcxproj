@@ -121,10 +121,16 @@
     <ClCompile Include="..\MusicPlayerLibrary\EqualizerDsp.cpp">
       <Link>EqualizerDsp.cpp</Link>
     </ClCompile>
+    <ClCompile Include="..\MusicPlayerLibrary\FapoEqualizer.cpp">
+      <Link>FapoEqualizer.cpp</Link>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\MusicPlayerLibrary\EqualizerDsp.h">
       <Link>EqualizerDsp.h</Link>
+    </ClInclude>
+    <ClInclude Include="..\MusicPlayerLibrary\FapoEqualizer.h">
+      <Link>FapoEqualizer.h</Link>
     </ClInclude>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
