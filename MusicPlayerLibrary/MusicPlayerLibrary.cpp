@@ -1578,6 +1578,11 @@ inline void MusicPlayerLibrary::MusicPlayerNative::start_audio_playback()
 	if (audio_player_worker_thread.joinable())
 	{
 		stop_audio_playback(0);
+		if (playback_state.load() == audio_playback_state_stopped)
+		{
+			NATIVE_TRACE("err: audio context reset failed, playback will not restart\n");
+			return;
+		}
 	}
 	if (fft_executer)
 		fft_executer->ResetBuffers();
