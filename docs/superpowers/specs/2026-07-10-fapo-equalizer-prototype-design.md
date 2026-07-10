@@ -138,7 +138,7 @@ The graph retains `abuffer`, `aresample`, `volume=0.7`, `aformat`, and `abuffers
 
 ## Tests
 
-Add an assembly-internal C++/CLI test bridge, exposed only to `WpfMusicPlayer.Test` with `InternalsVisibleTo`, so MSTest can exercise the pure DSP without opening an audio device.
+Add a separate native test executable project, `MusicPlayerLibrary.NativeTests`, which compiles the same `EqualizerDsp.cpp` and `FapoEqualizer.cpp` sources used by the production library. The test executable must not create an audio device and must return a non-zero exit code on any failed assertion. No test-only type, method, export, or friend-assembly declaration is added to the production `MusicPlayerLibrary` DLL.
 
 Required offline tests are:
 
@@ -155,7 +155,7 @@ Required offline tests are:
 11. At 48 kHz the first non-zero impulse sample is delayed by 239 frames; at 44.1 kHz it is delayed by 219 frames.
 12. Splitting identical input into different processing-quantum sizes produces identical output.
 
-After the test cycle, validate the complete `WpfMusicPlayer.slnx` x64 Debug build with the repository's `build-wpfmusicplayer` skill script. Run MSTest separately because solution compilation builds but does not execute the test project.
+After the test cycle, validate the complete `WpfMusicPlayer.slnx` x64 Debug build with the repository's `build-wpfmusicplayer` skill script. Run `MusicPlayerLibrary.NativeTests.exe` and the existing MSTest project separately because solution compilation builds but does not execute either test suite.
 
 ## Known prototype limitations
 

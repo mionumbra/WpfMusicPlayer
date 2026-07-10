@@ -371,3 +371,6 @@ qodana.yaml
 
 # Jetbrains MCP Server settings
 .agents/
+
+# Local git worktrees
+.worktrees/
