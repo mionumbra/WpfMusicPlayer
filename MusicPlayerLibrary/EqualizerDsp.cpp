@@ -2,12 +2,16 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <numbers>
 
 namespace MusicPlayerLibrary::AudioDsp
 {
     namespace
     {
+        constexpr std::uint32_t MaxChannelCount = 64;
+        constexpr float TailThreshold = 1.0e-8f;
+
         [[nodiscard]] bool IsUsableBand(
             const EqualizerBandConfig& band, std::uint32_t sampleRate) noexcept
         {
@@ -111,22 +115,58 @@ namespace MusicPlayerLibrary::AudioDsp
         std::uint32_t maxFrameCount,
         const LimiterConfig& limiter)
     {
-        if (sampleRate == 0 || channelCount == 0 || maxFrameCount == 0)
+        if (sampleRate == 0 || channelCount == 0 ||
+            channelCount > MaxChannelCount || maxFrameCount == 0 ||
+            !std::isfinite(limiter.ceiling) || limiter.ceiling <= 0.0f ||
+            !std::isfinite(limiter.lookahead_ms) || limiter.lookahead_ms < 0.0f ||
+            !std::isfinite(limiter.release_ms) || limiter.release_ms <= 0.0f)
+        {
             return false;
+        }
+
+        const double lookaheadFrames = std::floor(
+            static_cast<double>(sampleRate) * limiter.lookahead_ms / 1000.0);
+        const double releaseFrames = std::floor(
+            static_cast<double>(sampleRate) * limiter.release_ms / 1000.0);
+        if (lookaheadFrames > (std::numeric_limits<std::uint32_t>::max)() ||
+            releaseFrames > (std::numeric_limits<std::uint32_t>::max)())
+        {
+            return false;
+        }
 
         sample_rate_ = sampleRate;
         channel_count_ = channelCount;
         max_frame_count_ = maxFrameCount;
         limiter_ = limiter;
+        lookahead_window_frames_ = (std::max)(
+            1u, static_cast<std::uint32_t>(lookaheadFrames));
+        limiter_delay_frames_ = limiter.enabled ? lookahead_window_frames_ - 1u : 0u;
+        limiter_release_frames_ = (std::max)(
+            1u, static_cast<std::uint32_t>(releaseFrames));
         biquad_states_.assign(
             static_cast<std::size_t>(channelCount) * EqualizerBandCount, {});
-        applied_reset_generation_ = ~std::uint64_t{0};
+        delay_line_.assign(
+            static_cast<std::size_t>(lookahead_window_frames_) * channelCount, 0.0f);
+        peak_queue_.assign(
+            static_cast<std::size_t>(lookahead_window_frames_) + 1u, {});
+        Reset();
         return true;
     }
 
     void EqualizerDsp::Reset() noexcept
     {
         std::fill(biquad_states_.begin(), biquad_states_.end(), BiquadState{});
+        std::fill(delay_line_.begin(), delay_line_.end(), 0.0f);
+        std::fill(peak_queue_.begin(), peak_queue_.end(), PeakNode{});
+        limiter_frame_index_ = 0;
+        silent_input_frames_ = 0;
+        delay_write_frame_ = 0;
+        peak_head_ = 0;
+        peak_tail_ = 0;
+        limiter_gain_ = 1.0f;
+        limiter_release_step_ = 0.0f;
+        limiter_release_frames_remaining_ = 0;
+        has_tail_ = false;
         applied_reset_generation_ = ~std::uint64_t{0};
     }
 
@@ -135,11 +175,12 @@ namespace MusicPlayerLibrary::AudioDsp
         const float* input,
         float* output,
         std::uint32_t frameCount,
-        bool) noexcept
+        bool inputSilent) noexcept
     {
         if (sample_rate_ == 0 || channel_count_ == 0 ||
             frameCount > max_frame_count_ ||
-            (frameCount != 0 && (input == nullptr || output == nullptr)) ||
+            (frameCount != 0 &&
+             (output == nullptr || (!inputSilent && input == nullptr))) ||
             snapshot.abi_version != EqualizerSnapshotAbiVersion ||
             snapshot.byte_size != sizeof(EqualizerDspSnapshot))
         {
@@ -164,13 +205,16 @@ namespace MusicPlayerLibrary::AudioDsp
             }
         }
 
+        bool outputActive = false;
+        std::array<float, MaxChannelCount> filteredSamples{};
         for (std::uint32_t frame = 0; frame < frameCount; ++frame)
         {
+            float linkedPeak = 0.0f;
             for (std::uint32_t channel = 0; channel < channel_count_; ++channel)
             {
                 const auto sampleIndex =
                     static_cast<std::size_t>(frame) * channel_count_ + channel;
-                float x = input[sampleIndex];
+                float x = inputSilent ? 0.0f : input[sampleIndex];
 
                 for (std::size_t band = 0; band < EqualizerBandCount; ++band)
                 {
@@ -186,20 +230,147 @@ namespace MusicPlayerLibrary::AudioDsp
                     x = y;
                 }
 
-                output[sampleIndex] = x;
+                filteredSamples[channel] = x;
+                linkedPeak = (std::max)(linkedPeak, std::abs(x));
+            }
+
+            if (!limiter_.enabled)
+            {
+                for (std::uint32_t channel = 0; channel < channel_count_; ++channel)
+                {
+                    const auto sampleIndex =
+                        static_cast<std::size_t>(frame) * channel_count_ + channel;
+                    output[sampleIndex] = filteredSamples[channel];
+                    outputActive = outputActive ||
+                        std::abs(filteredSamples[channel]) >= TailThreshold;
+                }
+            }
+            else
+            {
+                const std::size_t queueCapacity = peak_queue_.size();
+                while (peak_head_ != peak_tail_ &&
+                       limiter_frame_index_ - peak_queue_[peak_head_].frame_index >=
+                           lookahead_window_frames_)
+                {
+                    peak_head_ = (peak_head_ + 1u) % queueCapacity;
+                }
+
+                while (peak_head_ != peak_tail_)
+                {
+                    const std::size_t last =
+                        (peak_tail_ + queueCapacity - 1u) % queueCapacity;
+                    if (peak_queue_[last].peak > linkedPeak)
+                        break;
+                    peak_tail_ = last;
+                }
+                peak_queue_[peak_tail_] = {limiter_frame_index_, linkedPeak};
+                peak_tail_ = (peak_tail_ + 1u) % queueCapacity;
+
+                const float windowPeak = peak_queue_[peak_head_].peak;
+                const float targetGain = windowPeak > limiter_.ceiling
+                    ? limiter_.ceiling / windowPeak
+                    : 1.0f;
+                if (targetGain < limiter_gain_)
+                {
+                    limiter_gain_ = targetGain;
+                    limiter_release_step_ =
+                        (1.0f - targetGain) / limiter_release_frames_;
+                    limiter_release_frames_remaining_ = limiter_release_frames_;
+                }
+                else if (targetGain > limiter_gain_)
+                {
+                    limiter_gain_ = (std::min)(
+                        targetGain, limiter_gain_ + limiter_release_step_);
+                    if (limiter_release_frames_remaining_ != 0)
+                    {
+                        --limiter_release_frames_remaining_;
+                        if (limiter_release_frames_remaining_ == 0)
+                            limiter_gain_ = targetGain;
+                    }
+                }
+
+                const std::size_t writeOffset = delay_write_frame_ * channel_count_;
+                for (std::uint32_t channel = 0; channel < channel_count_; ++channel)
+                    delay_line_[writeOffset + channel] = filteredSamples[channel];
+
+                const std::size_t readFrame =
+                    (delay_write_frame_ + lookahead_window_frames_ -
+                     limiter_delay_frames_) % lookahead_window_frames_;
+                const std::size_t readOffset = readFrame * channel_count_;
+                for (std::uint32_t channel = 0; channel < channel_count_; ++channel)
+                {
+                    const auto sampleIndex =
+                        static_cast<std::size_t>(frame) * channel_count_ + channel;
+                    const float delayedSample = delay_line_[readOffset + channel];
+                    delay_line_[readOffset + channel] = 0.0f;
+                    const float limitedSample = (std::clamp)(
+                        delayedSample * limiter_gain_,
+                        -limiter_.ceiling,
+                        limiter_.ceiling);
+                    output[sampleIndex] = limitedSample;
+                    outputActive = outputActive ||
+                        std::abs(limitedSample) >= TailThreshold;
+                }
+
+                delay_write_frame_ =
+                    (delay_write_frame_ + 1u) % lookahead_window_frames_;
+                ++limiter_frame_index_;
+            }
+
+            if (inputSilent)
+            {
+                if (silent_input_frames_ !=
+                    (std::numeric_limits<std::uint64_t>::max)())
+                {
+                    ++silent_input_frames_;
+                }
+            }
+            else
+            {
+                silent_input_frames_ = 0;
             }
         }
 
-        return true;
+        has_tail_ = false;
+        for (const auto& state : biquad_states_)
+        {
+            if (std::abs(state.z1) >= TailThreshold ||
+                std::abs(state.z2) >= TailThreshold)
+            {
+                has_tail_ = true;
+                break;
+            }
+        }
+        if (limiter_.enabled && !has_tail_)
+        {
+            has_tail_ = std::any_of(
+                delay_line_.begin(), delay_line_.end(),
+                [](float sample) { return std::abs(sample) >= TailThreshold; });
+        }
+        if (limiter_.enabled && !has_tail_ && peak_head_ != peak_tail_)
+            has_tail_ = peak_queue_[peak_head_].peak >= TailThreshold;
+        if (limiter_.enabled && !has_tail_)
+            has_tail_ = std::abs(1.0f - limiter_gain_) >= TailThreshold;
+
+        const bool fullSilentDelay = !limiter_.enabled ||
+            silent_input_frames_ >= limiter_delay_frames_;
+        if (inputSilent && fullSilentDelay && !outputActive && !has_tail_)
+        {
+            const auto resetGeneration = applied_reset_generation_;
+            Reset();
+            applied_reset_generation_ = resetGeneration;
+        }
+
+        return !inputSilent || outputActive || has_tail_;
     }
 
     bool EqualizerDsp::HasTail() const noexcept
     {
-        return false;
+        return has_tail_;
     }
 
     std::uint32_t EqualizerDsp::GetLimiterDelayFrames() const noexcept
     {
-        return 0;
+        return limiter_delay_frames_;
     }
 }

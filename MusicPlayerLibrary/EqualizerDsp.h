@@ -68,11 +68,30 @@ namespace MusicPlayerLibrary::AudioDsp
         [[nodiscard]] std::uint32_t GetLimiterDelayFrames() const noexcept;
     private:
         struct BiquadState { float z1 = 0.0f, z2 = 0.0f; };
+        struct PeakNode
+        {
+            std::uint64_t frame_index = 0;
+            float peak = 0.0f;
+        };
         std::uint32_t sample_rate_ = 0;
         std::uint32_t channel_count_ = 0;
         std::uint32_t max_frame_count_ = 0;
         std::uint64_t applied_reset_generation_ = ~std::uint64_t{0};
         LimiterConfig limiter_{};
+        std::uint32_t lookahead_window_frames_ = 1;
+        std::uint32_t limiter_delay_frames_ = 0;
+        std::uint32_t limiter_release_frames_ = 1;
+        std::uint64_t limiter_frame_index_ = 0;
+        std::uint64_t silent_input_frames_ = 0;
+        std::size_t delay_write_frame_ = 0;
+        std::size_t peak_head_ = 0;
+        std::size_t peak_tail_ = 0;
+        float limiter_gain_ = 1.0f;
+        float limiter_release_step_ = 0.0f;
+        std::uint32_t limiter_release_frames_remaining_ = 0;
+        bool has_tail_ = false;
         std::vector<BiquadState> biquad_states_;
+        std::vector<float> delay_line_;
+        std::vector<PeakNode> peak_queue_;
     };
 }
