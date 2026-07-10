@@ -1562,6 +1562,11 @@ inline void MusicPlayerLibrary::MusicPlayerNative::start_audio_playback()
 {
 	if (playback_state.load() == audio_playback_state_stopped) {
 		reset_audio_context();
+		if (playback_state.load() == audio_playback_state_stopped)
+		{
+			NATIVE_TRACE("err: audio context reset failed, playback will not start\n");
+			return;
+		}
 	}
 	if (source_voice) {
 		FAudioVoiceState state;
