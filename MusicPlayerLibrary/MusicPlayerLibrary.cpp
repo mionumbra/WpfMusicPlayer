@@ -464,7 +464,11 @@ void MusicPlayerLibrary::MusicPlayerNative::reset_audio_context()
 			snapshot_published = publish_equalizer_snapshot_locked();
 		}
 		if (!snapshot_published)
+		{
 			NATIVE_TRACE("err: publish equalizer reset snapshot failed\n");
+			playback_state.store(audio_playback_state_stopped);
+			return;
+		}
 		av_seek_frame(format_context, audio_stream_index, 0, AVSEEK_FLAG_BACKWARD);
 		avcodec_flush_buffers(codec_context);
 		// 重置滤镜图
