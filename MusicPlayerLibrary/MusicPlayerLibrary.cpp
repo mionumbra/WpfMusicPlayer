@@ -3,6 +3,7 @@
 #include "pch.h"
 
 #include "MusicPlayerLibrary.h"
+#include "FapoEqualizer.h"
 #include "NcmDecryptor.h"
 #include <cwctype>
 #include <format>
@@ -18,14 +19,6 @@ using namespace System::Runtime::InteropServices;
 
 namespace
 {
-	constexpr int EqualizerBandCount = 10;
-	constexpr int EqualizerBandFrequenciesHz[EqualizerBandCount] = { 31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000 };
-
-	bool IsEqualizerBandSupportedBySampleRate(int sample_rate, int frequency_hz)
-	{
-		return sample_rate <= 0 || frequency_hz * 2 < sample_rate;
-	}
-
 	array<System::Byte>^ CopyImageBufferToManagedArray(const BYTE* image_data, ULONGLONG image_size)
 	{
 		if (image_data == nullptr || image_size == 0)
@@ -464,6 +457,14 @@ void MusicPlayerLibrary::MusicPlayerNative::reset_audio_context()
 	user_request_stop.store(false);
 	if (is_audio_context_initialized()) {
 		stop_audio_decode();
+		bool snapshot_published;
+		{
+			std::lock_guard graph_lock(filter_graph_mutex);
+			++equalizer_reset_generation;
+			snapshot_published = publish_equalizer_snapshot_locked();
+		}
+		if (!snapshot_published)
+			NATIVE_TRACE("err: publish equalizer reset snapshot failed\n");
 		av_seek_frame(format_context, audio_stream_index, 0, AVSEEK_FLAG_BACKWARD);
 		avcodec_flush_buffers(codec_context);
 		// 重置滤镜图
@@ -760,14 +761,86 @@ inline int MusicPlayerLibrary::MusicPlayerNative::initialize_audio_engine()
 	wfx.nBlockAlign = (wfx.wBitsPerSample / 8) * wfx.nChannels; // 样本大小：样本大小(16-bit)*通道数
 	wfx.nAvgBytesPerSec = wfx.nSamplesPerSec * wfx.nBlockAlign; // 每秒钟解码多少字节，样本大小*采样率
 	wfx.cbSize = sizeof(wfx);
-	if (FAILED(FAudio_CreateSourceVoice(faudio, 
-		&source_voice, 
-		&wfx, FAUDIO_VOICE_NOPITCH, 
+	AudioDsp::EqualizerDspSnapshot initial_equalizer_snapshot;
+	{
+		std::lock_guard graph_lock(filter_graph_mutex);
+		initial_equalizer_snapshot = build_equalizer_snapshot_locked();
+	}
+
+	FAudioSourceVoice* local_source_voice = nullptr;
+	if (FAILED(FAudio_CreateSourceVoice(faudio,
+		&local_source_voice,
+		&wfx, FAUDIO_VOICE_NOPITCH,
 		2.0, nullptr, nullptr, nullptr)))
 	{
 		NATIVE_TRACE("err: create source voice failed\n");
 		uninitialize_audio_engine();
 		return -1;
+	}
+	auto fail_local_source_voice = [this, &local_source_voice]() {
+		if (local_source_voice)
+		{
+			FAudioVoice_DestroyVoice(local_source_voice);
+			local_source_voice = nullptr;
+		}
+		uninitialize_audio_engine();
+		return -1;
+		};
+
+	FAPO* equalizer_fapo = nullptr;
+	const AudioDsp::LimiterConfig limiter{
+		.enabled = true,
+		.ceiling = 0.70f,
+		.lookahead_ms = 5.0f,
+		.release_ms = 50.0f
+	};
+	const std::uint32_t create_fapo_result = AudioDsp::CreateEqualizerFapo(
+		initial_equalizer_snapshot, limiter, &equalizer_fapo);
+	if (create_fapo_result != FAUDIO_OK || !equalizer_fapo)
+	{
+		NATIVE_TRACE("err: create equalizer FAPO failed, reason=0x%x\n", create_fapo_result);
+		if (equalizer_fapo)
+			equalizer_fapo->Release(equalizer_fapo);
+		return fail_local_source_voice();
+	}
+
+	FAudioEffectDescriptor equalizer_effect{
+		.pEffect = equalizer_fapo,
+		.InitialState = 1,
+		.OutputChannels = wfx.nChannels
+	};
+	FAudioEffectChain effect_chain{
+		.EffectCount = 1,
+		.pEffectDescriptors = &equalizer_effect
+	};
+	const std::uint32_t set_chain_result = FAudioVoice_SetEffectChain(
+		local_source_voice, &effect_chain);
+	if (set_chain_result != FAUDIO_OK)
+	{
+		equalizer_fapo->Release(equalizer_fapo);
+		equalizer_fapo = nullptr;
+		NATIVE_TRACE("err: attach equalizer FAPO failed, reason=0x%x\n", set_chain_result);
+		return fail_local_source_voice();
+	}
+	equalizer_fapo->Release(equalizer_fapo);
+	equalizer_fapo = nullptr;
+
+	std::uint32_t prewarm_result;
+	{
+		std::lock_guard graph_lock(filter_graph_mutex);
+		const auto latest_snapshot = build_equalizer_snapshot_locked();
+		prewarm_result = FAudioVoice_SetEffectParameters(
+			local_source_voice, 0, &latest_snapshot, sizeof(latest_snapshot), FAUDIO_COMMIT_NOW);
+		if (prewarm_result == FAUDIO_OK)
+		{
+			source_voice = local_source_voice;
+			local_source_voice = nullptr;
+		}
+	}
+	if (prewarm_result != FAUDIO_OK)
+	{
+		NATIVE_TRACE("err: prewarm equalizer FAPO parameters failed, reason=0x%x\n", prewarm_result);
+		return fail_local_source_voice();
 	}
 
 	last_frametime = 0.0;
@@ -800,11 +873,16 @@ inline void MusicPlayerLibrary::MusicPlayerNative::uninitialize_audio_engine()
 	}
 	stop_audio_decode();
 	reset_decoded_frame_queue(true);
-	if (source_voice) {
-		UNREFERENCED_PARAMETER(FAudioSourceVoice_Stop(source_voice, 0, FAUDIO_COMMIT_NOW));
-		UNREFERENCED_PARAMETER(FAudioSourceVoice_FlushSourceBuffers(source_voice));
-		FAudioVoice_DestroyVoice(source_voice);
+	FAudioSourceVoice* local_source_voice = nullptr;
+	{
+		std::lock_guard graph_lock(filter_graph_mutex);
+		local_source_voice = source_voice;
 		source_voice = nullptr;
+	}
+	if (local_source_voice) {
+		UNREFERENCED_PARAMETER(FAudioSourceVoice_Stop(local_source_voice, 0, FAUDIO_COMMIT_NOW));
+		UNREFERENCED_PARAMETER(FAudioSourceVoice_FlushSourceBuffers(local_source_voice));
+		FAudioVoice_DestroyVoice(local_source_voice);
 	}
 	if (mastering_voice) {
 		FAudioVoice_DestroyVoice(mastering_voice);
@@ -1012,7 +1090,7 @@ void MusicPlayerLibrary::MusicPlayerNative::audio_playback_worker_thread()
 			break;
 		}
 
-		// Visualization is best-effort and runs after the audio buffer is queued.
+		// Visualization is best-effort and observes the pre-FAPO PCM after it is queued.
 		if (fft_executer)
 		{
 			fft_executer->AddSamplesToRingBuffer(
@@ -1325,7 +1403,7 @@ void MusicPlayerLibrary::MusicPlayerNative::audio_equalize_worker_thread()
 			std::lock_guard graph_lock(filter_graph_mutex);
 			if (!filter_flush_sent)
 			{
-				NATIVE_TRACE("info: decoded queue eof, flushing equalizer filter graph\n");
+				NATIVE_TRACE("info: decoded queue eof, flushing audio filter graph\n");
 				if (int ret = av_buffersrc_add_frame(filter_context_src, nullptr); ret < 0 && ret != AVERROR_EOF)
 				{
 					FFMPEG_CRITICAL_ERROR(ret);
@@ -1810,14 +1888,13 @@ MusicPlayerLibrary::MusicPlayerNative::MusicPlayerNative() :
 		avutil_version(),
 		swresample_version());
 	NATIVE_TRACE("info: audio api backend: FAudio, version %s\n", get_backend_implement_version());
-	eq_bands.assign(EqualizerBandCount, 0);
 }
 
 /**
  * @brief Initializes the audio filter graph using libavfilter
  *
- * @note The graph is owned by the equalizer worker. The playback FIFO only
- * buffers post-EQ PCM for a short window to keep live EQ changes responsive.
+ * @note The graph is owned by the equalizer worker. The playback FIFO buffers
+ * normalized pre-FAPO PCM for a short window.
  */
 int MusicPlayerLibrary::MusicPlayerNative::init_av_filter_equalizer()
 {
@@ -1834,8 +1911,7 @@ int MusicPlayerLibrary::MusicPlayerNative::init_av_filter_equalizer()
 		filter_graph = nullptr;
 		filter_context_src = filter_context_sink = nullptr;
 		resample_ctx = nullptr;
-		volume_ctx = limiter_ctx = format_normalize_ctx = nullptr;
-		filter_graphs.clear();
+		volume_ctx = format_normalize_ctx = nullptr;
 		};
 	auto fail_filter = [&release_filter_graph](int code) {
 		release_filter_graph();
@@ -1875,44 +1951,6 @@ int MusicPlayerLibrary::MusicPlayerNative::init_av_filter_equalizer()
 	}
 	NATIVE_TRACE("info: resample filter created, param = %s\n", resample_args.c_str());
 
-	if (eq_bands.size() != EqualizerBandCount)
-	{
-		NATIVE_TRACE("warn: invalid eq_bands size, =%d\n", static_cast<int>(eq_bands.size()));
-		eq_bands.assign(EqualizerBandCount, 0);
-	}
-	else
-	{
-		NATIVE_TRACE("info: eq_bands already initialized, skip\n");
-	}
-	for (int i = 0; i < EqualizerBandCount; i++)
-	{
-		const int freq_hz = EqualizerBandFrequenciesHz[i];
-		if (!IsEqualizerBandSupportedBySampleRate(sample_rate, freq_hz))
-		{
-			NATIVE_TRACE("info: skip equalizer band %dHz for sample_rate=%d by Nyquist limit\n", freq_hz, sample_rate);
-			continue;
-		}
-
-		av_filter_eq_graph eq_graph{
-			.band_index = i,
-			.freq = freq_hz,
-			.gain_values = eq_bands[i],
-			.eq_context = nullptr
-		};
-		eq_graph.eq_name = std::format("eq{}", i);
-		std::string arg_str = std::format("f={}:t=q:w=1:g={}", freq_hz, eq_bands[i]);
-		NATIVE_TRACE("info: init_av_filter_equalizer, filter args: %s\n", arg_str.c_str());
-
-		ret = avfilter_graph_create_filter(&eq_graph.eq_context, avfilter_get_by_name("equalizer"),
-			eq_graph.eq_name.c_str(),
-			arg_str.c_str(), nullptr, filter_graph);
-		if (ret < 0)
-		{
-			return fail_filter_with_ffmpeg(ret);
-		}
-
-		filter_graphs.push_back(eq_graph);
-	}
 	ret = avfilter_graph_create_filter(&filter_context_sink, avfilter_get_by_name("abuffersink"),
 		"sink", nullptr, nullptr, filter_graph);
 	if (ret < 0)
@@ -1925,32 +1963,6 @@ int MusicPlayerLibrary::MusicPlayerNative::init_av_filter_equalizer()
 	{
 		return fail_filter_with_ffmpeg(ret);
 	}
-	if ((ret = avfilter_link(filter_context_src, 0, resample_ctx, 0)) < 0 ||
-		(ret = avfilter_link(resample_ctx, 0, volume_ctx, 0)) < 0)
-	{
-		return fail_filter_with_ffmpeg(ret);
-	}
-	AVFilterContext* equalizer_tail_ctx = volume_ctx;
-	for (auto& eq_graph : filter_graphs)
-	{
-		if ((ret = avfilter_link(equalizer_tail_ctx, 0, eq_graph.eq_context, 0)) < 0)
-		{
-			return fail_filter_with_ffmpeg(ret);
-		}
-		equalizer_tail_ctx = eq_graph.eq_context;
-	}
-
-	ret = avfilter_graph_create_filter(&limiter_ctx, avfilter_get_by_name("alimiter"),
-		"lim", "limit=0.70:attack=5:release=50:level=disabled", nullptr, filter_graph);
-	if (ret < 0)
-	{
-		return fail_filter_with_ffmpeg(ret);
-	}
-	if ((ret = avfilter_link(equalizer_tail_ctx, 0, limiter_ctx, 0)) < 0)
-	{
-		return fail_filter_with_ffmpeg(ret);
-	}
-	NATIVE_TRACE("info: limiter linked\n");
 	std::string fmt_args = std::format("sample_fmts=s16:sample_rates={}:channel_layouts=stereo", sample_rate);
 	ret = avfilter_graph_create_filter(&format_normalize_ctx,
 		avfilter_get_by_name("aformat"),
@@ -1960,7 +1972,9 @@ int MusicPlayerLibrary::MusicPlayerNative::init_av_filter_equalizer()
 		return fail_filter_with_ffmpeg(ret);
 	}
 	NATIVE_TRACE("info: format filter created, param = %s\n", fmt_args.c_str());
-	if ((ret = avfilter_link(limiter_ctx, 0, format_normalize_ctx, 0)) < 0 ||
+	if ((ret = avfilter_link(filter_context_src, 0, resample_ctx, 0)) < 0 ||
+		(ret = avfilter_link(resample_ctx, 0, volume_ctx, 0)) < 0 ||
+		(ret = avfilter_link(volume_ctx, 0, format_normalize_ctx, 0)) < 0 ||
 		(ret = avfilter_link(format_normalize_ctx, 0, filter_context_sink, 0)) < 0)
 	{
 		return fail_filter_with_ffmpeg(ret);
@@ -2002,8 +2016,7 @@ void MusicPlayerLibrary::MusicPlayerNative::reset_av_filter_equalizer()
 	filter_graph = nullptr;
 	filter_context_src = filter_context_sink = nullptr;
 	resample_ctx = nullptr;
-	volume_ctx = limiter_ctx = format_normalize_ctx = nullptr;
-	filter_graphs.clear();
+	volume_ctx = format_normalize_ctx = nullptr;
 }
 
 bool MusicPlayerLibrary::MusicPlayerNative::IsInitialized()
@@ -2160,43 +2173,43 @@ std::wstring MusicPlayerLibrary::MusicPlayerNative::GetID3Lyric()
 	return id3_string_lyric;
 }
 
+MusicPlayerLibrary::AudioDsp::EqualizerDspSnapshot
+MusicPlayerLibrary::MusicPlayerNative::build_equalizer_snapshot_locked() const noexcept
+{
+	return AudioDsp::CompileEqualizerSnapshot(
+		equalizer_config, sample_rate, equalizer_reset_generation);
+}
+
+bool MusicPlayerLibrary::MusicPlayerNative::publish_equalizer_snapshot_locked() noexcept
+{
+	if (!source_voice)
+		return true;
+	const auto snapshot = build_equalizer_snapshot_locked();
+	return FAudioVoice_SetEffectParameters(
+		source_voice, 0, &snapshot, sizeof(snapshot), FAUDIO_COMMIT_NOW) == 0;
+}
+
 int MusicPlayerLibrary::MusicPlayerNative::GetEqualizerBand(int index)
 {
-	if (index < 0 || index >= EqualizerBandCount) return 0;
+	if (index < 0 || static_cast<std::size_t>(index) >= AudioDsp::EqualizerBandCount)
+		return 0;
 	std::lock_guard graph_lock(filter_graph_mutex);
-	if (eq_bands.size() == EqualizerBandCount)
-		return eq_bands[index];
-	const auto graph = std::find_if(filter_graphs.begin(), filter_graphs.end(),
-		[index](const av_filter_eq_graph& eq_graph)
-		{
-			return eq_graph.band_index == index;
-		});
-	if (graph != filter_graphs.end())
-		return graph->gain_values;
-	return 0;
+	return static_cast<int>(equalizer_config.bands[index].gain_db);
 }
 
 void MusicPlayerLibrary::MusicPlayerNative::SetEqualizerBand(int index, int value)
 {
-	if (index < 0 || index >= EqualizerBandCount) return;
-	if (value < -24) value = -24;
-	else if (value > 24) value = 24;
-	std::lock_guard graph_lock(filter_graph_mutex);
-	if (eq_bands.size() == EqualizerBandCount)
-		eq_bands[index] = value;
-
-	auto graph = std::find_if(filter_graphs.begin(), filter_graphs.end(),
-		[index](const av_filter_eq_graph& eq_graph)
-		{
-			return eq_graph.band_index == index;
-		});
-	if (this->is_av_filter_equalizer_initialized() && graph != filter_graphs.end())
+	if (index < 0 || static_cast<std::size_t>(index) >= AudioDsp::EqualizerBandCount)
+		return;
+	value = std::clamp(value, -24, 24);
+	bool snapshot_published;
 	{
-		graph->gain_values = value;
-		std::string gain_val = std::format("{}", value);
-
-		avfilter_graph_send_command(filter_graph, graph->eq_name.c_str(), "gain", gain_val.c_str(), nullptr, 0, 0);
+		std::lock_guard graph_lock(filter_graph_mutex);
+		equalizer_config.bands[index].gain_db = static_cast<float>(value);
+		snapshot_published = publish_equalizer_snapshot_locked();
 	}
+	if (!snapshot_published)
+		NATIVE_TRACE("err: publish equalizer snapshot failed for band %d\n", index);
 }
 
 void MusicPlayerLibrary::MusicPlayerNative::SetManagedPlayer(MusicPlayer^ managed_player)

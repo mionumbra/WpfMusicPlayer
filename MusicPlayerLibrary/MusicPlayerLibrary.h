@@ -5,6 +5,7 @@
 #include "NativeTraceRedirect.h"
 #include <atomic>
 #include <vcclr.h>
+#include "EqualizerDsp.h"
 #include "FFTExecuter.h"
 #include "FileAbstractionLayer.h"
 using namespace System;
@@ -193,19 +194,19 @@ namespace MusicPlayerLibrary {
 		void dialog_ffmpeg_critical_error(int err_code, const char* file, int line);
 
 		// equalizer settings
-		std::vector<int> eq_bands;
+		AudioDsp::EqualizerConfig equalizer_config =
+			AudioDsp::MakeDefaultTenBandConfig();
+		std::uint64_t equalizer_reset_generation = 0;
 		AVFilterGraph* filter_graph = nullptr;
-		struct av_filter_eq_graph
-		{
-			int band_index;
-			int freq;
-			int gain_values;
-			AVFilterContext* eq_context;
-			std::string eq_name;
-		};
-		AVFilterContext* filter_context_src = nullptr, * filter_context_sink = nullptr, * resample_ctx = nullptr,
-			* volume_ctx = nullptr, * limiter_ctx = nullptr, * format_normalize_ctx = nullptr;
-		std::vector<av_filter_eq_graph> filter_graphs;
+		AVFilterContext* filter_context_src = nullptr;
+		AVFilterContext* filter_context_sink = nullptr;
+		AVFilterContext* resample_ctx = nullptr;
+		AVFilterContext* volume_ctx = nullptr;
+		AVFilterContext* format_normalize_ctx = nullptr;
+
+		AudioDsp::EqualizerDspSnapshot
+			build_equalizer_snapshot_locked() const noexcept;
+		bool publish_equalizer_snapshot_locked() noexcept;
 
 		int init_av_filter_equalizer();
 		bool is_av_filter_equalizer_initialized();
