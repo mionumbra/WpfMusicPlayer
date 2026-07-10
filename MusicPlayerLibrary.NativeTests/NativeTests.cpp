@@ -7,6 +7,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <functional>
 #include <iostream>
 #include <limits>
@@ -515,6 +516,59 @@ namespace
         reinterpret_cast<FAPOBase*>(effect.get())->pFree(properties);
     }
 
+    void TestFapoAdvertisesExtensibleFormats()
+    {
+        constexpr std::uint32_t SampleRate = 48'000;
+        const auto snapshot = CompileEqualizerSnapshot(
+            MakeDefaultTenBandConfig(), SampleRate, 29);
+        auto effect = MakeFapo(snapshot, LimiterConfig{});
+        const auto valid = MakeFloatFormat(SampleRate);
+
+        Require(effect->IsInputFormatSupported(
+                    effect.get(), &valid.Format, &valid.Format, nullptr) ==
+                    FAUDIO_OK,
+                "FAPO did not advertise its supported extensible input format");
+        Require(effect->IsOutputFormatSupported(
+                    effect.get(), &valid.Format, &valid.Format, nullptr) ==
+                    FAUDIO_OK,
+                "FAPO did not advertise its supported extensible output format");
+
+        auto legacyFloat = valid;
+        legacyFloat.Format.wFormatTag = FAUDIO_FORMAT_IEEE_FLOAT;
+        legacyFloat.Format.cbSize = 0;
+        FAudioWaveFormatEx* closestFormat = nullptr;
+        Require(effect->IsInputFormatSupported(
+                    effect.get(), &valid.Format, &legacyFloat.Format,
+                    &closestFormat) == FAPO_E_FORMAT_UNSUPPORTED &&
+                closestFormat == nullptr,
+                "FAPO advertised an unsupported legacy input format");
+        Require(effect->IsOutputFormatSupported(
+                    effect.get(), &valid.Format, &legacyFloat.Format,
+                    &closestFormat) == FAPO_E_FORMAT_UNSUPPORTED &&
+                closestFormat == nullptr,
+                "FAPO advertised an unsupported legacy output format");
+
+        auto mismatched = valid;
+        mismatched.dwChannelMask = 0;
+        Require(effect->IsInputFormatSupported(
+                    effect.get(), &valid.Format, &mismatched.Format, nullptr) ==
+                    FAPO_E_FORMAT_UNSUPPORTED,
+                "FAPO advertised a nonmatching input format pair");
+        Require(effect->IsOutputFormatSupported(
+                    effect.get(), &valid.Format, &mismatched.Format, nullptr) ==
+                    FAPO_E_FORMAT_UNSUPPORTED,
+                "FAPO advertised a nonmatching output format pair");
+
+        Require(effect->IsInputFormatSupported(
+                    effect.get(), nullptr, &valid.Format, nullptr) ==
+                    FAUDIO_E_INVALID_ARG,
+                "input-format probing did not safely reject a null output format");
+        Require(effect->IsOutputFormatSupported(
+                    effect.get(), nullptr, &valid.Format, nullptr) ==
+                    FAUDIO_E_INVALID_ARG,
+                "output-format probing did not safely reject a null input format");
+    }
+
     void TestFapoInPlaceMatchesOutOfPlace()
     {
         constexpr std::uint32_t SampleRate = 48'000;
@@ -599,6 +653,58 @@ namespace
         effect->UnlockForProcess(effect.get());
     }
 
+    void TestFapoRejectsUnsafeProcessBuffers()
+    {
+        constexpr std::uint32_t SampleRate = 48'000;
+        constexpr std::uint32_t LockedFrameCount = 1;
+        const auto snapshot = CompileEqualizerSnapshot(
+            MakeDefaultTenBandConfig(), SampleRate, 30);
+        LimiterConfig limiter;
+        limiter.enabled = false;
+        auto effect = MakeFapo(snapshot, limiter);
+        const auto format = MakeFloatFormat(SampleRate);
+        Require(LockFapo(
+                    effect.get(), format, format, LockedFrameCount) == FAUDIO_OK,
+                "process-bounds FAPO lock failed");
+
+        std::array<float, 4> oversizedInput{0.1f, 0.2f, 0.3f, 0.4f};
+        std::array<float, 4> guardedOutput{-1.0f, -2.0f, 1234.0f, 5678.0f};
+        const auto originalGuardedOutput = guardedOutput;
+        const auto oversizedResult = ProcessFapo(
+            effect.get(), oversizedInput.data(), FAPO_BUFFER_VALID,
+            guardedOutput.data(), LockedFrameCount + 1, false);
+        Require(oversizedResult.BufferFlags == FAPO_BUFFER_SILENT &&
+                oversizedResult.ValidFrameCount == 0,
+                "FAPO did not reject a frame count larger than its lock");
+        Require(guardedOutput == originalGuardedOutput,
+                "rejected oversized processing touched output or its sentinel");
+
+        std::array<float, 2> output{11.0f, 12.0f};
+        const auto originalOutput = output;
+        const auto nullInputResult = ProcessFapo(
+            effect.get(), nullptr, FAPO_BUFFER_VALID,
+            output.data(), LockedFrameCount, false);
+        Require(nullInputResult.BufferFlags == FAPO_BUFFER_SILENT &&
+                nullInputResult.ValidFrameCount == 0 && output == originalOutput,
+                "FAPO did not safely reject a null VALID input buffer");
+
+        const auto nullOutputResult = ProcessFapo(
+            effect.get(), oversizedInput.data(), FAPO_BUFFER_VALID,
+            nullptr, LockedFrameCount, false);
+        Require(nullOutputResult.BufferFlags == FAPO_BUFFER_SILENT &&
+                nullOutputResult.ValidFrameCount == 0,
+                "FAPO did not safely reject a required null output buffer");
+
+        const auto silentResult = ProcessFapo(
+            effect.get(), nullptr, FAPO_BUFFER_SILENT,
+            output.data(), LockedFrameCount, false);
+        Require(silentResult.BufferFlags == FAPO_BUFFER_SILENT &&
+                silentResult.ValidFrameCount == LockedFrameCount &&
+                output[0] == 0.0f && output[1] == 0.0f,
+                "FAPO incorrectly required input storage for SILENT input");
+        effect->UnlockForProcess(effect.get());
+    }
+
     void TestFapoSilentInputNeverReadsBuffer()
     {
         constexpr std::uint32_t SampleRate = 48'000;
@@ -679,6 +785,45 @@ namespace
         verifyRejected(
             wrongAbi, sizeof(wrongAbi),
             "FAPO accepted a snapshot with the wrong ABI version");
+    }
+
+    void TestFapoGetParametersValidatesDestination()
+    {
+        constexpr std::uint32_t SampleRate = 48'000;
+        constexpr std::uint8_t Sentinel = 0xa5;
+        const auto initial = CompileEqualizerSnapshot(
+            MakeDefaultTenBandConfig(), SampleRate, 31);
+        auto effect = MakeFapo(initial, LimiterConfig{});
+
+        std::array<
+            std::uint8_t,
+            sizeof(EqualizerDspSnapshot) + sizeof(std::uint32_t)> oversized{};
+        oversized.fill(Sentinel);
+        effect->GetParameters(
+            effect.get(), oversized.data(),
+            static_cast<std::uint32_t>(oversized.size()));
+        Require(std::all_of(
+                    oversized.begin(), oversized.end(),
+                    [](std::uint8_t value) { return value == Sentinel; }),
+                "FAPO GetParameters accepted an oversized destination");
+
+        std::array<std::uint8_t, sizeof(EqualizerDspSnapshot)> undersized{};
+        undersized.fill(Sentinel);
+        effect->GetParameters(
+            effect.get(), undersized.data(),
+            sizeof(EqualizerDspSnapshot) - 1);
+        Require(std::all_of(
+                    undersized.begin(), undersized.end(),
+                    [](std::uint8_t value) { return value == Sentinel; }),
+                "FAPO GetParameters accepted an undersized destination");
+
+        EqualizerDspSnapshot actual{};
+        effect->GetParameters(effect.get(), &actual, sizeof(actual));
+        Require(std::memcmp(&actual, &initial, sizeof(actual)) == 0,
+                "FAPO GetParameters did not return the exact current snapshot");
+
+        effect->GetParameters(
+            effect.get(), nullptr, sizeof(EqualizerDspSnapshot));
     }
 
     void TestFapoLockRejectsInvalidFormats()
@@ -794,10 +939,13 @@ namespace
         {"limiter", "reset generation drops tail", TestLimiterResetGenerationDropsTail},
         {"limiter", "chunk invariance", TestLimiterIsChunkInvariant},
         {"fapo", "factory and registration", TestFapoFactoryAndRegistration},
+        {"fapo", "extensible formats advertised", TestFapoAdvertisesExtensibleFormats},
         {"fapo", "in-place matches out-of-place", TestFapoInPlaceMatchesOutOfPlace},
         {"fapo", "disabled valid pass-through", TestFapoDisabledValidPassThrough},
+        {"fapo", "unsafe process buffers rejected", TestFapoRejectsUnsafeProcessBuffers},
         {"fapo", "silent input is never read", TestFapoSilentInputNeverReadsBuffer},
         {"fapo", "invalid parameter blocks rejected", TestFapoRejectsInvalidParameterBlocks},
+        {"fapo", "GetParameters destination validated", TestFapoGetParametersValidatesDestination},
         {"fapo", "invalid lock formats rejected", TestFapoLockRejectsInvalidFormats},
         {"fapo", "silent input drains tail", TestFapoSilentInputDrainsTail}
     };

@@ -50,6 +50,7 @@ namespace MusicPlayerLibrary::AudioDsp
             EqualizerDsp dsp{};
             LimiterConfig limiter{};
             std::uint32_t channel_count = 0;
+            std::uint32_t max_frame_count = 0;
         };
 
         static_assert(offsetof(EqualizerFapo, base) == 0);
@@ -108,6 +109,40 @@ namespace MusicPlayerLibrary::AudioDsp
         {
             return std::memcmp(
                 input, output, sizeof(FAudioWaveFormatExtensible)) == 0;
+        }
+
+        [[nodiscard]] std::uint32_t ProbeFormatPair(
+            void* fapo,
+            const FAudioWaveFormatEx* first,
+            const FAudioWaveFormatEx* second) noexcept
+        {
+            if (fapo == nullptr || first == nullptr || second == nullptr)
+                return FAUDIO_E_INVALID_ARG;
+            if (!IsExactFloat32Extensible(first) ||
+                !IsExactFloat32Extensible(second) ||
+                !FormatsMatchExactly(first, second))
+            {
+                return FAPO_E_FORMAT_UNSUPPORTED;
+            }
+            return FAUDIO_OK;
+        }
+
+        std::uint32_t FAPOCALL IsInputFormatSupportedCallback(
+            void* fapo,
+            const FAudioWaveFormatEx* outputFormat,
+            const FAudioWaveFormatEx* requestedInputFormat,
+            FAudioWaveFormatEx**) noexcept
+        {
+            return ProbeFormatPair(fapo, outputFormat, requestedInputFormat);
+        }
+
+        std::uint32_t FAPOCALL IsOutputFormatSupportedCallback(
+            void* fapo,
+            const FAudioWaveFormatEx* inputFormat,
+            const FAudioWaveFormatEx* requestedOutputFormat,
+            FAudioWaveFormatEx**) noexcept
+        {
+            return ProbeFormatPair(fapo, inputFormat, requestedOutputFormat);
         }
 
         void FAPOCALL DestroyCallback(void* fapo) noexcept
@@ -185,6 +220,7 @@ namespace MusicPlayerLibrary::AudioDsp
             }
 
             equalizer->channel_count = inputParameters[0].pFormat->nChannels;
+            equalizer->max_frame_count = inputParameters[0].MaxFrameCount;
             return FAUDIO_OK;
         }
 
@@ -204,6 +240,20 @@ namespace MusicPlayerLibrary::AudioDsp
             if (!HasValidSnapshotHeader(*snapshot))
                 return;
             FAPOBase_SetParameters(
+                &FromFapo(fapo)->base, parameters, parameterByteSize);
+        }
+
+        void FAPOCALL GetParametersCallback(
+            void* fapo,
+            void* parameters,
+            std::uint32_t parameterByteSize) noexcept
+        {
+            if (fapo == nullptr || parameters == nullptr ||
+                parameterByteSize != sizeof(EqualizerDspSnapshot))
+            {
+                return;
+            }
+            FAPOBase_GetParameters(
                 &FromFapo(fapo)->base, parameters, parameterByteSize);
         }
 
@@ -229,20 +279,25 @@ namespace MusicPlayerLibrary::AudioDsp
             auto* equalizer = FromFapo(fapo);
             const auto& input = inputParameters[0];
             auto& output = outputParameters[0];
-            output.ValidFrameCount = input.ValidFrameCount;
             const bool inputSilent = input.BufferFlags == FAPO_BUFFER_SILENT;
             const bool inputValid = input.BufferFlags == FAPO_BUFFER_VALID;
+            const bool hasFrames = input.ValidFrameCount != 0;
+            if ((!inputSilent && !inputValid) ||
+                equalizer->base.m_fIsLocked == 0 ||
+                equalizer->channel_count == 0 ||
+                equalizer->max_frame_count == 0 ||
+                input.ValidFrameCount > equalizer->max_frame_count ||
+                (hasFrames && output.pBuffer == nullptr) ||
+                (hasFrames && inputValid && input.pBuffer == nullptr))
+            {
+                return;
+            }
+
+            output.ValidFrameCount = input.ValidFrameCount;
             const auto sampleCount =
                 static_cast<std::size_t>(input.ValidFrameCount) *
                 equalizer->channel_count;
             auto* outputSamples = static_cast<float*>(output.pBuffer);
-
-            if (!inputSilent && !inputValid)
-            {
-                if (outputSamples != nullptr)
-                    std::fill_n(outputSamples, sampleCount, 0.0f);
-                return;
-            }
 
             if (isEnabled == 0)
             {
@@ -313,10 +368,15 @@ namespace MusicPlayerLibrary::AudioDsp
                     equalizer->parameter_blocks.data()),
                 sizeof(EqualizerDspSnapshot),
                 0);
+            equalizer->base.base.IsInputFormatSupported =
+                IsInputFormatSupportedCallback;
+            equalizer->base.base.IsOutputFormatSupported =
+                IsOutputFormatSupportedCallback;
             equalizer->base.base.Reset = ResetCallback;
             equalizer->base.base.LockForProcess = LockForProcessCallback;
             equalizer->base.base.Process = ProcessCallback;
             equalizer->base.base.SetParameters = SetParametersCallback;
+            equalizer->base.base.GetParameters = GetParametersCallback;
             equalizer->base.Destructor = DestroyCallback;
             *effect = &equalizer->base.base;
             return FAUDIO_OK;
