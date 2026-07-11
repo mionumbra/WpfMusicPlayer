@@ -125,21 +125,46 @@
 
                         <Grid Grid.Row="0" ClipToBounds="True" VerticalAlignment="Center">
                             <helpers:MarqueeContainer IsUnbounded="True">
-                                <TextBlock FontSize="13"
-                                           Foreground="White"
-                                           TextTrimming="None"
-                                           TextWrapping="NoWrap"
-                                           VerticalAlignment="Center"
-                                           helpers:AutoMarqueeBehavior.IsEnabled="True"
-                                           helpers:AutoMarqueeBehavior.Speed="28"
-                                           helpers:AutoMarqueeBehavior.PauseMilliseconds="1400">
-                                    <TextBlock.Text>
-                                        <MultiBinding StringFormat="{}{0} - {1}" NotifyOnTargetUpdated="True">
-                                            <Binding Path="ArtistName"/>
-                                            <Binding Path="SongTitle"/>
-                                        </MultiBinding>
-                                    </TextBlock.Text>
-                                </TextBlock>
+                                <StackPanel x:Name="MiniSongMarqueeTrack"
+                                            Orientation="Horizontal"
+                                            helpers:AutoMarqueeBehavior.IsEnabled="True"
+                                            helpers:AutoMarqueeBehavior.Speed="28"
+                                            helpers:AutoMarqueeBehavior.Gap="40"
+                                            helpers:AutoMarqueeBehavior.PauseMilliseconds="2000">
+                                    <StackPanel.Resources>
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="FontSize" Value="13"/>
+                                            <Setter Property="Foreground" Value="White"/>
+                                            <Setter Property="TextTrimming" Value="None"/>
+                                            <Setter Property="TextWrapping" Value="NoWrap"/>
+                                            <Setter Property="VerticalAlignment" Value="Center"/>
+                                        </Style>
+                                    </StackPanel.Resources>
+
+                                    <TextBlock x:Name="MiniSongPrimaryText">
+                                        <TextBlock.Text>
+                                            <MultiBinding StringFormat="{}{0} - {1}" NotifyOnTargetUpdated="True">
+                                                <Binding Path="ArtistName"/>
+                                                <Binding Path="SongTitle"/>
+                                            </MultiBinding>
+                                        </TextBlock.Text>
+                                    </TextBlock>
+                                    <StackPanel Orientation="Horizontal">
+                                        <StackPanel.Style>
+                                            <Style TargetType="StackPanel">
+                                                <Setter Property="Visibility" Value="Collapsed"/>
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding Path=(helpers:AutoMarqueeBehavior.IsOverflowing), ElementName=MiniSongMarqueeTrack}"
+                                                                 Value="True">
+                                                        <Setter Property="Visibility" Value="Visible"/>
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </StackPanel.Style>
+                                        <Border Width="{Binding Path=(helpers:AutoMarqueeBehavior.Gap), ElementName=MiniSongMarqueeTrack}"/>
+                                        <TextBlock Text="{Binding Text, ElementName=MiniSongPrimaryText}"/>
+                                    </StackPanel>
+                                </StackPanel>
                             </helpers:MarqueeContainer>
                         </Grid>
 

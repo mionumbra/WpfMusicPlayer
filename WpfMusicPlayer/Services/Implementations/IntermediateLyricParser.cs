@@ -64,7 +64,7 @@ public sealed class IntermediateLyricParser : ILyricParser
             return source.Input;
 
         var bytes = File.ReadAllBytes(path);
-        if (!LocaleConverter.IsUtf8CompatibleBytes(bytes))
+        if (!LocaleConverterManaged.IsUtf8CompatibleBytesManaged(bytes))
             throw new InvalidOperationException("WPLRC files must be UTF-8 encoded.");
 
         try

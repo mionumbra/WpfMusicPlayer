@@ -213,7 +213,7 @@
                                    DataContext="{Binding Lyrics}"
                                    ButtonOrientation="Vertical"/>
 
-                <Grid Grid.Row="1" Margin="0,15,0,0" HorizontalAlignment="Left">
+                <Grid Grid.Row="1" Margin="0,15,0,0">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto"/>
                         <ColumnDefinition Width="*"/>

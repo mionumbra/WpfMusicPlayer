@@ -38,7 +38,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
     private readonly Random _shuffleRandom = new();
     private readonly Stack<string> _shuffleHistory = new();
     private readonly SemaphoreSlim _openFileLock = new(1, 1);
-    private MusicPlayer _musicPlayer;
+    private MusicPlayerManaged _musicPlayer;
     private string? _currentFilePath;
     private string? _currentMd5;
     private int _sampleRate;
@@ -101,7 +101,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
         _sampleRate = configProvider.GetConfig().Audio.SampleRate;
         PendingSampleRate = _sampleRate;
         Equalizer.SetSampleRate(_sampleRate);
-        _musicPlayer = new MusicPlayer(_sampleRate);
+        _musicPlayer = new MusicPlayerManaged(_sampleRate);
         
         var info = Assembly
             .GetExecutingAssembly()
@@ -212,7 +212,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
     {
         // reset state
         _musicPlayer.Dispose();
-        _musicPlayer = new MusicPlayer(_sampleRate);
+        _musicPlayer = new MusicPlayerManaged(_sampleRate);
         ApplyEqualizerSettingsToPlayer();
         Interlocked.Increment(ref _albumArtVersion);
         AlbumCoverImage = null;
@@ -447,7 +447,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 }
 
                 _musicPlayer.Dispose();
-                _musicPlayer = new MusicPlayer(_sampleRate);
+                _musicPlayer = new MusicPlayerManaged(_sampleRate);
                 ApplyEqualizerSettingsToPlayer();
                 SubscribePlayerEvents(albumArtVersion, _currentMd5, filePath);
                 _disableAutoAdvance = false;

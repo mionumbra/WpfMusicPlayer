@@ -10,3 +10,5 @@
 // Define Windows Runtime GUIDs for System Media Transport Controls
 #include <initguid.h>
 #include <SystemMediaTransportControlsInterop.h>
+
+#pragma comment(lib, "runtimeobject.lib")

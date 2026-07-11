@@ -28,7 +28,7 @@
 #if !defined(NATIVE_TRACE_REDIRECT_ENABLED)
 #define NATIVE_TRACE_REDIRECT_ENABLED
 #endif
-#include "NativeTraceRedirect.h" // For Debug
+#include "Core/NativeTraceRedirect.h" // For Debug
 
 #include <cstdlib>
 #include <cassert>
@@ -48,20 +48,6 @@
 #include <cstdio>
 #include <cinttypes>
 #include <cmath>
-
-#if !defined(WIN32_LEAN_AND_MEAN)
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>
-#include <avrt.h>
-#include <faudio.h>
-#include <shlwapi.h>
-
-#include <roapi.h>
-#include <SystemMediaTransportControlsInterop.h>
-#include <winstring.h>
-
-#pragma comment(lib, "runtimeobject.lib")
 
 #if defined(__cplusplus)
 extern "C" {
@@ -90,13 +76,6 @@ extern "C" {
 	} while(0)
 #endif
 
-#if !defined(tstring)
-#if defined(UNICODE)
-#define tstring wstring
-#else
-#define tstring string
-#endif
-#endif
 #if !defined(WAY3RES)
 #define WAY3RES(ord) \
 ((ord) == std::strong_ordering::less ? ThreeWayCompareResult::Less : \

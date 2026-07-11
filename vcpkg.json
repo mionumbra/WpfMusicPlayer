@@ -17,6 +17,10 @@
       "name": "dlib",
       "default-features": false,
       "features": []
-    }
+    },
+    "fastio"
+  ],
+  "overrides": [
+    { "name": "fastio", "version": "2024-12-05", "port-version": 0 }
   ]
 }
