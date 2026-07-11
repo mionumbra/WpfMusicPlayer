@@ -24,7 +24,7 @@ public sealed partial class LrcFileParser : ILyricParser
     public string ParseToIntermediateJson(LyricParserSource source)
     {
         var lrc = ReadLrcText(source);
-        using var controller = new LrcFileController(source.SongEndTimeMs);
+        using var controller = new LrcFileControllerManaged(source.SongEndTimeMs);
         return controller.ParseLrcToIntermediateJson(lrc);
     }
 
@@ -50,7 +50,7 @@ public sealed partial class LrcFileParser : ILyricParser
             return source.Input;
 
         var bytes = File.ReadAllBytes(path);
-        return LocaleConverter.GetSystemStringFromBytes(bytes);
+        return LocaleConverterManaged.GetSystemStringFromBytesManaged(bytes);
     }
 
     [GeneratedRegex(@"\[\s*\d{1,2}\s*[:.]\s*\d{1,2}(?:\s*[:.]\s*\d{1,4})?\s*\]")]

@@ -1,5 +1,5 @@
-#include "../MusicPlayerLibrary/EqualizerDsp.h"
-#include "../MusicPlayerLibrary/FapoEqualizer.h"
+#include "../MusicPlayerLibrary/Audio/DSP/EqualizerDsp.h"
+#include "../MusicPlayerLibrary/Audio/DSP/FapoEqualizer.h"
 
 #include <FAPOBase.h>
 
