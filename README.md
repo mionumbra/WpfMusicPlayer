@@ -56,8 +56,8 @@ Still work in progress. 3rd party libraries are managed by vcpkg.
 
 ## TODO List:
 - [ ] UI Refractor (UI, from @Baicaiye)
-- [ ] remove C++/CLI, rewrite `MusicPlayerLibary` to pure C++ implementation
-- [ ] isolate neseccary Windows API Calls, write cross-platform alternatives
+- [x] remove C++/CLI, rewrite `MusicPlayerLibary` to pure C++ implementation
+- [x] isolate neseccary Windows API Calls, write cross-platform alternatives
 - [ ] Migrating to Avalonia, extend platform support to Linux / macOS
 - [ ] PcmProvider / PcmSubmitter / PcmObserver refractor, plugable, preemptive rewrite
 - [ ] Extract `MusicPlayerLibrary` into an audio middleware

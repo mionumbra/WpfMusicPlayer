@@ -16,24 +16,22 @@ namespace
 
 MusicPlayerLibrary::MusicPlayerManaged::MusicPlayerManaged()
 {
-	std::unique_ptr<MusicPlayerEventBridge> bridge(new MusicPlayerEventBridge(this));
-	std::unique_ptr<MusicPlayer> handle(new MusicPlayer(bridge.get()));
-	event_bridge = bridge.release();
-	native_handle = handle.release();
+	event_bridge = new MusicPlayerEventBridge(this);
+	native_handle = new MusicPlayer(event_bridge);
 }
 
 MusicPlayerLibrary::MusicPlayerManaged::MusicPlayerManaged(int sample_rate)
 {
 	try
 	{
-		std::unique_ptr<MusicPlayerEventBridge> bridge(new MusicPlayerEventBridge(this));
-		std::unique_ptr<MusicPlayer> handle(new MusicPlayer(bridge.get()));
-		handle->SetSampleRate(sample_rate);
-		event_bridge = bridge.release();
-		native_handle = handle.release();
+		event_bridge = new MusicPlayerEventBridge(this);
+		native_handle = new MusicPlayer(event_bridge);
+		native_handle->SetSampleRate(sample_rate);
 	}
 	catch (const std::exception& exception)
 	{
+		event_bridge = nullptr;
+		native_handle = nullptr;
 		throw ToManagedException(exception);
 	}
 }

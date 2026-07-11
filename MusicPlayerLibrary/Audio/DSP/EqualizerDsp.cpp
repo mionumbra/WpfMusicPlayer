@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 
+#include "pch.h"
 #include "Audio/DSP/EqualizerDsp.h"
 
 #include <algorithm>

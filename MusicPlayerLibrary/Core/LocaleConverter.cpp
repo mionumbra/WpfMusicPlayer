@@ -248,28 +248,22 @@ std::wstring MusicPlayerLibrary::LocaleConverter::GetUtf16StringFromUtf8String(c
     }
 
     size_t insize = input.size();
-    // UTF-8 encoding may expand to 4*in_size
-    size_t outcapacity = insize * 4; 
+    size_t outcapacity = insize * sizeof(wchar_t) * 2;
     size_t outleft = outcapacity;
-    
-    std::wstring outbuf(outcapacity, '\0');
-    char* pOriginalStart = reinterpret_cast<char*>(outbuf.data());
-    char* pIn = const_cast<char*>(input.c_str());
-    char* pOut = pOriginalStart;
+
+    std::wstring outbuf(outcapacity / sizeof(wchar_t), L'\0');
+
+    char* pIn  = const_cast<char*>(input.data());
+    char* pOut = reinterpret_cast<char*>(outbuf.data());
 
     size_t res = iconv(iconver, &pIn, &insize, &pOut, &outleft);
-    
-    // fix: release iconver
-    iconv_close(iconver); 
+    iconv_close(iconver);
 
-    if (res == static_cast<size_t>(-1)) {
+    if (res == static_cast<size_t>(-1))
         return {};
-    }
 
-    // Shrink actualSize to fit
-    size_t actualSize = outcapacity - outleft;
-    outbuf.resize(actualSize); 
-
+    size_t actualBytes = outcapacity - outleft;
+    outbuf.resize(actualBytes / sizeof(wchar_t));
     return outbuf;
 }
 
@@ -286,9 +280,8 @@ std::string MusicPlayerLibrary::LocaleConverter::GetUtf8StringFromUtf16String(co
         return {};
     }
 
-    size_t insize = input.size();
-    // UTF-8 encoding may expand to 4*in_size
-    size_t outcapacity = insize * 4; 
+    size_t insize = input.size() * sizeof(wchar_t);   // must be num of bytes
+    size_t outcapacity = insize * 2;   // UTF-8 encoding may expand to 4*in_size
     size_t outleft = outcapacity;
     
     std::string outbuf(outcapacity, '\0');
