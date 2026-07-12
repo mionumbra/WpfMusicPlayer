@@ -78,6 +78,7 @@
     <PropertyGroup/>
     <PropertyGroup Label="Vcpkg">
         <VcpkgEnableManifest>true</VcpkgEnableManifest>
+        <VcpkgEnableAllowUnsupported>true</VcpkgEnableAllowUnsupported>
     </PropertyGroup>
     <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
         <IncludePath>.;$(VC_IncludePath);$(WindowsSDK_IncludePath);</IncludePath>
