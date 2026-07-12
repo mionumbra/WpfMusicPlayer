@@ -124,6 +124,19 @@ namespace MusicPlayerLibrary::MLPipeline
             const BoundedMemoryDataReader model_reader(model_data);
             if (net.load_model(model_reader) != 0)
                 throw std::runtime_error("failed to load NCNN weights file: " + display_path(files.weights));
+            if (!vk_checked)
+            {
+                const ncnn::VulkanDevice* vkdev = net.vulkan_device();
+                if (vkdev && vkdev->is_valid()) {
+                    NATIVE_TRACE("info: NCNN vulkan device is available for interference");
+                    NATIVE_TRACE("info: vulkan device=%s, implementer=%s, implementation version=%u", vkdev->info.device_name(), vkdev->info.driver_name(), vkdev->info.driver_version());
+                }
+                else
+                {
+                    NATIVE_TRACE("info: NCNN vulkan device is not available, fallback to CPU interference");
+                }
+                vk_checked = true;
+            }
         }
 
         std::size_t input_size;
@@ -131,7 +144,10 @@ namespace MusicPlayerLibrary::MLPipeline
         // NCNN references model data instead of copying it, so this buffer must outlive net.
         std::vector<unsigned char> model_data;
         ncnn::Net net;
+        static bool vk_checked;
     };
+    
+    bool NcnnClassifier::Impl::vk_checked = false;
 
     NcnnClassifier::NcnnClassifier(const NcnnModelFiles& files)
         : impl_(std::make_unique<Impl>(files))

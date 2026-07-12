@@ -1573,10 +1573,14 @@ LrcMetadataTypeNative LrcFileController::get_metadata_type(const std::string& st
     if (metadata_end_index == std::string::npos)
         return LrcMetadataTypeNative::Error;
 
-    const std::string metadata_type_str = str.substr(1, metadata_end_index - 1);
+    std::string metadata_type_str = str.substr(1, metadata_end_index - 1);
+    std::ranges::for_each(metadata_type_str, [](const char i)
+    {
+       return std::isalpha(i) ? std::tolower(i) : i;
+    });
     if (metadata_type_str == "ar" || metadata_type_str == "artist")
         return LrcMetadataTypeNative::Artist;
-    if (metadata_type_str == "aL" || metadata_type_str == "album")
+    if (metadata_type_str == "al" || metadata_type_str == "album")
         return LrcMetadataTypeNative::Album;
     if (metadata_type_str == "ti" || metadata_type_str == "title")
         return LrcMetadataTypeNative::Title;
@@ -1584,7 +1588,7 @@ LrcMetadataTypeNative LrcFileController::get_metadata_type(const std::string& st
         return LrcMetadataTypeNative::By;
     if (metadata_type_str == "offset")
         return LrcMetadataTypeNative::Offset;
-    if (metadata_type_str == "aL" || metadata_type_str == "author")
+    if (metadata_type_str == "au" || metadata_type_str == "author")
         return LrcMetadataTypeNative::Author;
     return LrcMetadataTypeNative::Ignored;
 }
