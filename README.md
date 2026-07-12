@@ -136,30 +136,21 @@ FFmpeg can be built under **LGPL** or **GPL**, depending on the configuration.
 
 Make sure you understand the implications before distributing a GPL‑linked build.
 
->
-> [!important] 
-> 
-> NOTICE!
-> 
-> A critical vulnerability has been disclosed in FFmpeg’s MagicYUV decoder that allows attackers to weaponize seemingly harmless media files and, in some scenarios, achieve remote code execution (RCE).
-> <br>
-> The flaw, tracked as CVE-2026-8461 and dubbed “PixelSmash,” is a heap out-of-bounds write in FFmpeg’s `libavcodec` component, with a CVSS score of 8.8 (High).
-> <br>
-> Although this music player does not support video files directly, attackers can still rename a crafted video file with one of the supporting extensions in this player.
-> <br>
-> Then, the player will try to scan the streams inside the crafted files (in `MusicPlayerNative.cpp`, `MusicPlayerLibrary::MusicPlayerNative::load_audio_context_from_file_stream()`) using `libavcodec`, and it will try to find the best audio stream for decoding.
-> <br>
-> It will scan the video streams inside the malicious file, which causes the override of `AVBuffer` struct, replacing the `AVBuffer.free` opaque to libc `system` function, at the same time overrides `AVBuffer.refcount` to 1, causes RCE when FFmpeg triggers normal frame cleanup, and no authentication or elevated privileges are needed.
-> <br>
-> For users of this software, please update to the versions after commit `29058f2`, which locks vcpkg's FFmpeg version to over 8.1.2, fixing this issue.
-> <br>
-> For other information about this bug, please visit [CVE-2026-8461](https://nvd.nist.gov/vuln/detail/CVE-2026-8461).
-> 
-
 ### MIT repository status remains unchanged
 Distributing a GPL‑linked build **does not change the license of this repository**.  
 The upstream source code remains under the **MIT License**, and contributors may continue to use, modify, and distribute it under MIT.  
 Only the **specific binary distribution** that links against GPL‑configured FFmpeg is subject to GPL requirements.
+
+### LGPL compliance notice
+When distributing builds that statically link FFmpeg under LGPL mode, you must ensure end users
+can relink the application with a modified version of FFmpeg. This can be achieved by either:
+
+- Providing application object files (excluding FFmpeg) so users can relink, or
+- Publishing the full source code of this project under MIT, which allows users to rebuild with
+  their own FFmpeg version.
+
+FFmpeg source code is available at https://ffmpeg.org.  
+The LGPL license text is included in LICENSE.thirdparty.txt.
 
 ## Get in touched with author:
 - Email: lucas150670@petalmail.com
