@@ -61,3 +61,6 @@
 #*.PDF   diff=astextplain
 #*.rtf   diff=astextplain
 #*.RTF   diff=astextplain
+
+# pin .ncnn.param files to LF ending, avoid broken eol on windows
+*.ncnn.param text eol=lf
