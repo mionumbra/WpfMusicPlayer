@@ -4,6 +4,8 @@
 #include "Core/NativeTraceRedirect.h"
 #include "Managed/ManagedLogWriter.h"
 
+#include "Lyric/LrcFileController.h"
+
 MusicPlayerLibrary::ManagedLogWriter::ManagedLogWriter(System::Object^ loggerObj):
     logger(loggerObj)
 {
@@ -28,6 +30,8 @@ void MusicPlayerLibrary::NativeTraceRedirectManager::Init(System::Object^ logger
 {
     reflectedNativeTraceRedirectBridge = logger;
     NativeTraceRedirect::InitNativeTraceRedirect();
+    // 同时初始化一下歌词引擎。
+    LrcLanguageHelper::GetSingleton();
 }
 
 System::Object^ MusicPlayerLibrary::NativeTraceRedirectManager::GetNativeTraceRedirectBridge()

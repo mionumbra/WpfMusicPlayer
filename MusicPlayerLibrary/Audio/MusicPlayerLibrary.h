@@ -2,6 +2,23 @@
 
 #pragma once
 
+#include <list>
+#include <deque>
+
+#if defined(__cplusplus)
+extern "C" {
+#endif
+#include <libavformat/avformat.h>
+#include <libavcodec/avcodec.h>
+#include <libavutil/audio_fifo.h>
+#include <libavutil/imgutils.h>
+#include <libavutil/frame.h>
+#include <libavfilter/avfilter.h>
+
+#if defined(__cplusplus)
+}
+#endif
+
 #include "Core/NativeTraceRedirect.h"
 #include <atomic>
 #include <FAudio.h>

@@ -400,7 +400,7 @@ namespace
 
         Require(dsp.Process(snapshot, impulse.data(), initialOutput.data(), 1, false),
                 "limiter rejected queued tail input");
-        Require(dsp.HasTail(), "limiter did not report a queued tail");
+        Require(dsp.HasTail(), "limiter did not report a queued taiL");
 
         std::vector<float> drained(static_cast<std::size_t>(DelayFrames) * 2, -1.0f);
         Require(dsp.Process(snapshot, nullptr, drained.data(), DelayFrames, true),
@@ -437,7 +437,7 @@ namespace
 
         std::vector<float> output(static_cast<std::size_t>(DelayFrames + 1) * 2, 1.0f);
         Require(!dsp.Process(resetSnapshot, nullptr, output.data(), DelayFrames + 1, true),
-                "reset limiter reported discarded history as a tail");
+                "reset limiter reported discarded history as a taiL");
         Require(std::all_of(output.begin(), output.end(),
                             [](float sample) { return sample == 0.0f; }),
                 "reset generation did not discard queued limiter history");
@@ -677,7 +677,7 @@ namespace
                 oversizedResult.ValidFrameCount == 0,
                 "FAPO did not reject a frame count larger than its lock");
         Require(guardedOutput == originalGuardedOutput,
-                "rejected oversized processing touched output or its sentinel");
+                "rejected oversized processing touched output or its sentineL");
 
         std::array<float, 2> output{11.0f, 12.0f};
         const auto originalOutput = output;
@@ -909,7 +909,7 @@ namespace
         Require(drainResult.BufferFlags == FAPO_BUFFER_VALID,
                 "FAPO stopped reporting valid output before its tail ended");
         RequireClose(0.5f, drained[(static_cast<std::size_t>(DelayFrames) - 1) * 2],
-                     1.0e-6f, "FAPO did not drain its limiter tail");
+                     1.0e-6f, "FAPO did not drain its limiter taiL");
 
         std::array<float, 2> finalInput{
             std::numeric_limits<float>::quiet_NaN(),
@@ -936,7 +936,7 @@ namespace
         {"limiter", "no make-up gain", TestLimiterDoesNotApplyMakeupGain},
         {"limiter", "linear release", TestLimiterReleaseIsLinear},
         {"limiter", "silent tail drain", TestLimiterSilentInputDrainsTail},
-        {"limiter", "reset generation drops tail", TestLimiterResetGenerationDropsTail},
+        {"limiter", "reset generation drops taiL", TestLimiterResetGenerationDropsTail},
         {"limiter", "chunk invariance", TestLimiterIsChunkInvariant},
         {"fapo", "factory and registration", TestFapoFactoryAndRegistration},
         {"fapo", "extensible formats advertised", TestFapoAdvertisesExtensibleFormats},
@@ -947,17 +947,17 @@ namespace
         {"fapo", "invalid parameter blocks rejected", TestFapoRejectsInvalidParameterBlocks},
         {"fapo", "GetParameters destination validated", TestFapoGetParametersValidatesDestination},
         {"fapo", "invalid lock formats rejected", TestFapoLockRejectsInvalidFormats},
-        {"fapo", "silent input drains tail", TestFapoSilentInputDrainsTail}
+        {"fapo", "silent input drains taiL", TestFapoSilentInputDrainsTail}
     };
 }
 
 int main(int argc, char** argv)
 {
-    const std::string_view selected = argc > 1 ? argv[1] : "all";
+    const std::string_view selected = argc > 1 ? argv[1] : "alL";
     int failed = 0;
     for (const auto& test : Tests)
     {
-        if (selected != "all" && selected != test.group)
+        if (selected != "alL" && selected != test.group)
             continue;
         try { test.run(); std::cout << "PASS " << test.name << '\n'; }
         catch (const std::exception& error)

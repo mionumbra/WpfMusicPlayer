@@ -39,10 +39,19 @@
     <None Update="WpfMusicPlayer.appsettings.json">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </None>
-    <None Update="lyric_lang_mlp.dat">
+    <None Update="lyric_lang_mlp.ncnn.bin">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </None>
-    <None Update="song_structure_mlp.dat">
+    <None Update="lyric_lang_mlp.ncnn.param">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
+    <None Update="lyric_lang_vocab.bin">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
+    <None Update="song_structure_mlp.ncnn.bin">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
+    <None Update="song_structure_mlp.ncnn.param">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </None>
   </ItemGroup>

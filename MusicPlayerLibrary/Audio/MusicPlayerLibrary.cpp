@@ -2,18 +2,36 @@
 
 #include "pch.h"
 
-#include "MusicPlayerLibrary.h"
-#include "Audio/DSP/FapoEqualizer.h"
-#include "Crypto/NcmDecryptor.h"
 #include <cwctype>
 #include <format>
-#include <limits>
 #include <memory>
 #include <numeric>
 #include <stdexcept>
 #include <string_view>
+#include <algorithm>
+
+#if defined(__cplusplus)
+extern "C" {
+#endif
+#include <libavutil/opt.h>
+#include <libavfilter/buffersrc.h>
+#include <libavfilter/buffersink.h>
+#if defined(__cplusplus)
+}
+#endif
+
+#include "Crypto/NcmDecryptor.h"
+#include "Audio/MusicPlayerLibrary.h"
+#include "Audio/DSP/FapoEqualizer.h"
 #include "Core/LocaleConverter.h"
 #include "Core/AudioThreadScheduleHelper.h"
+
+#if !defined(FFMPEG_CRITICAL_ERROR)
+#define FFMPEG_CRITICAL_ERROR(err_code) \
+do { \
+dialog_ffmpeg_critical_error(err_code, __FILE__, __LINE__); \
+} while(0)
+#endif 
 
 namespace
 {
@@ -1487,10 +1505,17 @@ void MusicPlayerLibrary::MusicPlayer::init_decoder_thread() {
 	decoder_is_running = true;
 	audio_decoder_worker_thread = std::jthread(
 		[this] {
-			std::unique_ptr<IAudioThreadScheduleHelper> mmcss = 
-				GetDefaultAudioThreadSchedulerFactory()->CreateAudioThreadScheduleHelper(
-					L"Audio", MPL_AUDIO_PRIORITY::MPL_AUDIO_PRIORITY_HIGH, "decoder"
-					);
+			std::unique_ptr<IAudioThreadScheduleHelper> mmcss;
+			if (auto audio_scheduler_factory = GetDefaultAudioThreadSchedulerFactory(); audio_scheduler_factory != nullptr)
+			{
+				mmcss = GetDefaultAudioThreadSchedulerFactory()->CreateAudioThreadScheduleHelper(L"Audio", MPL_AUDIO_PRIORITY::MPL_AUDIO_PRIORITY_HIGH, "decoder");
+			} 
+			else
+			{
+				NATIVE_TRACE("warn: Audio thread scheduler factory is not implemented on this system");
+				mmcss = nullptr;
+			} 
+			static_cast<void>(mmcss); // suppress warning. unique_ptr only manage the scheduler's life cycle.
 			try
 			{
 				audio_decode_worker_thread();
@@ -1521,10 +1546,16 @@ void MusicPlayerLibrary::MusicPlayer::init_equalizer_thread()
 	equalizer_is_running = true;
 	audio_equalizer_worker_thread = std::jthread(
 		[this] {
-			std::unique_ptr<IAudioThreadScheduleHelper> mmcss = 
-				GetDefaultAudioThreadSchedulerFactory()->CreateAudioThreadScheduleHelper(
-					L"Audio", MPL_AUDIO_PRIORITY::MPL_AUDIO_PRIORITY_HIGH, "equalizer"
-			);
+			std::unique_ptr<IAudioThreadScheduleHelper> mmcss;
+			if (auto audio_scheduler_factory = GetDefaultAudioThreadSchedulerFactory(); audio_scheduler_factory != nullptr)
+			{
+				mmcss = GetDefaultAudioThreadSchedulerFactory()->CreateAudioThreadScheduleHelper(L"Audio", MPL_AUDIO_PRIORITY::MPL_AUDIO_PRIORITY_HIGH, "equalizer");
+			} 
+			else
+			{
+				NATIVE_TRACE("warn: Audio thread scheduler factory is not implemented on this system");
+				mmcss = nullptr;
+			} 
 			try
 			{
 				audio_equalize_worker_thread();
@@ -1576,10 +1607,16 @@ inline void MusicPlayerLibrary::MusicPlayer::start_audio_playback()
 	user_request_stop.store(false);
 	audio_player_worker_thread = std::jthread(
 		[this] {
-			std::unique_ptr<IAudioThreadScheduleHelper> mmcss = 
-				GetDefaultAudioThreadSchedulerFactory()->CreateAudioThreadScheduleHelper(
-					L"Pro Audio", MPL_AUDIO_PRIORITY::MPL_AUDIO_PRIORITY_CRITICAL, "playback"
-			);
+			std::unique_ptr<IAudioThreadScheduleHelper> mmcss;
+			if (auto audio_scheduler_factory = GetDefaultAudioThreadSchedulerFactory(); audio_scheduler_factory != nullptr)
+			{
+				mmcss = GetDefaultAudioThreadSchedulerFactory()->CreateAudioThreadScheduleHelper(L"Pro Audio", MPL_AUDIO_PRIORITY::MPL_AUDIO_PRIORITY_CRITICAL, "playback");
+			} 
+			else
+			{
+				NATIVE_TRACE("warn: Audio thread scheduler factory is not implemented on this system");
+				mmcss = nullptr;
+			} 
 			try
 			{
 				audio_playback_worker_thread();
@@ -1826,7 +1863,6 @@ void MusicPlayerLibrary::MusicPlayer::faudio_free_buffer()
 {
 	for (auto& i : faudio_playing_buffers)
 	{
-		assert(i);
 		DeleteFAudioBuffer(i);
 		i = nullptr;
 	}
@@ -1838,7 +1874,6 @@ void MusicPlayerLibrary::MusicPlayer::faudio_destroy_buffer()
 {
 	for (auto& i : faudio_free_buffers)
 	{
-		assert(i);
 		DeleteFAudioBuffer(i);
 		i = nullptr;
 	}
@@ -1879,11 +1914,11 @@ MusicPlayerLibrary::MusicPlayer::MusicPlayer(IMusicPlayerMessageSink* message_si
 	playback_state(audio_playback_state_init),
 	message_sink_(message_sink)
 {
-	NATIVE_TRACE("info: decode frontend: avformat version %d, avcodec version %d, avutil version %d, swresample version %d\n",
+	NATIVE_TRACE("info: decode frontend: avformat version %d, avcodec version %d, avutil version %d, avfilter version %d\n",
 		avformat_version(),
 		avcodec_version(),
 		avutil_version(),
-		swresample_version());
+		avfilter_version());
 	NATIVE_TRACE("info: audio api backend: FAudio, version %s\n", get_backend_implement_version());
 }
 
@@ -2232,3 +2267,7 @@ MusicPlayerLibrary::MusicPlayer::~MusicPlayer()
 		file_stream.reset();
 	}
 }
+
+#if defined(FFMPEG_CRITICAL_ERROR)
+#undef FFMPEG_CRITICAL_ERROR
+#endif

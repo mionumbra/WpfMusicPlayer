@@ -1,8 +1,6 @@
 ﻿// SPDX-License-Identifier: MIT
 
 #include "pch.h"
-#include "NcmDecryptor.h"
-#include "Core/LocaleConverter.h"
 
 #include <openssl/evp.h>
 #include <cpp-base64/base64.h>
@@ -13,6 +11,9 @@
 #include <memory>
 #include <stdexcept>
 #include <utility>
+
+#include "Crypto/NcmDecryptor.h"
+#include "Core/LocaleConverter.h"
 
 static const uint8_t CORE_KEY[16] = {
     0x68, 0x7a, 0x48, 0x52, 0x41, 0x6d, 0x73, 0x6f,

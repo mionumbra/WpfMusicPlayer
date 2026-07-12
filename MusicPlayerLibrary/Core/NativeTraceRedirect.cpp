@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
 
 #include "pch.h"
-#include "Core/NativeTraceRedirect.h"
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -11,7 +10,8 @@
 #include <sstream>
 #include <string>
 
-#include "LocaleConverter.h"
+#include "Core/NativeTraceRedirect.h"
+#include "Core/LocaleConverter.h"
 
 std::unique_ptr<NativeTraceRedirect> NativeTraceRedirect::global_trace_redirector;
 
