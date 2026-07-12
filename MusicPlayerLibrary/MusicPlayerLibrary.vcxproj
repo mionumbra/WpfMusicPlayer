@@ -78,6 +78,7 @@
     <PropertyGroup/>
     <PropertyGroup Label="Vcpkg">
         <VcpkgEnableManifest>true</VcpkgEnableManifest>
+        <VcpkgAdditionalInstallOptions>--allow-unsupported</VcpkgAdditionalInstallOptions>
     </PropertyGroup>
     <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
         <IncludePath>.;$(VC_IncludePath);$(WindowsSDK_IncludePath);</IncludePath>
@@ -164,6 +165,9 @@
         <ClInclude Include="Core\AudioThreadScheduleHelper.h" />
         <ClInclude Include="Crypto\NcmDecryptor.h"/>
         <ClInclude Include="Lyric\LrcFileController.h" />
+        <ClInclude Include="Lyric\MLPipeline\MLPipelineCommon.h" />
+        <ClInclude Include="Lyric\MLPipeline\NCNNPipeline.h" />
+        <ClInclude Include="Lyric\MLPipeline\VocabularyIO.h" />
         <ClInclude Include="Managed\LocaleConverterManaged.h" />
         <ClInclude Include="Managed\LrcFileControllerManaged.h" />
         <ClInclude Include="Managed\ManagedLoggerFactory.h" />
@@ -181,16 +185,19 @@
         <ClInclude Include="Resource.h" />
     </ItemGroup>
     <ItemGroup>
+        <ClCompile Include="Lyric\MLPipeline\MLPipelineCommon.cpp" />
+        <ClCompile Include="Lyric\MLPipeline\NCNNPipeline.cpp" />
+        <ClCompile Include="Lyric\MLPipeline\VocabularyIO.cpp" />
         <ClCompile Include="Managed\AssemblyInfo.cpp" />
-        <ClCompile Include="Audio\DSP\EqualizerDsp.cpp"/>
-        <ClCompile Include="Audio\DSP\FapoEqualizer.cpp"/>
-        <ClCompile Include="Audio\FFT\FFTExecuter.cpp"/>
-        <ClCompile Include="Audio\MusicPlayerLibrary.cpp"/>
+        <ClCompile Include="Audio\DSP\EqualizerDsp.cpp" />
+        <ClCompile Include="Audio\DSP\FapoEqualizer.cpp" />
+        <ClCompile Include="Audio\FFT\FFTExecuter.cpp" />
+        <ClCompile Include="Audio\MusicPlayerLibrary.cpp" />
         <ClCompile Include="Core\AudioThreadScheduleHelper.cpp" />
-        <ClCompile Include="Core\LocaleConverter.cpp"/>
-        <ClCompile Include="Core\NativeTraceRedirect.cpp"/>
-        <ClCompile Include="Crypto\NcmDecryptor.cpp"/>
-        <ClCompile Include="Lyric\LrcFileController.cpp"/>
+        <ClCompile Include="Core\LocaleConverter.cpp" />
+        <ClCompile Include="Core\NativeTraceRedirect.cpp" />
+        <ClCompile Include="Crypto\NcmDecryptor.cpp" />
+        <ClCompile Include="Lyric\LrcFileController.cpp" />
         <ClCompile Include="Managed\LocaleConverterManaged.cpp" />
         <ClCompile Include="Managed\LrcFileControllerManaged.cpp" />
         <ClCompile Include="Managed\ManagedLoggerFactory.cpp" />
@@ -209,8 +216,8 @@
         <ClCompile Include="Platform\Common\FileSystemFactory.cpp" />
         <ClCompile Include="Platform\Common\NativeLogWriterFactory.cpp" />
 
-        <ClCompile Include="Platform\Common\VectorMemoryFile.cpp"/>
-        <ClCompile Include="Platform\Windows\MMCSSHelper.cpp"/>
+        <ClCompile Include="Platform\Common\VectorMemoryFile.cpp" />
+        <ClCompile Include="Platform\Windows\MMCSSHelper.cpp" />
         <ClCompile Include="Platform\Windows\MMCSSHelperFactory.cpp" />
         <ClCompile Include="Platform\Windows\WindowsApiDiskFile.cpp" />
         <ClCompile Include="Platform\Windows\WindowsFileSystem.cpp" />

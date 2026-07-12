@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 
 #include "pch.h"
+#include <numbers>
+
 #include "Audio/FFT/FFTExecuter.h"
 
 size_t MusicPlayerLibrary::FFTExecuter::SelectFftSize(int sample_rate)
@@ -77,7 +79,7 @@ void MusicPlayerLibrary::FFTExecuter::ApplyWindow(const std::vector<uint8_t>& in
         // mix 2 channels
         double sample = (static_cast<double>(left) + static_cast<double>(right)) / 2.0;
         // hamming window
-        const double w = 0.53836 * (1.0 - cos(2.0 * M_PI * i / (frame_count - 1)));
+        const double w = 0.53836 * (1.0 - cos(2.0 * std::numbers::pi * i / (frame_count - 1)));
         // normalize
         output[i] = (sample / 32768.0) * w;
     }

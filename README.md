@@ -5,7 +5,7 @@
 
 [![zread](https://img.shields.io/badge/Ask_Zread-_.svg?style=for-the-badge&color=00b0aa&labelColor=000000&logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB3aWR0aD0iMTYiIGhlaWdodD0iMTYiIHZpZXdCb3g9IjAgMCAxNiAxNiIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHBhdGggZD0iTTQuOTYxNTYgMS42MDAxSDIuMjQxNTZDMS44ODgxIDEuNjAwMSAxLjYwMTU2IDEuODg2NjQgMS42MDE1NiAyLjI0MDFWNC45NjAxQzEuNjAxNTYgNS4zMTM1NiAxLjg4ODEgNS42MDAxIDIuMjQxNTYgNS42MDAxSDQuOTYxNTZDNS4zMTUwMiA1LjYwMDEgNS42MDE1NiA1LjMxMzU2IDUuNjAxNTYgNC45NjAxVjIuMjQwMUM1LjYwMTU2IDEuODg2NjQgNS4zMTUwMiAxLjYwMDEgNC45NjE1NiAxLjYwMDFaIiBmaWxsPSIjZmZmIi8%2BCjxwYXRoIGQ9Ik00Ljk2MTU2IDEwLjM5OTlIMi4yNDE1NkMxLjg4ODEgMTAuMzk5OSAxLjYwMTU2IDEwLjY4NjQgMS42MDE1NiAxMS4wMzk5VjEzLjc1OTlDMS42MDE1NiAxNC4xMTM0IDEuODg4MSAxNC4zOTk5IDIuMjQxNTYgMTQuMzk5OUg0Ljk2MTU2QzUuMzE1MDIgMTQuMzk5OSA1LjYwMTU2IDE0LjExMzQgNS42MDE1NiAxMy43NTk5VjExLjAzOTlDNS42MDE1NiAxMC42ODY0IDUuMzE1MDIgMTAuMzk5OSA0Ljk2MTU2IDEwLjM5OTlaIiBmaWxsPSIjZmZmIi8%2BCjxwYXRoIGQ9Ik0xMy43NTg0IDEuNjAwMUgxMS4wMzg0QzEwLjY4NSAxLjYwMDEgMTAuMzk4NCAxLjg4NjY0IDEwLjM5ODQgMi4yNDAxVjQuOTYwMUMxMC4zOTg0IDUuMzEzNTYgMTAuNjg1IDUuNjAwMSAxMS4wMzg0IDUuNjAwMUgxMy43NTg0QzE0LjExMTkgNS42MDAxIDE0LjM5ODQgNS4zMTM1NiAxNC4zOTg0IDQuOTYwMVYyLjI0MDFDMTQuMzk4NCAxLjg4NjY0IDE0LjExMTkgMS42MDAxIDEzLjc1ODQgMS42MDAxWiIgZmlsbD0iI2ZmZiIvPgo8cGF0aCBkPSJNNCAxMkwxMiA0TDQgMTJaIiBmaWxsPSIjZmZmIi8%2BCjxwYXRoIGQ9Ik00IDEyTDEyIDQiIHN0cm9rZT0iI2ZmZiIgc3Ryb2tlLXdpZHRoPSIxLjUiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPgo8L3N2Zz4K&logoColor=ffffff)](https://zread.ai/WpfMusicPlayer-Dev/WpfMusicPlayer)
 ![Telegram](https://telegram-badge.vercel.app/api/telegram-badge?channelId=@MadokawaiiChat&style=for-the-badge)
-![FFmpeg](https://img.shields.io/badge/FFmpeg-latest-yellow?style=for-the-badge&logo=ffmpeg)
+![FFmpeg](https://img.shields.io/badge/FFmpeg-8.1.2-yellow?style=for-the-badge&logo=ffmpeg)
 ![Build System](https://img.shields.io/badge/Build%20System-MSBuild-blueviolet?style=for-the-badge&logo=data:image/svg+xml;base64,PD94bWwgdmVyc2lvbj0iMS4wIiBzdGFuZGFsb25lPSJubyI/PjwhRE9DVFlQRSBzdmcgUFVCTElDICItLy9XM0MvL0RURCBTVkcgMS4xLy9FTiIgImh0dHA6Ly93d3cudzMub3JnL0dyYXBoaWNzL1NWRy8xLjEvRFREL3N2ZzExLmR0ZCI+PHN2ZyB0PSIxNzI4MTA5NjA3MzUyIiBjbGFzcz0iaWNvbiIgdmlld0JveD0iMCAwIDEwMjQgMTAyNCIgdmVyc2lvbj0iMS4xIiB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHAtaWQ9IjYxMjAiIHhtbG5zOnhsaW5rPSJodHRwOi8vd3d3LnczLm9yZy8xOTk5L3hsaW5rIiB3aWR0aD0iMjQiIGhlaWdodD0iMjQiPjxwYXRoIGQ9Ik03MTguOTMzMzMzIDg1LjMzMzMzM0wzODcuODQgNDE2Ljg1MzMzM2wtMjA5LjA2NjY2Ny0xNjQuNjkzMzMzTDg3LjQ2NjY2NyAyOTguNjY2NjY3djQyNi42NjY2NjZsOTEuNzMzMzMzIDQ2LjUwNjY2NyAyMTAuMzQ2NjY3LTE2NC4yNjY2NjdMNzE5Ljc4NjY2NyA5MzguNjY2NjY3IDkzOC42NjY2NjcgODUwLjM0NjY2N1YxNzAuNjY2NjY3ek0xODYuNDUzMzMzIDYxMC4xMzMzMzNWNDExLjczMzMzM2wxMDQuMTA2NjY3IDEwMy42OHogbTUyNi4wOCA1NS4wNEw1MTQuMTMzMzMzIDUxMmwxOTguNC0xNTMuMTczMzMzeiIgcC1pZD0iNjEyMSIgZmlsbD0iI2ZmZmZmZiI+PC9wYXRoPjwvc3ZnPg==)
 ![GitHub top language](https://img.shields.io/github/languages/top/WpfMusicPlayer-Dev/WpfMusicPlayer?style=for-the-badge)
 ![GitHub commit activity](https://img.shields.io/github/commit-activity/w/WpfMusicPlayer-Dev/WpfMusicPlayer?style=for-the-badge)
@@ -25,8 +25,8 @@ A simple music player.
 
 ## Technical stack
 - **Frontend:** WPF / C#  
-- **Backend:** Standard C++/CLI  
-- **Native Libraries:** FFmpeg, FAudio, OpenSSL, RapidJSON, cpp-base64, kissfft, uchardet, libiconv, dlib
+- **Backend:** Standard C++, C++/CLI wrapper isolated inside `MusicPlayerNative/Managed`
+- **Native Libraries:** FFmpeg, FAudio, OpenSSL, RapidJSON, cpp-base64, kissfft, uchardet, libiconv, NCNN
 - **Framework:** .NET 10.0 (Long Term Support)  
 - **Minimum Supported Windows Version:** Windows 10 2004 (build 10.0.19041.0)  
 - **Target Windows Version:** Windows Latest (build 10.0.26100.0)
@@ -40,7 +40,7 @@ A simple music player.
 - Play/pause/stop
 - Seek bar
 - Volume control
-- Full ML-based Lrc Parser with high accuracy (support translation, JPN romanization detection)
+- Full ML-based Lrc Parser, GPU-accelerated with high accuracy (support translation, JPN romanization detection)
 - LRC encoding sniffing based on uchardet & libiconv
 - Extended Lyric display (support ESLyric with karaoke effect)
 - Portrait mode & Animated switch
@@ -115,8 +115,11 @@ powercfg -attributes SUB_PROCESSOR bae08b81-2d5e-4688-ad6a-13243356654b -ATTRIB_
 - See: [LICENSE.icon.txt](LICENSE.icon.txt)
 
 ## Model Weight README & Copyright Notice
-- File Path: `WpfMusicPlayer/lyric_lang_mlp.dat`
-- File Path: `WpfMusicPlayer/song_structure_mlp.dat`
+- File Path: `WpfMusicPlayer/lyric_lang_vocab.bin`
+- File Path: `WpfMusicPlayer/lyric_lang_mlp.ncnn.bin`
+- File Path: `WpfMusicPlayer/lyric_lang_mlp.ncnn.param`
+- File Path: `WpfMusicPlayer/song_structure_mlp.ncnn.bin`
+- File Path: `WpfMusicPlayer/song_structure_mlp.ncnn.param`
 - See: [README.modelweights.md](README.modelweights.md)
 
 ## License
@@ -133,30 +136,21 @@ FFmpeg can be built under **LGPL** or **GPL**, depending on the configuration.
 
 Make sure you understand the implications before distributing a GPL‑linked build.
 
->
-> [!important] 
-> 
-> NOTICE!
-> 
-> A critical vulnerability has been disclosed in FFmpeg’s MagicYUV decoder that allows attackers to weaponize seemingly harmless media files and, in some scenarios, achieve remote code execution (RCE).
-> <br>
-> The flaw, tracked as CVE-2026-8461 and dubbed “PixelSmash,” is a heap out-of-bounds write in FFmpeg’s `libavcodec` component, with a CVSS score of 8.8 (High).
-> <br>
-> Although this music player does not support video files directly, attackers can still rename a crafted video file with one of the supporting extensions in this player.
-> <br>
-> Then, the player will try to scan the streams inside the crafted files (in `MusicPlayerNative.cpp`, `MusicPlayerLibrary::MusicPlayerNative::load_audio_context_from_file_stream()`) using `libavcodec`, and it will try to find the best audio stream for decoding.
-> <br>
-> It will scan the video streams inside the malicious file, which causes the override of `AVBuffer` struct, replacing the `AVBuffer.free` opaque to libc `system` function, at the same time overrides `AVBuffer.refcount` to 1, causes RCE when FFmpeg triggers normal frame cleanup, and no authentication or elevated privileges are needed.
-> <br>
-> For users of this software, please update to the versions after commit `29058f2`, which locks vcpkg's FFmpeg version to over 8.1.2, fixing this issue.
-> <br>
-> For other information about this bug, please visit [CVE-2026-8461](https://nvd.nist.gov/vuln/detail/CVE-2026-8461).
-> 
-
 ### MIT repository status remains unchanged
 Distributing a GPL‑linked build **does not change the license of this repository**.  
 The upstream source code remains under the **MIT License**, and contributors may continue to use, modify, and distribute it under MIT.  
 Only the **specific binary distribution** that links against GPL‑configured FFmpeg is subject to GPL requirements.
+
+### LGPL compliance notice
+When distributing builds that statically link FFmpeg under LGPL mode, you must ensure end users
+can relink the application with a modified version of FFmpeg. This can be achieved by either:
+
+- Providing application object files (excluding FFmpeg) so users can relink, or
+- Publishing the full source code of this project under MIT, which allows users to rebuild with
+  their own FFmpeg version.
+
+FFmpeg source code is available at https://ffmpeg.org.  
+The LGPL license text is included in LICENSE.thirdparty.txt.
 
 ## Get in touched with author:
 - Email: lucas150670@petalmail.com

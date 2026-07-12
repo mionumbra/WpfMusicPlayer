@@ -4,7 +4,6 @@
 #include "Audio/DSP/EqualizerDsp.h"
 
 #include <algorithm>
-#include <cmath>
 #include <limits>
 #include <numbers>
 

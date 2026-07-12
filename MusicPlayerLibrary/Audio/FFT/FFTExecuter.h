@@ -2,8 +2,11 @@
 
 #pragma once
 #include <mutex>
+#include <deque>
+
 #define kiss_fft_scalar double
 #include <kissfft/kiss_fft.h>
+
 namespace MusicPlayerLibrary
 {
 	struct AudioFrameData {

@@ -4,29 +4,14 @@
 
 #include "pch.h"
 #include "Core/FileAbstractionLayer.h"
+#include "Lyric/MLPipeline/VocabularyIO.h"
+#include "Lyric/MLPipeline/NCNNPipeline.h"
 
-#include <dlib/svm_threaded.h>
-#include <dlib/dnn.h>
-
-using line_sample_type = dlib::matrix<double, 0, 1>;
-using song_sample_type = dlib::matrix<double>;
+using line_sample_type = std::vector<double>;
+using song_sample_type = std::vector<double>;
 
 constexpr int NUM_CLASSES = 8;
 constexpr int NUM_TYPES = 14;
-
-using line_net_type = dlib::loss_multiclass_log<
-	dlib::fc<NUM_CLASSES,
-	dlib::relu<dlib::fc<64,
-	dlib::relu<dlib::fc<128,
-	dlib::input<line_sample_type>
-	>>>>>>;
-
-using song_net_type = dlib::loss_multiclass_log<
-	dlib::fc<NUM_TYPES,
-	dlib::relu<dlib::fc<32,
-	dlib::relu<dlib::fc<64,
-	dlib::input<song_sample_type>
-	>>>>>>;
 
 namespace MusicPlayerLibrary
 {
@@ -75,9 +60,9 @@ public:
 		kr_zh_trans_roma
 	};
 	
-	line_net_type line_net_reasoning;
-	std::unordered_map<std::string, int> line_vocab_reasoning;
-	song_net_type song_net_reasoning;
+	std::unique_ptr<MLPipeline::NcnnClassifier> line_net_reasoning;
+	std::unique_ptr<MLPipeline::NcnnClassifier> song_net_reasoning;
+	MLPipeline::Vocabulary line_vocab_reasoning;
 	// MSTest运行在多线程上，避免并发测试导致神经网络被破坏
 	std::mutex dlib_mutex;
 private:
@@ -88,7 +73,10 @@ public:
 	LrcLanguageHelper(LrcLanguageHelper&&) = delete;
 	LrcLanguageHelper& operator=(LrcLanguageHelper&&) = delete;
 	std::string lyric_type_to_std_string(LanguageType type);
-	std::vector<double> extract_line_features(const std::string& text, const std::unordered_map<std::string, int>& vocab);
+	std::vector<double> extract_line_features(const std::string& text, const MLPipeline::Vocabulary& vocab);
+	
+	std::vector<float> to_float_features(const std::vector<double>& features);
+
 	song_sample_type extract_song_features(const std::vector<LrcLanguageHelper::LanguageType>& seq);
 	LanguageClassification detect_song_language_classification(const std::vector<LrcLanguageHelper::LanguageType>& lyric_lang_type);
 	auto detect_language_slot(
@@ -246,6 +234,15 @@ public:
 	{
 		return LrcMultiNode::get_auxiliary_info(index);
 	}
+	
+	[[nodiscard]] LrcLanguageHelper::LanguageType get_language_type(int index) const override { return LrcMultiNode::get_language_type(index); }
+	[[nodiscard]] int get_intrinsic_end_time_ms() const override { return LrcProgressNode::get_intrinsic_end_time_ms(); }
+	[[nodiscard]] int get_controller_node_count(int line_index) const override { return LrcProgressNode::get_controller_node_count(line_index); }
+	[[nodiscard]] int get_controller_node_at(int line_index, int node_index, int& start_time_ms, int& end_time_ms, std::string& out_str) const override
+	{
+		return LrcProgressNode::get_controller_node_at(line_index, node_index, start_time_ms, end_time_ms, out_str);
+	}
+	[[nodiscard]] bool is_progress_node() const override { return true; }
 	void set_lrc_end_timestamp(int time_ms) override { LrcProgressNode::set_lrc_end_timestamp(time_ms); }
 };
 

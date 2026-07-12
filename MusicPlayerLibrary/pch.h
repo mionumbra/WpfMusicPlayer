@@ -9,6 +9,10 @@
 #ifndef PCH_H
 #define PCH_H
 
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif 
+
 #if defined(_MSC_VER) // if uses msvc...
 #define _CRT_SECURE_NO_WARNINGS // NOLINT(*-reserved-identifier)
 #pragma warning (disable: 4819) // avoid msvc utf-8 warning
@@ -30,56 +34,4 @@
 #endif
 #include "Core/NativeTraceRedirect.h" // For Debug
 
-#include <cstdlib>
-#include <cassert>
-#include <list>
-#include <vector>
-#include <functional>
-#include <future>
-#include <thread>
-#include <mutex>
-#include <condition_variable>
-#include <atomic>
-#include <chrono>
-#include <string>
-#include <stack>
-#include <algorithm>
-#include <deque>
-#include <cstdio>
-#include <cinttypes>
-#include <cmath>
-
-#if defined(__cplusplus)
-extern "C" {
-#endif
-#include <libavformat/avformat.h>
-#include <libavcodec/avcodec.h>
-#include <libavutil/opt.h>
-#include <libavutil/audio_fifo.h>
-#include <libavutil/imgutils.h>
-#include <libavutil/mem.h>
-#include <libswresample/swresample.h>
-#include <libswscale/swscale.h>
-#include <libavutil/frame.h>
-#include <libavfilter/avfilter.h>
-#include <libavfilter/buffersrc.h>
-#include <libavfilter/buffersink.h>
-
-#if defined(__cplusplus)
-}
-#endif
-
-#if !defined(FFMPEG_CRITICAL_ERROR)
-#define FFMPEG_CRITICAL_ERROR(err_code) \
-	do { \
-		dialog_ffmpeg_critical_error(err_code, __FILE__, __LINE__); \
-	} while(0)
-#endif
-
-#if !defined(WAY3RES)
-#define WAY3RES(ord) \
-((ord) == std::strong_ordering::less ? ThreeWayCompareResult::Less : \
-(ord) == std::strong_ordering::greater ? ThreeWayCompareResult::Greater : \
-ThreeWayCompareResult::Equal)
-#endif
 #endif //PCH_H

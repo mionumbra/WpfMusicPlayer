@@ -75,6 +75,7 @@
   <PropertyGroup Label="Vcpkg">
     <VcpkgEnableManifest>true</VcpkgEnableManifest>
     <VcpkgManifestRoot>$(SolutionDir)</VcpkgManifestRoot>
+    <VcpkgAdditionalInstallOptions>--allow-unsupported</VcpkgAdditionalInstallOptions>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>

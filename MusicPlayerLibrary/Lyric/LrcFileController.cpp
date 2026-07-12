@@ -3,6 +3,9 @@
 #include "pch.h"
 #include "Lyric/LrcFileController.h"
 #include "Core/LocaleConverter.h"
+#include "Lyric/MLPipeline/NCNNPipeline.h"
+
+#include <stack>
 #include <regex>
 #include <ranges>
 #include <stdexcept>
@@ -68,7 +71,7 @@ const char* LanguageTypeToString(LrcLanguageHelper::LanguageType type)
     case LrcLanguageHelper::LanguageType::latin: return "latin";
     case LrcLanguageHelper::LanguageType::jp: return "jp";
     case LrcLanguageHelper::LanguageType::kr: return "kr";
-    case LrcLanguageHelper::LanguageType::ru: return "ru";
+    case LrcLanguageHelper::LanguageType::ru: return "rL";
     case LrcLanguageHelper::LanguageType::jyut: return "jyut";
     case LrcLanguageHelper::LanguageType::roma: return "roma";
     case LrcLanguageHelper::LanguageType::onomatopoeia:
@@ -649,8 +652,31 @@ LrcMultiNode::LrcMultiNode(int t, const std::vector<std::string>& texts,
 
 LrcLanguageHelper::LrcLanguageHelper()
 {
-    dlib::deserialize("lyric_lang_mlp.dat") >> line_net_reasoning >> line_vocab_reasoning;
-    dlib::deserialize("song_structure_mlp.dat") >> song_net_reasoning;
+    auto line_model_file = MLPipeline::NcnnModelFiles{
+        .param = L"lyric_lang_mlp.ncnn.param",
+        .weights = L"lyric_lang_mlp.ncnn.bin"
+    };
+    auto song_model_file = MLPipeline::NcnnModelFiles{
+        .param = L"song_structure_mlp.ncnn.param",
+        .weights = L"song_structure_mlp.ncnn.bin"
+    };
+
+    line_net_reasoning.reset(new MLPipeline::NcnnClassifier(line_model_file)) ;
+    line_vocab_reasoning = MLPipeline::load_vocab(
+        L"lyric_lang_vocab.bin",
+        line_net_reasoning->model_fingerprint());
+    if (line_vocab_reasoning.size() != line_net_reasoning->input_size())
+    {
+        throw std::runtime_error(
+            "vocabulary has " + std::to_string(line_vocab_reasoning.size()) +
+            " entries; NCNN model expects " + std::to_string(line_net_reasoning->input_size()));
+    }
+    song_net_reasoning.reset(new MLPipeline::NcnnClassifier(song_model_file));
+    
+    if (!line_net_reasoning || !song_net_reasoning)
+    {
+        throw std::runtime_error("NCNN initialization failed.");
+    }
 }
 
 std::string LrcLanguageHelper::lyric_type_to_std_string(LanguageType type)
@@ -661,7 +687,7 @@ std::string LrcLanguageHelper::lyric_type_to_std_string(LanguageType type)
     case LanguageType::latin: return "latin";
     case LanguageType::jp: return "jp";
     case LanguageType::kr: return "kr";
-    case LanguageType::ru: return "ru";
+    case LanguageType::ru: return "rL";
     case LanguageType::jyut: return "jyut";
     case LanguageType::roma: return "roma";
     default: return "onomatopoeia";
@@ -669,7 +695,7 @@ std::string LrcLanguageHelper::lyric_type_to_std_string(LanguageType type)
 }
 
 std::vector<double> LrcLanguageHelper::extract_line_features(const std::string& text,
-                                                             const std::unordered_map<std::string, int>& vocab)
+                                                             const MLPipeline::Vocabulary& vocab)
 {
     std::vector x(vocab.size(), 0.0);
 
@@ -687,15 +713,20 @@ std::vector<double> LrcLanguageHelper::extract_line_features(const std::string& 
     return x;
 }
 
+std::vector<float> LrcLanguageHelper::to_float_features(const std::vector<double>& features)
+{
+    return { features.begin(), features.end() };
+}
+
 LrcLanguageHelper::LanguageType
 LrcLanguageHelper::detect_line_language_type(const std::string& input)
 {
     auto feat = extract_line_features(input, line_vocab_reasoning);
-    line_sample_type m(feat.size());
-    for (size_t i = 0; i < feat.size(); ++i)
-        m(i) = feat[i];
+    const auto features = to_float_features(feat);
+    
     std::lock_guard lock(dlib_mutex);
-    switch (int label_id = line_net_reasoning(m); label_id)
+    
+    switch (int label_id = line_net_reasoning->predict(features); label_id)
     {
     case 0: return LanguageType::zh;
     case 1: return LanguageType::jp;
@@ -714,7 +745,7 @@ LrcLanguageHelper::extract_song_features(const std::vector<LrcLanguageHelper::La
     using LT = LrcLanguageHelper::LanguageType;
     const int LANGS = 8; // zh jp kr en jyut roma ono
     song_sample_type feat(84, 1); 
-    feat = 0;
+    feat.clear();
 
     // language count map
     std::vector count(LANGS, 0);
@@ -735,12 +766,12 @@ LrcLanguageHelper::extract_song_features(const std::vector<LrcLanguageHelper::La
 
     // language count (8 rows)
     for (int i = 0; i < LANGS; i++)
-        feat(idx++) = count[i];
+        feat.push_back(count[i]);
 
     // language proportion (8 rows)
-    double total = seq.size();
+    const double total = static_cast<double>(seq.size());
     for (int i = 0; i < LANGS; i++)
-        feat(idx++) = count[i] / total;
+        feat.push_back(count[i] / total);
 
     // bigram matrix (64 rows)
     std::vector trans(LANGS, std::vector(LANGS, 0));
@@ -765,27 +796,27 @@ LrcLanguageHelper::extract_song_features(const std::vector<LrcLanguageHelper::La
 
     for (int i = 0; i < LANGS; i++)
         for (int j = 0; j < LANGS; j++)
-            feat(idx++) = trans[i][j];
+            feat.push_back(trans[i][j]);
 
     // language switching count (1 row)
     int switches = 0;
     for (size_t i = 1; i < seq.size(); i++)
         if (seq[i] != seq[i - 1])
             switches++;
-    feat(idx++) = switches;
+    feat.push_back(switches);
 
     // translation included? (1 row)
-    feat(idx++) = count[0] > 0 && 
+    feat.push_back(count[0] > 0 && 
         (count[1] > 0 
             || count[2] > 0 
             || count[3] > 0 
-            || count[4] > 0);
+            || count[4] > 0));
 
     // jyutping included? (1 row)
-    feat(idx++) = count[5] > 0;
+    feat.push_back(count[5] > 0);
 
     // romaji included? (1 row)
-    feat(idx) = count[6] > 0;
+    feat.push_back(count[6] > 0);
 
     return feat;
 }
@@ -797,7 +828,8 @@ LrcLanguageHelper::LanguageClassification LrcLanguageHelper::detect_song_languag
     int reasoning_result;
     {
         std::lock_guard lock(dlib_mutex);
-        reasoning_result = song_net_reasoning(song_feat);
+        auto features = to_float_features(song_feat);
+        reasoning_result = song_net_reasoning->predict(features);
     }
     static std::unordered_map<LanguageClassification, unsigned long> table = {
         {LanguageClassification::zh_only, 0},
@@ -933,12 +965,12 @@ LrcProgressNode::LrcProgressNode(int t, const std::string& text_with_node, int c
             if (milliseconds_str.size() < 3)
             {
                 auto multiples = 3 - milliseconds_str.size();
-                milliseconds *= std::floor(pow(10, multiples));
+                milliseconds *= static_cast<int>(std::floor(pow(10, multiples)));
             }
             if (milliseconds_str.size() >= 4)
             {
                 auto multiples = milliseconds_str.size() - 3;
-                milliseconds /= std::floor(pow(10, multiples));
+                milliseconds /= static_cast<int>(std::floor(pow(10, multiples)));
             }
             int total_ms = minutes * 60000 + seconds * 1000 + milliseconds;
             if (total_ms < 0) total_ms = 0;
@@ -1033,7 +1065,7 @@ int SelectBestControllerLine(const std::vector<std::string>& str_arr)
         }
     }
     auto max_it = std::ranges::max_element(controller_bucket);
-    int max_index = std::distance(controller_bucket.begin(), max_it);
+    int max_index = static_cast<int>(std::distance(controller_bucket.begin(), max_it));
     return max_index;
 }
 
@@ -1243,12 +1275,12 @@ void LrcFileController::parse_lrc_file_stream(IFile* file_stream)
                 if (milliseconds_str.size() < 3)
                 {
                     auto multiples = 3 - milliseconds_str.size();
-                    milliseconds *= std::floor(pow(10, multiples));
+                    milliseconds *= static_cast<int>(std::floor(pow(10, multiples)));
                 }
                 if (milliseconds_str.size() >= 4)
                 {
                     auto multiples = milliseconds_str.size() - 3;
-                    milliseconds /= std::floor(pow(10, multiples));
+                    milliseconds /= static_cast<int>(std::floor(pow(10, multiples)));
                 }
             }
             int total_ms_multi = minutes * 60000 + seconds * 1000 + milliseconds;
@@ -1541,7 +1573,11 @@ LrcMetadataTypeNative LrcFileController::get_metadata_type(const std::string& st
     if (metadata_end_index == std::string::npos)
         return LrcMetadataTypeNative::Error;
 
-    const std::string metadata_type_str = str.substr(1, metadata_end_index - 1);
+    std::string metadata_type_str = str.substr(1, metadata_end_index - 1);
+    std::ranges::for_each(metadata_type_str, [](const char i)
+    {
+       return std::isalpha(i) ? std::tolower(i) : i;
+    });
     if (metadata_type_str == "ar" || metadata_type_str == "artist")
         return LrcMetadataTypeNative::Artist;
     if (metadata_type_str == "al" || metadata_type_str == "album")

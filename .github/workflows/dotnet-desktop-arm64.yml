@@ -64,7 +64,8 @@ jobs:
           cd $env:VCPKG_ROOT
           .\vcpkg install `
             --triplet $env:VCPKG_DEFAULT_TRIPLET `
-            --x-install-root=${{ github.workspace }}/vcpkg_installed
+            --x-install-root=${{ github.workspace }}/vcpkg_installed `
+            --allow-unsupported
 
       - name: Restore NuGet packages
         run: >
