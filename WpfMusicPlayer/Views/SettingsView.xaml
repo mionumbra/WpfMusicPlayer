@@ -135,24 +135,7 @@
                         x:Name="NonWindows11Warning"
                         Visibility="{Binding Windows10WarningVisibility}"
                         Text="注意：由于Windows 10 DWM管线热切换存在bug，您需要重新启动应用程序以使更改生效" Foreground="#FFFFE0" FontSize="12" FontWeight="Bold" Margin="0,0,0,14" TextWrapping="Wrap"/>
-
-            <Grid Margin="0,0,0,14">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="Auto"/>
-                    <ColumnDefinition Width="*"/>
-                </Grid.ColumnDefinitions>
-                <StackPanel Grid.Column="0" VerticalAlignment="Center">
-                    <TextBlock Text="主题" Foreground="White" FontSize="14"/>
-                    <TextBlock Text="选择应用的外观主题" Foreground="#99FFFFFF" FontSize="12" Margin="0,2,0,0"/>
-                </StackPanel>
-                <ComboBox Grid.Column="1" HorizontalAlignment="Right"
-                          Style="{StaticResource SettingsComboBoxStyle}"
-                          ItemContainerStyle="{StaticResource SettingsComboBoxItemStyle}"
-                          SelectedItem="{Binding SelectedTheme}"
-                          ItemsSource="{Binding ThemeOptions}"/>
-            </Grid>
-
-            <Border Height="1" Background="#15FFFFFF" Margin="0,0,0,14"/>
+            
 
             <Grid Margin="0,0,0,14">
                 <Grid.ColumnDefinitions>

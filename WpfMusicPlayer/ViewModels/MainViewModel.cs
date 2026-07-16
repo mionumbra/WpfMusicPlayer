@@ -38,7 +38,9 @@ public partial class MainViewModel : ObservableObject, IDisposable
     private readonly Random _shuffleRandom = new();
     private readonly Stack<string> _shuffleHistory = new();
     private readonly SemaphoreSlim _openFileLock = new(1, 1);
+    private readonly object _playerStateLock = new();
     private MusicPlayerManaged _musicPlayer;
+    private PlayerLoadContext? _activeLoadContext;
     private string? _currentFilePath;
     private string? _currentMd5;
     private int _sampleRate;
@@ -51,13 +53,15 @@ public partial class MainViewModel : ObservableObject, IDisposable
     private bool _disableAutoAdvance;
     private bool _playCountIncrementedForCurrentSong;
     private bool _isDisposed;
-    private byte[]? _pendingAlbumArtPng;
     private int _albumArtVersion;
     private readonly ILogger<MainViewModel> _logger;
     private const int AlbumArtLogicalSize = 500;
     private const int BlurredAlbumArtPixelSize = 320;
     private const float BlurredAlbumArtSigma = 24f;
     private const int SpectrumSegmentCount = 32;
+    private const string NoFileOpenedTitle = "No file opened";
+    private const string UnknownTitle = "Unknown Title";
+    private const string UnknownArtist = "Unknown Artist";
     private const string PauseString = "\uE769";
     private const string PlayString = "\uF5B0";
     private bool _spectrumBufferHasData;
@@ -121,7 +125,6 @@ public partial class MainViewModel : ObservableObject, IDisposable
         Version = parts[0];
         CommitId = parts.Length > 1 ? parts[1][..7] : "N/A";
 
-        SubscribePlayerEvents();
         SubscribeSmtcEvents();
         RestoreSettingsFromCommandLine();
         _logger.LogInformation(
@@ -222,20 +225,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
     private async void OnPlaylistResetRequested()
     {
-        // reset state
-        _musicPlayer.Dispose();
-        _musicPlayer = CreateMusicPlayer();
-        ApplyEqualizerSettingsToPlayer();
-        Interlocked.Increment(ref _albumArtVersion);
-        AlbumCoverImage = null;
-        BlurredAlbumCoverImage = null;
-        SongTitle = "Unknown Title";
-        ArtistName = "Unknown Artist";
-        ProgressValue = 0;
-        CurrentTime = "0:00";
-        _smtcService.UpdatePlaybackStatus(PlaybackState.Stopped);
-        _smtcService.UpdateTextMetadata("Unknown Title", "Unknown Artist");
-        Lyrics.ResetState();
+        ResetPlayerToUnloadedState();
 
         if (Playlist.PlaylistItems.Count <= 0) return;
         _enableAutoPlay = false;
@@ -297,10 +287,10 @@ public partial class MainViewModel : ObservableObject, IDisposable
     }
 
     [ObservableProperty]
-    public partial string SongTitle { get; private set; } = "Unknown Title";
+    public partial string SongTitle { get; private set; } = NoFileOpenedTitle;
 
     [ObservableProperty]
-    public partial string ArtistName { get; private set; } = "Unknown Artist";
+    public partial string ArtistName { get; private set; } = UnknownArtist;
 
     [ObservableProperty]
     public partial BitmapImage? AlbumCoverImage { get; private set; }
@@ -452,6 +442,12 @@ public partial class MainViewModel : ObservableObject, IDisposable
         // 避免对_musicPlayer的重复析构
         _logger.LogInformation("Attempting to acquire OpenFile lock");
         await _openFileLock.WaitAsync().ConfigureAwait(false);
+        int loadVersion;
+        lock (_playerStateLock)
+        {
+            loadVersion = Interlocked.Increment(ref _albumArtVersion);
+        }
+
         try
         {
             _logger.LogInformation("OpenFile lock acquired, filePath: {FilePath}", filePath);
@@ -464,36 +460,45 @@ public partial class MainViewModel : ObservableObject, IDisposable
             }
 
             var isNcm = Path.GetExtension(filePath).Equals(".ncm", StringComparison.OrdinalIgnoreCase);
-            if (isNcm)
+            _syncContext.Post(_ =>
             {
+                if (loadVersion == Volatile.Read(ref _albumArtVersion))
+                    IsDecoding = isNcm;
+            }, null);
+            if (isNcm)
                 _logger.LogInformation("NCM file detected, starting decode: {FilePath}", filePath);
-                _syncContext.Post(_ => IsDecoding = true, null);
-            }
 
             try
             {
-                _currentFilePath = filePath;
-                var albumArtVersion = Interlocked.Increment(ref _albumArtVersion);
-                _pendingAlbumArtPng = null;
-                _syncContext.Post(_ => ClearAlbumArt(albumArtVersion), null);
-                _currentMd5 = await ComputeFileMd5Async(filePath).ConfigureAwait(false);
-                _logger.LogInformation("File MD5 computed: {Md5}", _currentMd5);
+                var md5 = await ComputeFileMd5Async(filePath).ConfigureAwait(false);
+                _logger.LogInformation("File MD5 computed: {Md5}", md5);
 
-                var cached = _songDatabase.FindByMd5(_currentMd5);
+                var cached = _songDatabase.FindByMd5(md5);
                 var skipAlbumArtLoading = cached?.AlbumArt is { Length: > 0 };
                 if (skipAlbumArtLoading)
                 {
-                    _logger.LogInformation("Cached album art hit for {Md5}; native album art loading will be skipped", _currentMd5);
-                    var albumArt = cached!.AlbumArt!;
-                    _syncContext.Post(_ => ApplyCachedAlbumArt(albumArt, albumArtVersion), null);
+                    _logger.LogInformation("Cached album art hit for {Md5}; native album art loading will be skipped", md5);
                 }
 
-                _musicPlayer.Dispose();
-                _musicPlayer = CreateMusicPlayer();
-                ApplyEqualizerSettingsToPlayer();
-                SubscribePlayerEvents(albumArtVersion, _currentMd5, filePath);
-                _disableAutoAdvance = false;
-                _musicPlayer.OpenFile(filePath, skipAlbumArtLoading);
+                var loadContext = new PlayerLoadContext(loadVersion, filePath, md5, cached?.AlbumArt);
+                var newPlayer = CreateMusicPlayer();
+                lock (_playerStateLock)
+                {
+                    if (loadVersion != Volatile.Read(ref _albumArtVersion))
+                    {
+                        newPlayer.Dispose();
+                        return;
+                    }
+
+                    _musicPlayer.Dispose();
+                    _musicPlayer = newPlayer;
+                    _activeLoadContext = loadContext;
+                    ApplyEqualizerSettingsToPlayer(newPlayer);
+                    SubscribePlayerEvents(newPlayer, loadContext);
+                    _disableAutoAdvance = false;
+                    newPlayer.OpenFile(filePath, skipAlbumArtLoading);
+                }
+
                 if (!_enableAutoPlay)
                 {
                     _syncContext.Post(_ => PlayPauseContent = PlayString, null);
@@ -501,7 +506,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
             }
             catch
             {
-                _syncContext.Post(_ => IsDecoding = false, null);
+                ResetPlayerToUnloadedState(loadVersion);
                 throw;
             }
         }
@@ -699,21 +704,18 @@ public partial class MainViewModel : ObservableObject, IDisposable
         }
     }
 
-    private void SubscribePlayerEvents(
-        int albumArtVersion = 0,
-        string? albumArtMd5 = null,
-        string? albumArtFilePath = null)
+    private void SubscribePlayerEvents(MusicPlayerManaged player, PlayerLoadContext loadContext)
     {
-        _musicPlayer.OnPlayerTimeChange += OnTimeChanged;
-        _musicPlayer.OnPlayerFileInit += OnFileInit;
-        _musicPlayer.OnPlayerAlbumArtInit += encodedImage =>
-            ApplyIncomingAlbumArt(encodedImage, albumArtVersion, albumArtMd5, albumArtFilePath);
-        _musicPlayer.OnPlayerNcmRequireAlbumArtDownload += url =>
-            QueueNcmAlbumArtDownload(url, albumArtVersion, albumArtMd5, albumArtFilePath);
-        _musicPlayer.OnPlayerStart += OnStart;
-        _musicPlayer.OnPlayerPause += OnPause;
-        _musicPlayer.OnPlayerStop += OnStop;
-        _musicPlayer.OnPlayerError += OnPlayerError;
+        player.OnPlayerTimeChange += time => OnTimeChanged(player, loadContext, time);
+        player.OnPlayerFileInit += () => OnFileInit(player, loadContext);
+        player.OnPlayerAlbumArtInit += encodedImage =>
+            ApplyIncomingAlbumArt(encodedImage, player, loadContext);
+        player.OnPlayerNcmRequireAlbumArtDownload += url =>
+            QueueNcmAlbumArtDownload(url, player, loadContext);
+        player.OnPlayerStart += () => OnStart(player, loadContext);
+        player.OnPlayerPause += () => OnPause(player, loadContext);
+        player.OnPlayerStop += () => OnStop(player, loadContext);
+        player.OnPlayerError += exception => OnPlayerError(player, loadContext, exception);
     }
 
     private void SubscribeSmtcEvents()
@@ -730,151 +732,157 @@ public partial class MainViewModel : ObservableObject, IDisposable
         _smtcService.PreviousRequested += () => _syncContext.Post(_ => PrevSongCommand.Execute(null), null);
     }
 
-    private void OnFileInit()
+    private void OnFileInit(MusicPlayerManaged player, PlayerLoadContext loadContext)
     {
         _syncContext.Post(_ =>
         {
-            _logger.LogInformation("OnFileInit: file initialized, loading metadata");
-            IsDecoding = false;
-            var length = _musicPlayer.GetMusicTimeLength();
-            ProgressMaximum = length;
-            TotalTime = FormatTime(length);
+            if (!IsCurrentLoad(player, loadContext))
+                return;
 
-            var cached = _currentMd5 is not null ? _songDatabase.FindByMd5(_currentMd5) : null;
-            if (cached is not null)
+            try
             {
-                // 优先使用数据库缓存
-                _logger.LogInformation("OnFileInit: using cached metadata for {Md5}, title: {Title}", _currentMd5, cached.Title);
-                SongTitle = cached.Title;
-                ArtistName = cached.Artist;
-            }
-            else
-            {
-                _logger.LogInformation("OnFileInit: no cache found, reading metadata from file");
-                SongTitle = _musicPlayer.GetSongTitle() ?? "Unknown Title";
-                ArtistName = _musicPlayer.GetSongArtist() ?? "Unknown Artist";
+                _logger.LogInformation("OnFileInit: file initialized, loading metadata");
+                var length = player.GetMusicTimeLength();
+                var cached = _songDatabase.FindByMd5(loadContext.Md5);
+                var embeddedTitle = player.GetSongTitle();
+                var songTitle = ResolveSongTitle(cached?.Title, embeddedTitle, loadContext.FilePath);
+                var artistName = ResolveArtistName(cached?.Artist, player.GetSongArtist());
+                var albumCover = TryLoadAlbumCover(loadContext.AlbumArtPng);
 
-                if (_currentMd5 is not null)
+                if (cached is null)
                 {
                     _songDatabase.Upsert(new SongRecord
                     {
-                        Md5 = _currentMd5,
-                        Title = SongTitle,
-                        Artist = ArtistName,
-                        AlbumArt = _pendingAlbumArtPng
+                        Md5 = loadContext.Md5,
+                        Title = songTitle,
+                        Artist = artistName,
+                        AlbumArt = loadContext.AlbumArtPng
                     });
-                    
-                    Playlist.UpdateItemMetadata(_currentFilePath, SongTitle, ArtistName, null);
                 }
-            }
 
-            AddToPlaylist();
+                // 新歌曲的所有可见状态都在同一个 Dispatcher 周期内提交，避免切歌时闪烁半成品。
+                _currentFilePath = loadContext.FilePath;
+                _currentMd5 = loadContext.Md5;
+                loadContext.IsCommitted = true;
+                IsDecoding = false;
+                SongTitle = songTitle;
+                ArtistName = artistName;
+                AlbumCoverImage = albumCover;
+                BlurredAlbumCoverImage = null;
+                ProgressValue = 0;
+                CurrentTime = "0:00";
+                ProgressMaximum = length;
+                TotalTime = FormatTime(length);
+                QueueBlurredAlbumArtRender(loadContext.AlbumArtPng, loadContext.Version);
 
-            // 坑：UpdateMetadata会清除缩略图；内嵌封面通常早于 FileInit 到达，NCM 下载封面也可能早于此处完成。
-            _smtcService.UpdateTextMetadata(SongTitle, ArtistName);
-            var smtcAlbumArt = cached?.AlbumArt ?? _pendingAlbumArtPng;
-            if (smtcAlbumArt is { Length: > 0 })
-            {
-                using var albumArtStream = new MemoryStream(smtcAlbumArt);
-                _smtcService.UpdateMetadata(SongTitle, ArtistName, albumArtStream);
-            }
-            DesktopTrayIcon.TaskBarToolTipText = $"{SongTitle} - {ArtistName}";
+                AddToPlaylist();
+                Playlist.UpdateItemMetadata(loadContext.FilePath, songTitle, artistName, albumCover);
 
-            _musicPlayer.SetMasterVolume((float)Volume);
-            
-            // query custom lyric from database
-            var customLyric = cached?.CustomLyric ?? string.Empty;
-            var customLyricSource = SuppliedLyricSource.DatabaseCache;
-            if (String.IsNullOrEmpty(customLyric))
-            {
-                customLyric = _musicPlayer.GetID3Lyric();
-                customLyricSource = SuppliedLyricSource.Embedded;
-            }
-
-            var offsetMs = cached?.CustomLyricOffsetMs ?? 0;
-            _logger.LogInformation("OnFileInit: custom lyric offset: {OffsetMs}ms", offsetMs);
-            float curSeekTime = _pendingSeekTime ?? 0.0f;
-            if (_pendingSeekTime is not null)
-            {
-                _logger.LogInformation("OnFileInit: applying pending seek to {SeekTime}s", curSeekTime);
-                _pendingSeekTime = null;
-                _musicPlayer.SeekToPosition(curSeekTime, true);
-                ProgressValue = curSeekTime;
-                CurrentTime = FormatTime(curSeekTime);
-            }
-
-            // let lyrics load in background
-            Lyrics.LoadLyricsAsync(
-                _currentFilePath,
-                customLyric,
-                _musicPlayer.GetSongTitle(),
-                _musicPlayer.GetMusicTimeLength(),
-                offsetMs,
-                customLyricSource)
-                .ContinueWith(_ =>
+                // 坑：UpdateMetadata会清除缩略图；内嵌封面通常早于 FileInit 到达，NCM 下载封面也可能早于此处完成。
+                _smtcService.UpdateTextMetadata(songTitle, artistName);
+                if (loadContext.AlbumArtPng is { Length: > 0 } smtcAlbumArt)
                 {
-                    Lyrics.UpdateLyricProgress(curSeekTime);
-                }, TaskScheduler.FromCurrentSynchronizationContext())
-                .ConfigureAwait(false);
-            if (_enableAutoPlay)
-                _musicPlayer.Start();
+                    using var albumArtStream = new MemoryStream(smtcAlbumArt);
+                    _smtcService.UpdateMetadata(songTitle, artistName, albumArtStream);
+                }
+                DesktopTrayIcon.TaskBarToolTipText = $"{songTitle} - {artistName}";
+
+                player.SetMasterVolume((float)Volume);
+
+                // query custom lyric from database
+                var customLyric = cached?.CustomLyric ?? string.Empty;
+                var customLyricSource = SuppliedLyricSource.DatabaseCache;
+                if (String.IsNullOrEmpty(customLyric))
+                {
+                    customLyric = player.GetID3Lyric();
+                    customLyricSource = SuppliedLyricSource.Embedded;
+                }
+
+                var offsetMs = cached?.CustomLyricOffsetMs ?? 0;
+                _logger.LogInformation("OnFileInit: custom lyric offset: {OffsetMs}ms", offsetMs);
+                float curSeekTime = _pendingSeekTime ?? 0.0f;
+                if (_pendingSeekTime is not null)
+                {
+                    _logger.LogInformation("OnFileInit: applying pending seek to {SeekTime}s", curSeekTime);
+                    _pendingSeekTime = null;
+                    player.SeekToPosition(curSeekTime, true);
+                    ProgressValue = curSeekTime;
+                    CurrentTime = FormatTime(curSeekTime);
+                }
+
+                // let lyrics load in background
+                Lyrics.LoadLyricsAsync(
+                    loadContext.FilePath,
+                    customLyric,
+                    songTitle,
+                    length,
+                    offsetMs,
+                    customLyricSource)
+                    .ContinueWith(_ =>
+                    {
+                        Lyrics.UpdateLyricProgress(curSeekTime);
+                    }, TaskScheduler.FromCurrentSynchronizationContext())
+                    .ConfigureAwait(false);
+                if (_enableAutoPlay)
+                    player.Start();
+            }
+            catch (Exception ex)
+            {
+                OnPlayerError(player, loadContext, ex);
+            }
         }, null);
     }
 
     private void QueueNcmAlbumArtDownload(
         string? url,
-        int albumArtVersion,
-        string? albumArtMd5,
-        string? albumArtFilePath)
+        MusicPlayerManaged player,
+        PlayerLoadContext loadContext)
     {
-        if (albumArtVersion != Volatile.Read(ref _albumArtVersion))
+        if (!IsCurrentLoad(player, loadContext))
             return;
 
-        _ = DownloadNcmAlbumArtAsync(url, albumArtVersion, albumArtMd5, albumArtFilePath);
+        _ = DownloadNcmAlbumArtAsync(url, player, loadContext);
     }
 
     private async Task DownloadNcmAlbumArtAsync(
         string? url,
-        int albumArtVersion,
-        string? albumArtMd5,
-        string? albumArtFilePath)
+        MusicPlayerManaged player,
+        PlayerLoadContext loadContext)
     {
         try
         {
             var downloader = _ncmAlbumArtDownloaderFactory();
             var encodedImage = await downloader.DownloadAsync(url ?? string.Empty).ConfigureAwait(false);
-            if (albumArtVersion != Volatile.Read(ref _albumArtVersion))
+            if (!IsCurrentLoad(player, loadContext))
                 return;
 
-            ApplyIncomingAlbumArt(encodedImage, albumArtVersion, albumArtMd5, albumArtFilePath);
+            ApplyIncomingAlbumArt(encodedImage, player, loadContext);
         }
         catch (Exception ex)
         {
-            if (albumArtVersion == Volatile.Read(ref _albumArtVersion))
+            if (IsCurrentLoad(player, loadContext))
                 _logger.LogWarning(ex, "Failed to download NCM album art from {Url}", url);
         }
     }
 
     private void ApplyIncomingAlbumArt(
         byte[]? encodedImage,
-        int albumArtVersion,
-        string? albumArtMd5,
-        string? albumArtFilePath)
+        MusicPlayerManaged player,
+        PlayerLoadContext loadContext)
     {
         _syncContext.Post(_ =>
         {
-            if (albumArtVersion != Volatile.Read(ref _albumArtVersion))
+            if (!IsCurrentLoad(player, loadContext))
                 return;
 
             try
             {
-                var cached = albumArtMd5 is not null ? _songDatabase.FindByMd5(albumArtMd5) : null;
+                var cached = _songDatabase.FindByMd5(loadContext.Md5);
                 byte[]? albumArtPng = null;
 
                 if (cached?.AlbumArt is { Length: > 0 })
                 {
                     albumArtPng = cached.AlbumArt;
-                    ApplyCachedAlbumArt(albumArtPng, albumArtVersion);
                     _logger.LogInformation("Cached MD5 hit, discarding incoming album art stream");
                 }
                 else
@@ -883,24 +891,22 @@ public partial class MainViewModel : ObservableObject, IDisposable
                     albumArtPng = encodedImage is { Length: > 0 }
                         ? DecodeAlbumArtToPng(encodedImage)
                         : null;
-                    AlbumCoverImage = albumArtPng is not null ? LoadBitmapImageFromBytes(albumArtPng) : null;
-                    QueueBlurredAlbumArtRender(albumArtPng, albumArtVersion);
-
-                    if (AlbumCoverImage is not null)
-                    {
-                        Playlist.UpdateItemMetadata(albumArtFilePath, null, null, AlbumCoverImage);
-                    }
 
                     if (cached is not null)
                     {
                         cached.AlbumArt = albumArtPng;
                         _songDatabase.Upsert(cached);
                     }
-                    else
-                    {
-                        _pendingAlbumArtPng = albumArtPng;
-                    }
                 }
+
+                loadContext.AlbumArtPng = albumArtPng;
+                if (!loadContext.IsCommitted)
+                    return;
+
+                AlbumCoverImage = TryLoadAlbumCover(albumArtPng);
+                BlurredAlbumCoverImage = null;
+                QueueBlurredAlbumArtRender(albumArtPng, loadContext.Version);
+                Playlist.UpdateItemMetadata(loadContext.FilePath, null, null, AlbumCoverImage);
 
                 Stream? stream = albumArtPng is { Length: > 0 }
                     ? new MemoryStream(albumArtPng)
@@ -915,19 +921,20 @@ public partial class MainViewModel : ObservableObject, IDisposable
         }, null);
     }
 
-    private void ApplyEqualizerSettingsToPlayer()
+    private void ApplyEqualizerSettingsToPlayer(MusicPlayerManaged player)
     {
         for (var i = 0; i < Equalizer.Bands.Count; i++)
         {
             if (!Equalizer.IsBandEnabled(i)) continue;
-            _musicPlayer.SetEqualizerBand(i, Equalizer.Bands[i].Value);
+            player.SetEqualizerBand(i, Equalizer.Bands[i].Value);
         }
     }
 
-    private void OnTimeChanged(double time)
+    private void OnTimeChanged(MusicPlayerManaged player, PlayerLoadContext loadContext, double time)
     {
         _syncContext.Post(_ =>
         {
+            if (!IsCurrentLoad(player, loadContext)) return;
             if (IsDraggingSlider) return;
 
             ProgressValue = time;
@@ -948,8 +955,9 @@ public partial class MainViewModel : ObservableObject, IDisposable
         }, null);
     }
 
-    private void OnStart()
+    private void OnStart(MusicPlayerManaged player, PlayerLoadContext loadContext)
     {
+        if (!IsCurrentLoad(player, loadContext)) return;
         _logger.LogInformation("OnStart: playback started, switching to SustainedLowLatency GC mode");
         GCSettings.LatencyMode = GCLatencyMode.SustainedLowLatency;
         if (!_playCountIncrementedForCurrentSong)
@@ -959,30 +967,35 @@ public partial class MainViewModel : ObservableObject, IDisposable
         }
         _syncContext.Post(_ =>
         {
+            if (!IsCurrentLoad(player, loadContext)) return;
             PlayPauseContent = PauseString;
             _smtcService.UpdatePlaybackStatus(PlaybackState.Playing);
             _enableAutoPlay = false;
         }, null);
     }
 
-    private void OnPause()
+    private void OnPause(MusicPlayerManaged player, PlayerLoadContext loadContext)
     {
+        if (!IsCurrentLoad(player, loadContext)) return;
         _logger.LogInformation("OnPause: playback paused, restoring GC mode");
         GCSettings.LatencyMode = _previousLatencyMode;
         _syncContext.Post(_ =>
         {
+            if (!IsCurrentLoad(player, loadContext)) return;
             PlayPauseContent = PlayString;
             _smtcService.UpdatePlaybackStatus(PlaybackState.Paused);
             Lyrics.UpdateLyricProgress((float)ProgressValue);
         }, null);
     }
 
-    private void OnStop()
+    private void OnStop(MusicPlayerManaged player, PlayerLoadContext loadContext)
     {
+        if (!IsCurrentLoad(player, loadContext)) return;
         _logger.LogInformation("OnStop: playback stopped, restoring GC mode");
         GCSettings.LatencyMode = _previousLatencyMode;
         _syncContext.Post(_ =>
         {
+            if (!IsCurrentLoad(player, loadContext)) return;
             PlayPauseContent = PlayString;
             ProgressValue = 0;
             CurrentTime = "0:00";
@@ -997,20 +1010,24 @@ public partial class MainViewModel : ObservableObject, IDisposable
         }, null);
     }
 
-    private void OnPlayerError(Exception exception)
+    private void OnPlayerError(
+        MusicPlayerManaged player,
+        PlayerLoadContext loadContext,
+        Exception? exception)
     {
+        if (!IsCurrentLoad(player, loadContext)) return;
+        exception ??= new InvalidOperationException("The audio worker failed without an error message.");
         _logger.LogError(exception, "Native audio worker failed");
         _disableAutoAdvance = true;
         GCSettings.LatencyMode = _previousLatencyMode;
 
+        if (!ResetPlayerToUnloadedState(loadContext.Version))
+            return;
+
         _syncContext.Post(_ =>
         {
-            PlayPauseContent = PlayString;
-            _smtcService.UpdatePlaybackStatus(PlaybackState.Stopped);
-            Lyrics.OnPlaybackStopped();
-            var filePath = _currentFilePath;
             WpfMessageBox.Show(
-                filePath is null ? exception.Message : $"{exception.Message}\n{filePath}",
+                $"{exception.Message}\n{loadContext.FilePath}",
                 "Error",
                 WpfMessageBoxIcon.Error);
         }, null);
@@ -1221,7 +1238,9 @@ public partial class MainViewModel : ObservableObject, IDisposable
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to restart current song from beginning");
-            OnPlayerError(ex);
+            var loadContext = _activeLoadContext;
+            if (loadContext is not null)
+                OnPlayerError(player, loadContext, ex);
         }
         finally
         {
@@ -1301,18 +1320,6 @@ public partial class MainViewModel : ObservableObject, IDisposable
             _logger.LogError(ex, "OpenAsync: failed to open file {FilePath}", path);
             WpfMessageBox.Show($"{ex.Message}\n{path}", "Error",
                 WpfMessageBoxIcon.Error);
-            // reset state
-            Interlocked.Increment(ref _albumArtVersion);
-            AlbumCoverImage = null;
-            BlurredAlbumCoverImage = null;
-            SongTitle = "Unknown Title";
-            ArtistName = "Unknown Artist";
-            ProgressValue = 0;
-            CurrentTime = "0:00";
-            _smtcService.UpdatePlaybackStatus(PlaybackState.Stopped);
-            _smtcService.UpdateTextMetadata("Unknown Title", "Unknown Artist");
-            DesktopTrayIcon.TaskBarToolTipText = "WpfMusicPlayer";
-            Lyrics.ResetState();
         }
     }
 
@@ -1342,29 +1349,79 @@ public partial class MainViewModel : ObservableObject, IDisposable
         Playlist.SetPlayingItem(_currentFilePath);
     }
 
-    private void ClearAlbumArt(int albumArtVersion)
-    {
-        if (albumArtVersion != Volatile.Read(ref _albumArtVersion))
-            return;
+    private bool IsCurrentLoad(MusicPlayerManaged player, PlayerLoadContext loadContext) =>
+        !_isDisposed &&
+        ReferenceEquals(player, _musicPlayer) &&
+        ReferenceEquals(loadContext, _activeLoadContext) &&
+        loadContext.Version == Volatile.Read(ref _albumArtVersion);
 
-        AlbumCoverImage = null;
-        BlurredAlbumCoverImage = null;
+    private bool ResetPlayerToUnloadedState(int? expectedLoadVersion = null)
+    {
+        int resetVersion;
+        lock (_playerStateLock)
+        {
+            if (expectedLoadVersion is not null &&
+                expectedLoadVersion.Value != Volatile.Read(ref _albumArtVersion))
+            {
+                return false;
+            }
+
+            resetVersion = Interlocked.Increment(ref _albumArtVersion);
+            _disableAutoAdvance = true;
+            _musicPlayer.Dispose();
+            _musicPlayer = CreateMusicPlayer();
+            _activeLoadContext = null;
+            _currentFilePath = null;
+            _currentMd5 = null;
+            _enableAutoPlay = false;
+            _pendingSeekTime = null;
+            _playCountIncrementedForCurrentSong = false;
+        }
+
+        GCSettings.LatencyMode = _previousLatencyMode;
+        _syncContext.Post(_ => ResetDisplayedPlayerState(resetVersion), null);
+        return true;
     }
 
-    private void ApplyCachedAlbumArt(byte[] albumArt, int albumArtVersion)
+    private void ResetDisplayedPlayerState(int resetVersion)
     {
-        if (albumArtVersion != Volatile.Read(ref _albumArtVersion))
+        if (resetVersion != Volatile.Read(ref _albumArtVersion))
             return;
+
+        IsDecoding = false;
+        IsDraggingSlider = false;
+        AlbumCoverImage = null;
+        BlurredAlbumCoverImage = null;
+        SongTitle = NoFileOpenedTitle;
+        ArtistName = UnknownArtist;
+        ProgressValue = 0;
+        ProgressMaximum = 100;
+        CurrentTime = "0:00";
+        TotalTime = "0:00";
+        PlayPauseContent = PlayString;
+        SpectrumData = new float[SpectrumSegmentCount];
+        _spectrumBufferHasData = false;
+        _disableAutoAdvance = false;
+        _smtcService.UpdatePlaybackStatus(PlaybackState.Stopped);
+        _smtcService.UpdateTextMetadata(NoFileOpenedTitle, UnknownArtist);
+        DesktopTrayIcon.TaskBarToolTipText = "WpfMusicPlayer";
+        Playlist.SetPlayingItem(null);
+        Lyrics.ResetState();
+    }
+
+    private BitmapImage? TryLoadAlbumCover(byte[]? albumArt)
+    {
+        if (albumArt is not { Length: > 0 })
+            return null;
 
         try
         {
-            AlbumCoverImage = LoadBitmapImageFromBytes(albumArt);
-            Playlist.UpdateItemMetadata(_currentFilePath, null, null, AlbumCoverImage);
-            QueueBlurredAlbumArtRender(albumArt, albumArtVersion);
+            return LoadBitmapImageFromBytes(albumArt);
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to load cached album art");
+            _logger.LogWarning(ex, "Failed to load album art");
+            return null;
         }
     }
 
@@ -1524,6 +1581,28 @@ public partial class MainViewModel : ObservableObject, IDisposable
         return Convert.ToHexStringLower(hashBytes);
     }
 
+    private static string ResolveSongTitle(string? cachedTitle, string? embeddedTitle, string filePath)
+    {
+        if (IsValidSongTitle(cachedTitle))
+            return cachedTitle!.Trim();
+        if (IsValidSongTitle(embeddedTitle))
+            return embeddedTitle!.Trim();
+
+        var fileName = Path.GetFileNameWithoutExtension(filePath);
+        return string.IsNullOrWhiteSpace(fileName) ? NoFileOpenedTitle : fileName;
+    }
+
+    private static bool IsValidSongTitle(string? title) =>
+        !string.IsNullOrWhiteSpace(title) &&
+        !title.Equals(UnknownTitle, StringComparison.OrdinalIgnoreCase);
+
+    private static string ResolveArtistName(string? cachedArtist, string? embeddedArtist)
+    {
+        if (!string.IsNullOrWhiteSpace(cachedArtist))
+            return cachedArtist.Trim();
+        return string.IsNullOrWhiteSpace(embeddedArtist) ? UnknownArtist : embeddedArtist.Trim();
+    }
+
     private static string FormatTime(double seconds)
     {
         var timeSpan = TimeSpan.FromSeconds(seconds);
@@ -1533,5 +1612,18 @@ public partial class MainViewModel : ObservableObject, IDisposable
     public async Task OpenExternalPlaylist(string playlistPath)
     {
         await Playlist.OpenPlaylistAsync(playlistPath);
+    }
+
+    private sealed class PlayerLoadContext(
+        int version,
+        string filePath,
+        string md5,
+        byte[]? albumArtPng)
+    {
+        public int Version { get; } = version;
+        public string FilePath { get; } = filePath;
+        public string Md5 { get; } = md5;
+        public byte[]? AlbumArtPng { get; set; } = albumArtPng;
+        public bool IsCommitted { get; set; }
     }
 }

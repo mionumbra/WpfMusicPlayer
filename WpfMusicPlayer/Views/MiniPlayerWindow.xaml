@@ -271,12 +271,6 @@
                                     </MultiBinding>
                                 </TextBlock.Text>
                             </TextBlock>
-                            <Button Width="27" Height="38"
-                                    ToolTip="播放列表"
-                                    Click="PlaylistButton_Click"
-                                    Style="{StaticResource MiniIconButtonStyle}">
-                                <TextBlock Text="&#xE90B;" FontFamily="Segoe MDL2 Assets" FontSize="14"/>
-                            </Button>
                         </StackPanel>
 
                         <Grid.Style>
