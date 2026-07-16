@@ -19,7 +19,7 @@ namespace MusicPlayerLibrary
             return 0;
 
         const size_t read_position = position_;
-        const size_t bytes_to_read = (std::min)(static_cast<size_t>(count), data_.size() - read_position);
+        const size_t bytes_to_read = std::min(static_cast<size_t>(count), data_.size() - read_position);
         std::memcpy(buffer, data_.data() + read_position, bytes_to_read);
         position_ += bytes_to_read;
         return static_cast<uint32_t>(bytes_to_read);

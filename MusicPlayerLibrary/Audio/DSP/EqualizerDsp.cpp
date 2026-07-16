@@ -140,10 +140,10 @@ namespace MusicPlayerLibrary::AudioDsp
         channel_count_ = channelCount;
         max_frame_count_ = maxFrameCount;
         limiter_ = limiter;
-        lookahead_window_frames_ = (std::max)(
+        lookahead_window_frames_ = std::max(
             1u, static_cast<std::uint32_t>(lookaheadFrames));
         limiter_delay_frames_ = limiter.enabled ? lookahead_window_frames_ - 1u : 0u;
-        limiter_release_frames_ = (std::max)(
+        limiter_release_frames_ = std::max(
             1u, static_cast<std::uint32_t>(releaseFrames));
         biquad_states_.assign(
             static_cast<std::size_t>(channelCount) * EqualizerBandCount, {});
@@ -233,7 +233,7 @@ namespace MusicPlayerLibrary::AudioDsp
                 }
 
                 filteredSamples[channel] = x;
-                linkedPeak = (std::max)(linkedPeak, std::abs(x));
+                linkedPeak = std::max(linkedPeak, std::abs(x));
             }
 
             if (!limiter_.enabled)
@@ -281,7 +281,7 @@ namespace MusicPlayerLibrary::AudioDsp
                 }
                 else if (targetGain > limiter_gain_)
                 {
-                    limiter_gain_ = (std::min)(
+                    limiter_gain_ = std::min(
                         targetGain, limiter_gain_ + limiter_release_step_);
                     if (limiter_release_frames_remaining_ != 0)
                     {

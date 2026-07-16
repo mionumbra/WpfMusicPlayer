@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include <atomic>
+
 #include "pch.h"
 #include "Core/FileAbstractionLayer.h"
 #include "Lyric/MLPipeline/VocabularyIO.h"
@@ -67,7 +69,10 @@ public:
 	std::mutex dlib_mutex;
 private:
 	LrcLanguageHelper();
+	std::atomic<bool> accepting_inference{true};
+	void release_native_resources() noexcept;
 public:
+	~LrcLanguageHelper();
 	LrcLanguageHelper& operator=(const LrcLanguageHelper&) = delete;
 	LrcLanguageHelper(const LrcLanguageHelper&) = delete;
 	LrcLanguageHelper(LrcLanguageHelper&&) = delete;
@@ -82,6 +87,8 @@ public:
 	auto detect_language_slot(
 		const std::vector<std::vector<LanguageType>>& lines) -> std::vector<LanguageType>;
 	LanguageType detect_line_language_type(const std::string& input_trimmed);
+	static void InitializeSingleton();
+	static void ShutdownSingleton() noexcept;
 	static LrcLanguageHelper& GetSingleton();
 };
 

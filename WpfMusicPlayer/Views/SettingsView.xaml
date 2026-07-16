@@ -199,6 +199,26 @@
                     <ColumnDefinition Width="*"/>
                 </Grid.ColumnDefinitions>
                 <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                    <TextBlock Text="位宽" Foreground="White" FontSize="14"/>
+                    <TextBlock Text="选择音频输出位宽" Foreground="#99FFFFFF" FontSize="12" Margin="0,2,0,0"/>
+                </StackPanel>
+                <ComboBox Grid.Column="1" HorizontalAlignment="Right"
+                          Style="{StaticResource SettingsComboBoxStyle}"
+                          ItemContainerStyle="{StaticResource SettingsComboBoxItemStyle}"
+                          SelectedValue="{Binding SelectedBitDepth}"
+                          SelectedValuePath="Value"
+                          DisplayMemberPath="DisplayName"
+                          ItemsSource="{Binding BitDepthOptions}"/>
+            </Grid>
+
+            <Border Height="1" Background="#15FFFFFF" Margin="0,0,0,14"/>
+
+            <Grid Margin="0,0,0,14">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <StackPanel Grid.Column="0" VerticalAlignment="Center">
                     <TextBlock Text="采样率" Foreground="White" FontSize="14"/>
                     <TextBlock Text="选择音频采样率 (Hz)" Foreground="#99FFFFFF" FontSize="12" Margin="0,2,0,0"/>
                 </StackPanel>

@@ -15,13 +15,22 @@ namespace WpfMusicPlayer.Models
 
             public enum ChannelType
             {
-                [XmlEnum("mono")] Mono,
-                [XmlEnum("stereo")] Stereo,
-                [XmlEnum("surround_5_1")] Surround51,
-                [XmlEnum("surround_7_1")] Surround71
+                [XmlEnum("system")] System = 0,
+                [XmlEnum("mono")] Mono = 1,
+                [XmlEnum("stereo")] Stereo = 2,
+                [XmlEnum("surround_5_1")] Surround51 = 3,
+                [XmlEnum("surround_7_1")] Surround71 = 4
             }
-            
-            [XmlElement("channel-type")] public ChannelType Channel { get; set; }
+
+            public enum BitDepthType
+            {
+                [XmlEnum("system")] System = 0,
+                [XmlEnum("16bit")] Bit16 = 16,
+                [XmlEnum("32bit")] Bit32 = 32
+            }
+
+            [XmlElement("channel-type")] public ChannelType Channel { get; set; } = ChannelType.System;
+            [XmlElement("bit-depth")] public BitDepthType BitDepth { get; set; } = BitDepthType.System;
             [XmlElement("volume")] public double Volume { get; set; } = 1.0;
         }
         

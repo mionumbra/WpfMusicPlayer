@@ -1,7 +1,16 @@
-#include "../MusicPlayerLibrary/Audio/DSP/EqualizerDsp.h"
-#include "../MusicPlayerLibrary/Audio/DSP/FapoEqualizer.h"
+#include "Audio/AudioOutputFormat.h"
+#include "Audio/DSP/EqualizerDsp.h"
+#include "Audio/DSP/FapoEqualizer.h"
+#include "Audio/FFT/AudioPipelinePerformanceHelper.h"
+#include "Audio/FFT/FFTExecuter.h"
 
 #include <FAPOBase.h>
+
+extern "C"
+{
+#include <libavfilter/avfilter.h>
+#include <libswresample/swresample.h>
+}
 
 #include <algorithm>
 #include <array>
@@ -9,10 +18,12 @@
 #include <cstdint>
 #include <cstring>
 #include <functional>
+#include <format>
 #include <iostream>
 #include <limits>
 #include <memory>
 #include <numbers>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -21,6 +32,8 @@
 namespace
 {
     using namespace MusicPlayerLibrary::AudioDsp;
+    using MusicPlayerLibrary::GetAudioPipelineBufferingProfile;
+    using MusicPlayerLibrary::SelectAudioPipelineBufferingProfile;
 
     constexpr FAudioGUID PcmSubFormat{
         0x00000001, 0x0000, 0x0010,
@@ -53,6 +66,26 @@ namespace
         }
     };
     using UniqueFapo = std::unique_ptr<FAPO, FapoReleaser>;
+
+    struct FilterGraphReleaser
+    {
+        void operator()(AVFilterGraph* graph) const noexcept
+        {
+            if (graph != nullptr)
+                avfilter_graph_free(&graph);
+        }
+    };
+    using UniqueFilterGraph = std::unique_ptr<AVFilterGraph, FilterGraphReleaser>;
+
+    struct SwrContextReleaser
+    {
+        void operator()(SwrContext* context) const noexcept
+        {
+            if (context != nullptr)
+                swr_free(&context);
+        }
+    };
+    using UniqueSwrContext = std::unique_ptr<SwrContext, SwrContextReleaser>;
 
     UniqueFapo MakeFapo(
         const EqualizerDspSnapshot& initial,
@@ -87,6 +120,128 @@ namespace
         format.SubFormat = IeeeFloatSubFormat;
         return format;
     }
+
+    MusicPlayerLibrary::AudioOutputFormat MakeResolvedOutputFormat(
+        MusicPlayerLibrary::AudioChannelMode channelMode,
+        MusicPlayerLibrary::AudioBitDepth bitDepth,
+        int sampleRate = 48'000)
+    {
+        MusicPlayerLibrary::AudioOutputFormat requested{};
+        requested.requested_sample_rate = sampleRate;
+        requested.requested_channel_mode = channelMode;
+        requested.requested_bit_depth = bitDepth;
+        return MusicPlayerLibrary::ResolveAudioOutputFormat(
+            requested, MakeFloatFormat(sampleRate));
+    }
+
+    std::vector<std::uint8_t> ReferenceSwrFftConversion(
+        const MusicPlayerLibrary::AudioOutputFormat& format,
+        const std::uint8_t* input,
+        int frameCount)
+    {
+        AVChannelLayout inputLayout{};
+        if (format.channel_mask != 0)
+            Require(av_channel_layout_from_mask(&inputLayout, format.channel_mask) >= 0,
+                    "reference swresample input layout failed");
+        else
+            av_channel_layout_default(&inputLayout, format.channel_count);
+        Require(inputLayout.nb_channels == format.channel_count,
+                "reference swresample channel count mismatch");
+
+        AVChannelLayout fftLayout = AV_CHANNEL_LAYOUT_STEREO;
+        SwrContext* rawContext = nullptr;
+        const int allocationResult = swr_alloc_set_opts2(
+            &rawContext,
+            &fftLayout,
+            AV_SAMPLE_FMT_S16,
+            48'000,
+            &inputLayout,
+            format.sample_format,
+            format.sample_rate,
+            0,
+            nullptr);
+        av_channel_layout_uninit(&fftLayout);
+        av_channel_layout_uninit(&inputLayout);
+        Require(allocationResult >= 0 && rawContext != nullptr,
+                "reference swr_alloc_set_opts2 failed");
+        UniqueSwrContext context(rawContext);
+        Require(swr_init(context.get()) >= 0, "reference swr_init failed");
+
+        const int outputCapacity = swr_get_out_samples(context.get(), frameCount);
+        Require(outputCapacity >= 0, "reference swr_get_out_samples failed");
+        std::vector<std::uint8_t> output(
+            static_cast<std::size_t>(outputCapacity) * 2 * sizeof(std::int16_t));
+        const std::uint8_t* inputPlanes[] = {input};
+        std::uint8_t* outputPlanes[] = {output.data()};
+        const int converted = swr_convert(
+            context.get(), outputPlanes, outputCapacity,
+            inputPlanes, frameCount);
+        Require(converted >= 0, "reference swr_convert failed");
+        output.resize(static_cast<std::size_t>(converted) * 2 * sizeof(std::int16_t));
+        return output;
+    }
+
+    class FFTExecuterProbe final : public MusicPlayerLibrary::FFTExecuter
+    {
+    public:
+        explicit FFTExecuterProbe(const MusicPlayerLibrary::AudioOutputFormat& format)
+            : FFTExecuter(format)
+        {
+            StopFFTThread();
+            fft_in.resize(fft_size);
+            fft_out.resize(fft_size);
+        }
+
+        [[nodiscard]] std::size_t FrameCount() const noexcept
+        {
+            return fft_size;
+        }
+
+        [[nodiscard]] std::size_t FrameByteCount() const noexcept
+        {
+            return fft_size * 2 * sizeof(std::int16_t);
+        }
+
+        [[nodiscard]] int SampleRate() const noexcept
+        {
+            return sample_rate;
+        }
+
+        [[nodiscard]] std::vector<std::size_t> Boundaries()
+        {
+            return GenBoundaries(
+                static_cast<float>(sample_rate), fft_size,
+                static_cast<std::size_t>(32), 20.0f, 20'000.0f);
+        }
+
+        [[nodiscard]] std::vector<double> Window(
+            const std::vector<std::uint8_t>& samples)
+        {
+            std::vector<double> windowed;
+            ApplyWindow(samples, windowed);
+            return windowed;
+        }
+
+        [[nodiscard]] std::vector<float> Analyze(
+            const std::vector<std::uint8_t>& samples)
+        {
+            Require(samples.size() == FrameByteCount(),
+                    "FFT probe input must contain exactly one analysis frame");
+            {
+                std::lock_guard lock(ring_buffer_mutex);
+                spectrum_data_ring_buffer.assign(samples.begin(), samples.end());
+                ring_buffer_has_unprocessed_data = true;
+            }
+            ExecuteAudioFFT();
+
+            std::vector<float> result(32);
+            const int copied = CopyAudioFFTData(
+                result.data(), static_cast<int>(result.size()));
+            Require(copied == static_cast<int>(result.size()),
+                    "FFT probe did not return all legacy spectrum bands");
+            return result;
+        }
+    };
 
     std::uint32_t LockFapo(
         FAPO* effect,
@@ -400,7 +555,7 @@ namespace
 
         Require(dsp.Process(snapshot, impulse.data(), initialOutput.data(), 1, false),
                 "limiter rejected queued tail input");
-        Require(dsp.HasTail(), "limiter did not report a queued taiL");
+        Require(dsp.HasTail(), "limiter did not report a queued tail");
 
         std::vector<float> drained(static_cast<std::size_t>(DelayFrames) * 2, -1.0f);
         Require(dsp.Process(snapshot, nullptr, drained.data(), DelayFrames, true),
@@ -437,7 +592,7 @@ namespace
 
         std::vector<float> output(static_cast<std::size_t>(DelayFrames + 1) * 2, 1.0f);
         Require(!dsp.Process(resetSnapshot, nullptr, output.data(), DelayFrames + 1, true),
-                "reset limiter reported discarded history as a taiL");
+                "reset limiter reported discarded history as a tail");
         Require(std::all_of(output.begin(), output.end(),
                             [](float sample) { return sample == 0.0f; }),
                 "reset generation did not discard queued limiter history");
@@ -471,7 +626,7 @@ namespace
         auto chunkedDsp = MakePreparedLimiter(SampleRate, FrameCount);
         for (std::uint32_t offset = 0; offset < FrameCount; offset += ChunkFrames)
         {
-            const std::uint32_t count = (std::min)(ChunkFrames, FrameCount - offset);
+            const std::uint32_t count = std::min(ChunkFrames, FrameCount - offset);
             float* const block = chunked.data() + static_cast<std::size_t>(offset) * 2;
             Require(chunkedDsp.Process(snapshot, block, block, count, false),
                     "limiter rejected a 127-frame in-place chunk");
@@ -677,7 +832,7 @@ namespace
                 oversizedResult.ValidFrameCount == 0,
                 "FAPO did not reject a frame count larger than its lock");
         Require(guardedOutput == originalGuardedOutput,
-                "rejected oversized processing touched output or its sentineL");
+                "rejected oversized processing touched output or its sentinel");
 
         std::array<float, 2> output{11.0f, 12.0f};
         const auto originalOutput = output;
@@ -909,7 +1064,7 @@ namespace
         Require(drainResult.BufferFlags == FAPO_BUFFER_VALID,
                 "FAPO stopped reporting valid output before its tail ended");
         RequireClose(0.5f, drained[(static_cast<std::size_t>(DelayFrames) - 1) * 2],
-                     1.0e-6f, "FAPO did not drain its limiter taiL");
+                     1.0e-6f, "FAPO did not drain its limiter tail");
 
         std::array<float, 2> finalInput{
             std::numeric_limits<float>::quiet_NaN(),
@@ -926,6 +1081,348 @@ namespace
         effect->UnlockForProcess(effect.get());
     }
 
+    void TestAudioPipelineBufferingProfiles()
+    {
+        const auto fast = SelectAudioPipelineBufferingProfile(15.0);
+        Require(fast.fifo_target_milliseconds == 80 &&
+            fast.decoded_queue_target_milliseconds == 24,
+            "fast CPU buffering profile changed unexpectedly");
+
+        const auto balanced = SelectAudioPipelineBufferingProfile(15.01);
+        Require(balanced.fifo_target_milliseconds == 140 &&
+            balanced.decoded_queue_target_milliseconds == 32,
+            "balanced CPU buffering profile changed unexpectedly");
+
+        const auto slow = SelectAudioPipelineBufferingProfile(50.01);
+        Require(slow.fifo_target_milliseconds == 220 &&
+            slow.decoded_queue_target_milliseconds == 48,
+            "slow CPU buffering profile changed unexpectedly");
+
+        const auto fallback = SelectAudioPipelineBufferingProfile(
+            std::numeric_limits<double>::quiet_NaN());
+        Require(fallback.fifo_target_milliseconds == 140 &&
+            fallback.decoded_queue_target_milliseconds == 32,
+            "failed FFT benchmark did not select the safe fallback profile");
+        Require(fast.fifo_target_milliseconds > fast.decoded_queue_target_milliseconds &&
+            balanced.fifo_target_milliseconds > balanced.decoded_queue_target_milliseconds &&
+            slow.fifo_target_milliseconds > slow.decoded_queue_target_milliseconds,
+            "buffering profiles must keep most depth in the normalized PCM FIFO");
+
+        const auto& measured = GetAudioPipelineBufferingProfile();
+        Require(measured.fifo_target_milliseconds >
+            measured.decoded_queue_target_milliseconds,
+            "measured CPU profile did not favor the normalized PCM FIFO");
+    }
+
+    void TestAudioOutputFormatMappings()
+    {
+        const auto systemFormat = MakeFloatFormat(48'000, 2);
+        struct Mapping
+        {
+            MusicPlayerLibrary::AudioChannelMode mode;
+            std::uint16_t channels;
+            std::uint32_t mask;
+            std::string_view layout;
+        };
+        constexpr Mapping mappings[] = {
+            {MusicPlayerLibrary::AudioChannelMode::Mono, 1, SPEAKER_MONO, "mono"},
+            {MusicPlayerLibrary::AudioChannelMode::Stereo, 2, SPEAKER_STEREO, "stereo"},
+            {MusicPlayerLibrary::AudioChannelMode::Surround51, 6, SPEAKER_5POINT1_SURROUND, "5.1(side)"},
+            {MusicPlayerLibrary::AudioChannelMode::Surround71, 8, SPEAKER_7POINT1_SURROUND, "7.1"}
+        };
+
+        for (const auto& mapping : mappings)
+        {
+            MusicPlayerLibrary::AudioOutputFormat requested{};
+            requested.requested_sample_rate = 96'000;
+            requested.requested_channel_mode = mapping.mode;
+            requested.requested_bit_depth = MusicPlayerLibrary::AudioBitDepth::Bit16;
+            const auto resolved = MusicPlayerLibrary::ResolveAudioOutputFormat(
+                requested, systemFormat);
+            Require(resolved.sample_rate == 96'000,
+                    "explicit output sample rate was not retained");
+            Require(resolved.channel_count == mapping.channels &&
+                    resolved.channel_mask == mapping.mask &&
+                    resolved.ffmpeg_channel_layout == mapping.layout,
+                    "explicit channel mode mapped to the wrong FFmpeg/FAudio layout");
+            Require(resolved.sample_format == AV_SAMPLE_FMT_S16 &&
+                    resolved.wave_format.Format.wBitsPerSample == 16 &&
+                    resolved.wave_format.Format.nBlockAlign == mapping.channels * 2,
+                    "16-bit output format was not resolved consistently");
+        }
+
+        MusicPlayerLibrary::AudioOutputFormat floatRequest{};
+        floatRequest.requested_channel_mode = MusicPlayerLibrary::AudioChannelMode::Stereo;
+        floatRequest.requested_bit_depth = MusicPlayerLibrary::AudioBitDepth::Bit32;
+        const auto floatResolved = MusicPlayerLibrary::ResolveAudioOutputFormat(
+            floatRequest, systemFormat);
+        Require(floatResolved.sample_rate == 48'000 &&
+                floatResolved.sample_format == AV_SAMPLE_FMT_FLT &&
+                floatResolved.wave_format.Format.wBitsPerSample == 32 &&
+                floatResolved.wave_format.Format.nBlockAlign == 8,
+                "32-bit float output format was not resolved consistently");
+    }
+
+    void TestSystemAudioOutputFormatMapping()
+    {
+        auto systemFormat = MakeFloatFormat(44'100, 6);
+        systemFormat.dwChannelMask = SPEAKER_5POINT1_SURROUND;
+        const auto resolved = MusicPlayerLibrary::ResolveAudioOutputFormat(
+            MusicPlayerLibrary::AudioOutputFormat{}, systemFormat);
+        Require(resolved.sample_rate == 44'100 &&
+                resolved.channel_count == 6 &&
+                resolved.channel_mask == SPEAKER_5POINT1_SURROUND &&
+                resolved.ffmpeg_channel_layout == "5.1(side)",
+                "System channel mode did not use the device format");
+        Require(resolved.bit_depth == MusicPlayerLibrary::AudioBitDepth::Bit32 &&
+                resolved.sample_format == AV_SAMPLE_FMT_FLT,
+                "System bit depth did not use the float device format");
+
+        systemFormat.Format.wFormatTag = FAUDIO_FORMAT_EXTENSIBLE;
+        systemFormat.Format.wBitsPerSample = 16;
+        systemFormat.Samples.wValidBitsPerSample = 16;
+        systemFormat.SubFormat = PcmSubFormat;
+        const auto pcmResolved = MusicPlayerLibrary::ResolveAudioOutputFormat(
+            MusicPlayerLibrary::AudioOutputFormat{}, systemFormat);
+        Require(pcmResolved.bit_depth == MusicPlayerLibrary::AudioBitDepth::Bit16 &&
+                pcmResolved.sample_format == AV_SAMPLE_FMT_S16,
+                "System bit depth did not use the PCM16 device format");
+    }
+
+    void TestAresampleAcceptsOutputFormats()
+    {
+        const auto systemFormat = MakeFloatFormat(48000, 2);
+        constexpr MusicPlayerLibrary::AudioChannelMode channelModes[] = {
+            MusicPlayerLibrary::AudioChannelMode::Mono,
+            MusicPlayerLibrary::AudioChannelMode::Stereo,
+            MusicPlayerLibrary::AudioChannelMode::Surround51,
+            MusicPlayerLibrary::AudioChannelMode::Surround71
+        };
+        constexpr MusicPlayerLibrary::AudioBitDepth bitDepths[] = {
+            MusicPlayerLibrary::AudioBitDepth::Bit16,
+            MusicPlayerLibrary::AudioBitDepth::Bit32
+        };
+
+        for (const auto channelMode : channelModes)
+        {
+            for (const auto bitDepth : bitDepths)
+            {
+                MusicPlayerLibrary::AudioOutputFormat requested{};
+                requested.requested_sample_rate = 48'000;
+                requested.requested_channel_mode = channelMode;
+                requested.requested_bit_depth = bitDepth;
+                const auto output = MusicPlayerLibrary::ResolveAudioOutputFormat(
+                    requested, systemFormat);
+                const char* sampleFormatName = av_get_sample_fmt_name(output.sample_format);
+                Require(sampleFormatName != nullptr,
+                        "resolved output format has no FFmpeg sample-format name");
+
+                UniqueFilterGraph graph(avfilter_graph_alloc());
+                Require(graph != nullptr, "avfilter_graph_alloc failed");
+                AVFilterContext* source = nullptr;
+                AVFilterContext* resample = nullptr;
+                AVFilterContext* format = nullptr;
+                AVFilterContext* sink = nullptr;
+                const std::string sourceArgs =
+                    "sample_rate=44100:sample_fmt=fltp:channel_layout=stereo";
+                Require(avfilter_graph_create_filter(
+                    &source, avfilter_get_by_name("abuffer"), "src",
+                    sourceArgs.c_str(), nullptr, graph.get()) >= 0,
+                    "FFmpeg rejected the test abuffer format");
+                const std::string resampleArgs = std::format(
+                    "sample_rate={}:out_chlayout={}:out_sample_fmt={}",
+                    output.sample_rate, output.ffmpeg_channel_layout, sampleFormatName);
+                Require(avfilter_graph_create_filter(
+                    &resample, avfilter_get_by_name("aresample"), "resample",
+                    resampleArgs.c_str(), nullptr, graph.get()) >= 0,
+                    "aresample rejected a resolved output format");
+                const std::string formatArgs = std::format(
+                    "sample_fmts={}:sample_rates={}:channel_layouts={}",
+                    sampleFormatName, output.sample_rate, output.ffmpeg_channel_layout);
+                Require(avfilter_graph_create_filter(
+                    &format, avfilter_get_by_name("aformat"), "format",
+                    formatArgs.c_str(), nullptr, graph.get()) >= 0,
+                    "aformat rejected a resolved output format");
+                Require(avfilter_graph_create_filter(
+                    &sink, avfilter_get_by_name("abuffersink"), "sink",
+                    nullptr, nullptr, graph.get()) >= 0,
+                    "avfilter_graph_create_filter failed for abuffersink");
+                Require(avfilter_link(source, 0, resample, 0) >= 0 &&
+                        avfilter_link(resample, 0, format, 0) >= 0 &&
+                        avfilter_link(format, 0, sink, 0) >= 0,
+                        "failed to link the aresample test graph");
+                Require(avfilter_graph_config(graph.get(), nullptr) >= 0,
+                        "FFmpeg could not configure a resolved output format");
+                const AVFilterLink* outputLink = sink->inputs[0];
+                Require(outputLink->sample_rate == output.sample_rate &&
+                        outputLink->ch_layout.nb_channels == output.channel_count &&
+                        outputLink->format == output.sample_format,
+                        "aresample graph negotiated a different output format");
+            }
+        }
+    }
+
+    void TestFftResamplesToLegacyFormat()
+    {
+        const std::array<std::int16_t, 2> mono{16384, -16384};
+        const auto monoFormat = MakeResolvedOutputFormat(
+            MusicPlayerLibrary::AudioChannelMode::Mono,
+            MusicPlayerLibrary::AudioBitDepth::Bit16);
+        MusicPlayerLibrary::FFTExecuter monoExecutor(monoFormat);
+        const auto monoResult = monoExecutor.ResampleToFftFormat(
+            reinterpret_cast<const std::uint8_t*>(mono.data()), 2);
+        const auto monoReference = ReferenceSwrFftConversion(
+            monoFormat, reinterpret_cast<const std::uint8_t*>(mono.data()), 2);
+        Require(monoResult == monoReference,
+                "mono FFT conversion did not produce reference S16 stereo PCM");
+        Require(monoResult.size() == 2 * 2 * sizeof(std::int16_t),
+                "mono FFT conversion returned the wrong byte count");
+        std::array<std::int16_t, 4> monoPcm{};
+        std::memcpy(monoPcm.data(), monoResult.data(), monoResult.size());
+        Require(monoPcm[0] == monoPcm[1] && monoPcm[0] > 0 &&
+                    monoPcm[2] == monoPcm[3] && monoPcm[2] < 0,
+                "mono FFT conversion did not produce matching stereo channels");
+
+        constexpr int InputFrames = 1'024;
+        std::vector<float> stereo(static_cast<std::size_t>(InputFrames) * 2);
+        for (int frame = 0; frame < InputFrames; ++frame)
+        {
+            stereo[static_cast<std::size_t>(frame) * 2] =
+                0.5f * std::sin(2.0f * std::numbers::pi_v<float> * 440.0f *
+                                static_cast<float>(frame) / 44'100.0f);
+            stereo[static_cast<std::size_t>(frame) * 2 + 1] =
+                0.25f * std::cos(2.0f * std::numbers::pi_v<float> * 880.0f *
+                                 static_cast<float>(frame) / 44'100.0f);
+        }
+        const auto stereoFormat = MakeResolvedOutputFormat(
+            MusicPlayerLibrary::AudioChannelMode::Stereo,
+            MusicPlayerLibrary::AudioBitDepth::Bit32,
+            44'100);
+        MusicPlayerLibrary::FFTExecuter stereoExecutor(stereoFormat);
+        const auto stereoResult = stereoExecutor.ResampleToFftFormat(
+            reinterpret_cast<const std::uint8_t*>(stereo.data()), InputFrames);
+        const auto stereoReference = ReferenceSwrFftConversion(
+            stereoFormat, reinterpret_cast<const std::uint8_t*>(stereo.data()),
+            InputFrames);
+        Require(stereoResult == stereoReference,
+                "44.1 kHz float FFT conversion differed from 48 kHz S16 stereo reference");
+        Require(!stereoResult.empty() &&
+                    stereoResult.size() % (2 * sizeof(std::int16_t)) == 0,
+                "FFT conversion did not return packed S16 stereo frames");
+    }
+
+    void TestFftSurroundResampleMatchesSwresample()
+    {
+        const auto verifyFormat = [](MusicPlayerLibrary::AudioChannelMode channelMode,
+                                     std::span<const float> input)
+        {
+            const auto format = MakeResolvedOutputFormat(
+                channelMode, MusicPlayerLibrary::AudioBitDepth::Bit32);
+            Require(input.size() % format.channel_count == 0,
+                    "surround FFT test input is not frame aligned");
+            const int frameCount = static_cast<int>(input.size() / format.channel_count);
+            MusicPlayerLibrary::FFTExecuter executor(format);
+            const auto* inputBytes = reinterpret_cast<const std::uint8_t*>(input.data());
+            const auto actual = executor.ResampleToFftFormat(inputBytes, frameCount);
+            const auto expected = ReferenceSwrFftConversion(format, inputBytes, frameCount);
+            Require(actual == expected,
+                    "surround FFT conversion differed from S16 stereo libswresample reference");
+        };
+
+        const std::array<float, 12> fiveOne{
+            0.8f, 0.4f, 0.6f, 1.0f, 0.2f, 0.3f,
+            -0.3f, 0.7f, 0.1f, 0.5f, -0.6f, 0.9f};
+        verifyFormat(MusicPlayerLibrary::AudioChannelMode::Surround51, fiveOne);
+
+        const std::array<float, 16> sevenOne{
+            0.8f, 0.4f, 0.6f, 1.0f, 0.2f, 0.3f, 0.5f, 0.7f,
+            -0.3f, 0.7f, 0.1f, 0.5f, -0.6f, 0.9f, -0.2f, 0.4f};
+        verifyFormat(MusicPlayerLibrary::AudioChannelMode::Surround71, sevenOne);
+    }
+
+    void TestFftLegacyCoreBehavior()
+    {
+        const auto format = MakeResolvedOutputFormat(
+            MusicPlayerLibrary::AudioChannelMode::Stereo,
+            MusicPlayerLibrary::AudioBitDepth::Bit16,
+            48'000);
+        FFTExecuterProbe executor(format);
+
+        Require(executor.FrameCount() == 2'048,
+                "legacy FFT frame size is no longer fixed at 2048");
+        Require(executor.SampleRate() == 48'000,
+                "legacy FFT sample rate is no longer fixed at 48 kHz");
+
+        constexpr std::array<std::size_t, 33> ExpectedBoundaries{
+            0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+            11, 12, 14, 17, 21, 26, 33, 41, 51, 63,
+            79, 98, 122, 151, 188, 233, 289, 359, 446,
+            554, 687, 853
+        };
+        const auto boundaries = executor.Boundaries();
+        Require(boundaries.size() == ExpectedBoundaries.size() &&
+                    std::equal(boundaries.begin(), boundaries.end(),
+                               ExpectedBoundaries.begin()),
+                "legacy logarithmic FFT band boundaries changed");
+
+        std::vector<std::int16_t> fullScalePcm(executor.FrameCount() * 2, 32'767);
+        std::vector<std::uint8_t> fullScaleBytes(executor.FrameByteCount());
+        std::memcpy(
+            fullScaleBytes.data(), fullScalePcm.data(), fullScaleBytes.size());
+        const auto windowed = executor.Window(fullScaleBytes);
+        Require(windowed.size() == executor.FrameCount(),
+                "legacy FFT window returned the wrong frame count");
+        RequireClose(0.0f, static_cast<float>(windowed.front()), 1.0e-7f,
+                     "legacy FFT window no longer begins at zero");
+        RequireClose(1.07668f,
+                     static_cast<float>(windowed[executor.FrameCount() / 2]),
+                     2.0e-4f,
+                     "legacy FFT window coefficient changed");
+        RequireClose(0.0f, static_cast<float>(windowed.back()), 1.0e-7f,
+                     "legacy FFT window no longer ends at zero");
+
+        const auto analyzeBins = [&executor](std::span<const int> bins,
+                                              float amplitude)
+        {
+            std::vector<std::int16_t> pcm(executor.FrameCount() * 2);
+            for (std::size_t frame = 0; frame < executor.FrameCount(); ++frame)
+            {
+                double sample = 0.0;
+                for (const int bin : bins)
+                {
+                    sample += amplitude * std::sin(
+                        2.0 * std::numbers::pi * static_cast<double>(bin) *
+                        static_cast<double>(frame) /
+                        static_cast<double>(executor.FrameCount()));
+                }
+                const auto quantized = static_cast<std::int16_t>(
+                    std::lround(std::clamp(sample, -1.0, 1.0) * 32'767.0));
+                pcm[frame * 2] = quantized;
+                pcm[frame * 2 + 1] = quantized;
+            }
+            std::vector<std::uint8_t> bytes(executor.FrameByteCount());
+            std::memcpy(bytes.data(), pcm.data(), bytes.size());
+            const auto segments = executor.Analyze(bytes);
+            return *std::max_element(segments.begin(), segments.end());
+        };
+
+        constexpr std::array<int, 1> MidTone{96};
+        constexpr std::array<int, 1> HighTone{300};
+        constexpr std::array<int, 2> TwoHighTones{300, 340};
+        const float ordinaryPeak = analyzeBins(MidTone, 0.1f);
+        const float loudPeak = analyzeBins(MidTone, 0.5f);
+        const float highPeak = analyzeBins(HighTone, 0.1f);
+        const float twoHighPeak = analyzeBins(TwoHighTones, 0.1f);
+        Require(ordinaryPeak > 0.68f && ordinaryPeak < 0.74f,
+                "legacy raw-magnitude dB scaling changed");
+        Require(loudPeak > 0.99f,
+                "legacy FFT no longer clamps a loud mid-frequency tone");
+        Require(highPeak < ordinaryPeak * 0.9f,
+                "legacy high-frequency attenuation changed");
+        Require(twoHighPeak < highPeak + 0.03f,
+                "legacy FFT bands no longer use peak-bin aggregation");
+    }
+
     struct TestCase { const char* group; const char* name; void (*run)(); };
     const TestCase Tests[] = {
         {"eq", "zero dB identity", TestZeroDbIdentity},
@@ -936,7 +1433,7 @@ namespace
         {"limiter", "no make-up gain", TestLimiterDoesNotApplyMakeupGain},
         {"limiter", "linear release", TestLimiterReleaseIsLinear},
         {"limiter", "silent tail drain", TestLimiterSilentInputDrainsTail},
-        {"limiter", "reset generation drops taiL", TestLimiterResetGenerationDropsTail},
+        {"limiter", "reset generation drops tail", TestLimiterResetGenerationDropsTail},
         {"limiter", "chunk invariance", TestLimiterIsChunkInvariant},
         {"fapo", "factory and registration", TestFapoFactoryAndRegistration},
         {"fapo", "extensible formats advertised", TestFapoAdvertisesExtensibleFormats},
@@ -947,17 +1444,24 @@ namespace
         {"fapo", "invalid parameter blocks rejected", TestFapoRejectsInvalidParameterBlocks},
         {"fapo", "GetParameters destination validated", TestFapoGetParametersValidatesDestination},
         {"fapo", "invalid lock formats rejected", TestFapoLockRejectsInvalidFormats},
-        {"fapo", "silent input drains taiL", TestFapoSilentInputDrainsTail}
+        {"fapo", "silent input drains tail", TestFapoSilentInputDrainsTail},
+		{"format", "explicit mappings", TestAudioOutputFormatMappings},
+		{"format", "System device mapping", TestSystemAudioOutputFormatMapping},
+		{"format", "aresample accepts mappings", TestAresampleAcceptsOutputFormats},
+		{"fft", "fixed 48 kHz S16 stereo resampling", TestFftResamplesToLegacyFormat},
+		{"fft", "surround resampling", TestFftSurroundResampleMatchesSwresample},
+		{"fft", "legacy core behavior", TestFftLegacyCoreBehavior},
+        {"buffering", "CPU profiles favor normalized FIFO", TestAudioPipelineBufferingProfiles}
     };
 }
 
 int main(int argc, char** argv)
 {
-    const std::string_view selected = argc > 1 ? argv[1] : "alL";
+    const std::string_view selected = argc > 1 ? argv[1] : "all";
     int failed = 0;
     for (const auto& test : Tests)
     {
-        if (selected != "alL" && selected != test.group)
+        if (selected != "all" && selected != test.group)
             continue;
         try { test.run(); std::cout << "PASS " << test.name << '\n'; }
         catch (const std::exception& error)

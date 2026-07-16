@@ -29,6 +29,7 @@ public partial class LyricsViewModel(
     private const string WplrcExtension = ".wplrc";
     private const string InterludeLyricText = "♪ ♪ ♪ ♪ ♪ ♪";
     private const int InterludeLyricGapThresholdMs = 5000;
+    private const int InterludeLyricStartFromLastNodeThreshold = 1000;
 
     private static readonly IReadOnlyDictionary<string, IReadOnlyList<string>> WplrcSaveFileTypeChoices =
         new Dictionary<string, IReadOnlyList<string>>
@@ -149,13 +150,11 @@ public partial class LyricsViewModel(
             Lyrics[CurrentLyricIndex].IsHighlighted = true;
         }
 
-        if (CurrentLyricIndex >= 0 && CurrentLyricIndex < Lyrics.Count)
-        {
-            var current = Lyrics[CurrentLyricIndex];
-            current.Progress = current.IsProgressEnabled
-                ? CalculateControllerLyricProgress(_lyricStates[CurrentLyricIndex], rawTimeMs)
-                : CalculateLinearLyricProgress(CurrentLyricIndex, time);
-        }
+        if (CurrentLyricIndex < 0 || CurrentLyricIndex >= Lyrics.Count) return;
+        var current = Lyrics[CurrentLyricIndex];
+        current.Progress = current.IsProgressEnabled
+            ? CalculateControllerLyricProgress(_lyricStates[CurrentLyricIndex], rawTimeMs)
+            : CalculateLinearLyricProgress(CurrentLyricIndex, time);
     }
 
     public void OnPlaybackStopped()
@@ -572,7 +571,8 @@ public partial class LyricsViewModel(
             return;
         }
 
-        states.Add(CreateInterludeState(previousState.RawEndTimeMs, nextState.RawStartTimeMs));
+        // 在中间行起始时间应用缓存，避免上一行完成后跳变至下一行，影响视觉连贯性
+        states.Add(CreateInterludeState(previousState.RawEndTimeMs + InterludeLyricStartFromLastNodeThreshold, nextState.RawStartTimeMs));
     }
 
     private LyricState CreateInterludeState(int startMs, int endMs)

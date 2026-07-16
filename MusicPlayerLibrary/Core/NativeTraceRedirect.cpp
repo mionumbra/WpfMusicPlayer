@@ -44,19 +44,14 @@ void NativeTraceRedirect::flush_stream()
 
 std::string NativeTraceRedirect::query_time_stamp() const
 {
-    auto now = std::chrono::system_clock::now();
-    auto now_time_t = std::chrono::system_clock::to_time_t(now);
-    auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-        now.time_since_epoch()) % 1000;
+    const auto now = std::chrono::floor<std::chrono::milliseconds>(
+        std::chrono::system_clock::now()
+    );
 
-    const std::tm* timeinfo = std::localtime(&now_time_t);
-    if (!timeinfo)
-        return {};
-
-    std::ostringstream timestamp;
-    timestamp << std::put_time(timeinfo, "%Y-%m-%d %H:%M:%S")
-        << '.' << std::setfill('0') << std::setw(3) << now_ms.count();
-    return timestamp.str();
+    return std::format(
+        "{:%Y-%m-%d %H:%M:%S}",
+        now
+    );
 }
 
 void NativeTraceRedirect::write_log(const char* file_name_full, int line_num, const char* message)
@@ -70,9 +65,7 @@ void NativeTraceRedirect::write_log(const char* file_name_full, int line_num, co
 
     if (timestamp_enable)
     {
-        log_line += "[";
-        log_line += query_time_stamp();
-        log_line += "] ";
+        log_line += std::format("[{}] ", query_time_stamp());
     }
 
     if (info_enable && file_name_full != nullptr && line_num > 0)
@@ -86,9 +79,7 @@ void NativeTraceRedirect::write_log(const char* file_name_full, int line_num, co
         else
             file_name = file_name_full;
 
-        char file_info[256];
-        snprintf(file_info, sizeof(file_info), "[%s:%d] ", file_name, line_num);
-        log_line += file_info;
+        log_line += std::format("[{}:{}] ", file_name, line_num);
     }
 
     log_line += message;
@@ -144,56 +135,72 @@ std::string NativeTraceRedirect::format_message_va(const char* format, va_list a
     return {buffer.data(), static_cast<size_t>(needed)};
 }
 
-void NativeTraceRedirect::TraceEx(const char* file_name, int line_num, const wchar_t* format, ...)
+void NativeTraceRedirect::TraceEx(const char* file_name, int line_num, const wchar_t* format, ...) noexcept
 {
     if (!enable_redirect || format == nullptr)
         return;
+    
+    try
+    {
+        va_list args;
+        va_start(args, format);
+        std::string message = format_message_va(format, args);
+        va_end(args);
 
-    va_list args;
-    va_start(args, format);
-    std::string message = format_message_va(format, args);
-    va_end(args);
-
-    write_log(file_name, line_num, message.c_str());
+        write_log(file_name, line_num, message.c_str());
+    }
+    catch (...) { }
 }
 
-void NativeTraceRedirect::TraceEx(const char* file_name, int line_num, const char* format, ...)
+void NativeTraceRedirect::TraceEx(const char* file_name, int line_num, const char* format, ...) noexcept
 {
     if (!enable_redirect || format == nullptr)
         return;
 
-    va_list args;
-    va_start(args, format);
-    std::string message = format_message_va(format, args);
-    va_end(args);
+    try
+    {
+        va_list args;
+        va_start(args, format);
+        std::string message = format_message_va(format, args);
+        va_end(args);
 
-    write_log(file_name, line_num, message.c_str());
+        write_log(file_name, line_num, message.c_str());
+    }
+    catch (...) { }
 }
 
-void NativeTraceRedirect::Trace(const wchar_t* format, ...)
+void NativeTraceRedirect::Trace(const wchar_t* format, ...) noexcept
 {
     if (!enable_redirect || format == nullptr)
         return;
 
-    va_list args;
-    va_start(args, format);
-    std::string message = format_message_va(format, args);
-    va_end(args);
+    try
+    {
+        va_list args;
+        va_start(args, format);
+        std::string message = format_message_va(format, args);
+        va_end(args);
 
-    write_log(nullptr, -1, message.c_str());
+        write_log(nullptr, -1, message.c_str());
+    }
+    catch (...) { }
 }
 
-void NativeTraceRedirect::Trace(const char* format, ...)
+void NativeTraceRedirect::Trace(const char* format, ...) noexcept
 {
     if (!enable_redirect || format == nullptr)
         return;
 
-    va_list args;
-    va_start(args, format);
-    std::string message = format_message_va(format, args);
-    va_end(args);
+    try
+    {
+        va_list args;
+        va_start(args, format);
+        std::string message = format_message_va(format, args);
+        va_end(args);
 
-    write_log(nullptr, -1, message.c_str());
+        write_log(nullptr, -1, message.c_str());
+    }
+    catch (...) { }
 }
 
 NativeTraceRedirect* NativeTraceRedirect::GetTraceRedirector()
@@ -209,4 +216,9 @@ void NativeTraceRedirect::SetTraceRedirector(NativeTraceRedirect* redirector)
 void NativeTraceRedirect::InitNativeTraceRedirect()
 {
     global_trace_redirector = std::make_unique<NativeTraceRedirect>(MusicPlayerLibrary::GetNativeLogWriterFactory()->create_native_log_writer());
+}
+
+void NativeTraceRedirect::ShutdownNativeTraceRedirect() noexcept
+{
+    global_trace_redirector.reset();
 }

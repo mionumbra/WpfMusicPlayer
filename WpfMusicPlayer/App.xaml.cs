@@ -53,7 +53,7 @@ public partial class App : Application
                     services.AddTransient<ICommandLineParser>(_ =>
                         new CommandLineParser(Environment.GetCommandLineArgs()));
                     services.AddTransient<Func<INcmAlbumArtDownloader>>(serviceProvider =>
-                        () => serviceProvider.GetRequiredService<INcmAlbumArtDownloader>());
+                        serviceProvider.GetRequiredService<INcmAlbumArtDownloader>);
 
                     services.AddSingleton<PlaylistViewModel>();
                     services.AddSingleton<LyricsViewModel>();
@@ -72,7 +72,7 @@ public partial class App : Application
         await _host.StartAsync();
 
         var loggerBridge = _host.Services.GetRequiredService<NativeLoggerBridge>();
-        MusicPlayerLibrary.NativeTraceRedirectManager.Init(loggerBridge);
+        MusicPlayerLibrary.MusicPlayerLibraryRuntime.Initialize(loggerBridge);
 
         var mainWindow = _host.Services.GetRequiredService<MainWindow>();
         mainWindow.Show();
@@ -82,13 +82,26 @@ public partial class App : Application
         base.OnStartup(e);
     }
 
-    protected override async void OnExit(ExitEventArgs e)
+    protected override void OnExit(ExitEventArgs e)
     {
-        using (_host)
+        try
         {
-            await _host.StopAsync();
+            // WPF cannot await an async-void OnExit override. Complete host
+            // shutdown synchronously so native teardown cannot fall through to
+            // CRT atexit after this method returns.
+            _host.StopAsync().GetAwaiter().GetResult();
         }
-
-        base.OnExit(e);
+        finally
+        {
+            try
+            {
+                MusicPlayerLibrary.MusicPlayerLibraryRuntime.Shutdown();
+            }
+            finally
+            {
+                _host.Dispose();
+                base.OnExit(e);
+            }
+        }
     }
 }

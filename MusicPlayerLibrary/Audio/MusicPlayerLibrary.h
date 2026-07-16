@@ -4,6 +4,7 @@
 
 #include <list>
 #include <deque>
+#include <optional>
 
 #if defined(__cplusplus)
 extern "C" {
@@ -22,8 +23,10 @@ extern "C" {
 #include "Core/NativeTraceRedirect.h"
 #include <atomic>
 #include <FAudio.h>
+#include "Audio/AudioOutputFormat.h"
 #include "Audio/DSP/EqualizerDsp.h"
 #include "Audio/FFT/FFTExecuter.h"
+#include "Audio/FFT/AudioPipelinePerformanceHelper.h"
 #include "Audio/MusicPlayerMessage.h"
 #include "Core/FileAbstractionLayer.h"
 
@@ -51,7 +54,7 @@ namespace MusicPlayerLibrary {
 		AVPacket* packet = nullptr;
 		// 解码后的数据（一帧数据）
 		AVFrame* frame = nullptr;
-		AVFrame* filt_frame = nullptr;
+		AVFrame* normalized_frame = nullptr;
 		// 音频流编号
 		// fix: audio_stream_index can < 0;
 		// using unsigned cause it to overflow, as a very huge number
@@ -70,7 +73,7 @@ namespace MusicPlayerLibrary {
 		std::atomic<double> length = 0.0;
 		std::atomic_bool is_pause = false;
 		std::atomic_bool decoder_is_running = false;
-		std::atomic_bool equalizer_is_running = false;
+		std::atomic_bool normalizer_is_running = false;
 		int fifo_audio_channels = 0;
 		AVSampleFormat fifo_audio_sample_fmt = AV_SAMPLE_FMT_NONE;
 		int fifo_sample_rate = 0;
@@ -83,8 +86,10 @@ namespace MusicPlayerLibrary {
 		int decoded_frame_queue_samples = 0;
 		bool decoded_frame_queue_eof = false;
 		bool decoded_frame_queue_abort = false;
+		std::atomic_int decoded_frame_queue_high_watermark_samples{ 1'536 };
 
 		std::mutex audio_fifo_mutex;
+		std::mutex audio_pipeline_buffering_mutex;
 		std::mutex audio_playback_mutex;
 		std::mutex filter_graph_mutex;
 		std::mutex frame_event_mutex;
@@ -96,12 +101,12 @@ namespace MusicPlayerLibrary {
 		FAudio* faudio = nullptr;
 		FAudioMasteringVoice* mastering_voice = nullptr;
 		FAudioSourceVoice* source_voice = nullptr;
-		FAudioWaveFormatEx wfx = {};
+		AudioOutputFormat audio_output_format{};
 
 		std::atomic_int playback_state;
 		std::jthread audio_player_worker_thread;
 		std::jthread audio_decoder_worker_thread;
-		std::jthread audio_equalizer_worker_thread;
+		std::jthread audio_normalizer_worker_thread;
 
 		std::list<FAudioBuffer*> faudio_playing_buffers = {};
 		std::list<FAudioBuffer*> faudio_free_buffers = {};
@@ -111,12 +116,17 @@ namespace MusicPlayerLibrary {
 		// use avaudiofifo to avoid lag on low-cpu performance system, like jasper lake/alder lake-n
 		AVAudioFifo* audio_fifo = nullptr;
 		int faudio_play_frame_size = 256;
+		AudioPipelineBufferingProfile initial_buffering_profile{};
+		std::atomic_int audio_fifo_high_watermark_samples{ 6'720 };
+		std::atomic_uint decoder_slow_operation_count{ 0 };
+		std::atomic_uint normalizer_slow_operation_count{ 0 };
+		std::atomic<std::int64_t> last_pipeline_buffer_growth_ns{ 0 };
+		double decoder_pending_work_milliseconds = 0.0;
+		int decoder_last_call_result = 0;
 		double standard_frametime = 0.0, last_frametime = 0.0;
 		float message_interval = 16.67f, message_interval_timer = 0.0f;
 		size_t prev_decode_cycle_faudio_played_samples = 0;
 		std::wstring id3_string_lyric;
-		int sample_rate = 48000;
-
 		IMusicPlayerMessageSink* message_sink_ = nullptr;
 
 		// file I/O Area
@@ -145,15 +155,33 @@ namespace MusicPlayerLibrary {
 		void reset_frame_notifications();
 		void notify_all_frame_notifications();
 		void audio_playback_worker_thread();
+		int timed_read_packet();
+		int timed_send_decoder_packet(const AVPacket* input_packet);
+		int timed_receive_decoded_frame();
 		void audio_decode_worker_thread();
-		void audio_equalize_worker_thread();
+		void audio_normalize_worker_thread();
 		void handle_worker_exception(const std::string& message, const char* worker_name);
 		void start_audio_playback();
-		void init_equalizer_thread();
+		void init_normalizer_thread();
 		void stop_audio_decode(int mode = 0);
-		void stop_audio_equalizer();
+		void stop_audio_normalizer();
 		void stop_audio_playback(int mode);
 		bool is_audio_pipeline_running();
+		enum class audio_pipeline_stage
+		{
+			decoder,
+			normalizer
+		};
+		void reset_audio_pipeline_buffering();
+		void observe_audio_pipeline_stage_duration(
+			audio_pipeline_stage stage,
+			double elapsed_milliseconds,
+			int processed_samples,
+			int processed_sample_rate);
+		void grow_audio_pipeline_buffers(
+			const char* slow_stage,
+			double elapsed_milliseconds,
+			double slow_threshold_milliseconds);
 
 		int initialize_audio_fifo(AVSampleFormat sample_fmt, int channels, int nb_samples);
 		int resize_audio_fifo(int nb_samples);
@@ -193,25 +221,27 @@ namespace MusicPlayerLibrary {
 		AudioDsp::EqualizerConfig equalizer_config =
 			AudioDsp::MakeDefaultTenBandConfig();
 		std::uint64_t equalizer_reset_generation = 0;
-		AVFilterGraph* filter_graph = nullptr;
-		AVFilterContext* filter_context_src = nullptr;
-		AVFilterContext* filter_context_sink = nullptr;
-		AVFilterContext* resample_ctx = nullptr;
-		AVFilterContext* volume_ctx = nullptr;
-		AVFilterContext* format_normalize_ctx = nullptr;
+		AVFilterGraph* normalization_filter_graph = nullptr;
+		AVFilterContext* normalization_source_context = nullptr;
+		AVFilterContext* normalization_sink_context = nullptr;
+		AVFilterContext* resample_context = nullptr;
+		AVFilterContext* pregain_context = nullptr;
+		AVFilterContext* format_normalization_context = nullptr;
 
 		AudioDsp::EqualizerDspSnapshot
 			build_equalizer_snapshot_locked() const noexcept;
 		bool publish_equalizer_snapshot_locked() noexcept;
 
-		int init_av_filter_equalizer();
-		bool is_av_filter_equalizer_initialized();
-		void reset_av_filter_equalizer();
+		int init_audio_normalization_filter();
+		bool is_audio_normalization_filter_initialized();
+		void reset_audio_normalization_filter();
 		std::atomic_bool suppress_time_events = false;
 	public:
 
 		// constructor
-		explicit MusicPlayer(IMusicPlayerMessageSink* message_sink = nullptr);
+		explicit MusicPlayer(
+			IMusicPlayerMessageSink* message_sink = nullptr,
+			std::optional<AudioOutputFormat> output_format = std::nullopt);
 		// no copy & move
 		MusicPlayer(const MusicPlayer&) = delete;
 		MusicPlayer& operator=(const MusicPlayer&) = delete;

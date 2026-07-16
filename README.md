@@ -15,7 +15,7 @@
 ![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/WpfMusicPlayer-Dev/WpfMusicPlayer/dotnet-desktop.yml?style=for-the-badge)
 [![State-of-the-art Shitcode](https://img.shields.io/static/v1?label=State-of-the-art&message=Shitcode&color=7B5804&style=for-the-badge)](https://github.com/trekhleb/state-of-the-art-shitcode)
 
-A simple music player.
+A simple music player, focused on audio pipeline and lyric experience.
 
 ## Notice
 - This project has entered maintenance mode.
@@ -33,10 +33,26 @@ A simple music player.
 
 ## Screenshot
 
+### JPN lyric, CHS translation and Romaji romanization enabled
 ![screenshot-1](screenshots/screenshot-1.png)
 
+### CHS lyric, Jyutping romanization enabled
+![screenshot-2](screenshots/screenshot-2.png)
+
+### ENG lyric, CHS translation enabled
+![screenshot-3](screenshots/screenshot-3.png)
+
+### Playlist
+![playlist](screenshots/playlist.png)
+
+### Equalizer
+![equalizer](screenshots/equalizer.png)
+
+### Mini player
+![miniplayer](screenshots/miniplayer.png)
+
 ## Current implemented features:
-- Configurable audio output sample rate
+- Configurable audio output sample rate, from 8kHz (telephone quality) to 192kHz (Hi-Res audio)
 - Play/pause/stop
 - Seek bar
 - Volume control
@@ -122,6 +138,17 @@ powercfg -attributes SUB_PROCESSOR bae08b81-2d5e-4688-ad6a-13243356654b -ATTRIB_
 - File Path: `WpfMusicPlayer/song_structure_mlp.ncnn.param`
 - See: [README.modelweights.md](README.modelweights.md)
 
+If you require:
+
+- higher recognition accuracy,
+- a smaller model, or
+- a model trained on your own dataset,
+- convert the old dlib `.dat` model weight into ncnn format,
+
+you can retrain the network using the scripts provided in the following repository:
+
+[dlib_train](https://github.com/WpfMusicPlayer-Dev/dlib_train)
+
 ## License
 - This software is provided under:
 > SPDX-License-Identifier: MIT
@@ -155,3 +182,22 @@ The LGPL license text is included in LICENSE.thirdparty.txt.
 ## Get in touched with author:
 - Email: lucas150670@petalmail.com
 - Telegram Group: https://t.me/MadokawaiiChat
+
+## Credit
+Thanks to all the contributors of this project:
+- [Zopiclone](https://github.com/Zopiclone-main), code
+- [steve84966](https://github.com/steve84966), code
+- [白菜叶](https://github.com/bai-caiye), UI/UX and logo art
+- [大川爱麒麟](https://github.com/DachuanKirin), test
+- and you, who are willing to try using this application.
+
+> From [ffmpeg_xaudio2](https://github.com/lucas8485/ffmpeg_xaudio2) pure CLI demo, to [MFCMusicPlayer](https://github.com/lucas150670/MFCMusicPlayer), then WpfMusicPlayer.
+> <br>
+> This is an incredible journey with your support.
+> <br>
+> Let's meet at the next station, Avalonia,
+> with all platform support, richer user interface,
+> native i18n support, and brand new WPLRC v3 format,
+> which fully preserves the semantic information of the lyric.
+> <br>
+> Thank you!

@@ -26,15 +26,16 @@ public:
     void SetIncludeTimestamp(bool include) { timestamp_enable = include; }
     void SetIncludeFileInfo(bool include) { info_enable = include; }
 
-    void TraceEx(const char* file_name, int line_num, const wchar_t* format, ...);
-    void TraceEx(const char* file_name, int line_num, const char* format, ...);
+    void TraceEx(const char* file_name, int line_num, const wchar_t* format, ...) noexcept;
+    void TraceEx(const char* file_name, int line_num, const char* format, ...) noexcept;
 
-    void Trace(const wchar_t* format, ...);
-    void Trace(const char* format, ...);
+    void Trace(const wchar_t* format, ...) noexcept;
+    void Trace(const char* format, ...) noexcept;
 
     static NativeTraceRedirect* GetTraceRedirector();
     static void SetTraceRedirector(NativeTraceRedirect*);
     static void InitNativeTraceRedirect();
+    static void ShutdownNativeTraceRedirect() noexcept;
 
 private:
     [[nodiscard]] std::string query_time_stamp() const;

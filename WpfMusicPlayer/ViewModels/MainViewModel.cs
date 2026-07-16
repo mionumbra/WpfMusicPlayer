@@ -42,6 +42,8 @@ public partial class MainViewModel : ObservableObject, IDisposable
     private string? _currentFilePath;
     private string? _currentMd5;
     private int _sampleRate;
+    private readonly AudioSettings.ChannelType _channelMode;
+    private readonly AudioSettings.BitDepthType _bitDepth;
     private bool _enableAutoPlay;
     private float? _pendingSeekTime;
     private readonly GCLatencyMode _previousLatencyMode;
@@ -98,10 +100,15 @@ public partial class MainViewModel : ObservableObject, IDisposable
         DesktopLyric.PropertyChanged += OnDesktopLyricPropertyChanged;
         DesktopTrayIcon = desktopTrayIcon;
         CurrentBackgroundMode = configProvider.GetConfig().UI.Background;
-        _sampleRate = configProvider.GetConfig().Audio.SampleRate;
+        ref var startupConfig = ref configProvider.GetConfig();
+        _sampleRate = startupConfig.Audio.SampleRate;
+        _channelMode = startupConfig.Audio.Channel;
+        _bitDepth = startupConfig.Audio.BitDepth;
         PendingSampleRate = _sampleRate;
+        PendingChannelMode = _channelMode;
+        PendingBitDepth = _bitDepth;
         Equalizer.SetSampleRate(_sampleRate);
-        _musicPlayer = new MusicPlayerManaged(_sampleRate);
+        _musicPlayer = CreateMusicPlayer();
         
         var info = Assembly
             .GetExecutingAssembly()
@@ -117,8 +124,13 @@ public partial class MainViewModel : ObservableObject, IDisposable
         SubscribePlayerEvents();
         SubscribeSmtcEvents();
         RestoreSettingsFromCommandLine();
-        _logger.LogInformation("MainViewModel initialized, sample rate: {SampleRate}", _sampleRate);
+        _logger.LogInformation(
+            "MainViewModel initialized, sample rate: {SampleRate}, channel mode: {ChannelMode}, bit depth: {BitDepth}",
+            _sampleRate, _channelMode, _bitDepth);
     }
+
+    private MusicPlayerManaged CreateMusicPlayer() =>
+        new(_sampleRate, (int)_channelMode, (int)_bitDepth);
 
     private void OnDesktopLyricPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
@@ -212,7 +224,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
     {
         // reset state
         _musicPlayer.Dispose();
-        _musicPlayer = new MusicPlayerManaged(_sampleRate);
+        _musicPlayer = CreateMusicPlayer();
         ApplyEqualizerSettingsToPlayer();
         Interlocked.Increment(ref _albumArtVersion);
         AlbumCoverImage = null;
@@ -365,7 +377,37 @@ public partial class MainViewModel : ObservableObject, IDisposable
     [ObservableProperty]
     public partial int PendingSampleRate { get; private set; }
 
+    [ObservableProperty]
+    public partial AudioSettings.ChannelType PendingChannelMode { get; private set; }
+
+    [ObservableProperty]
+    public partial AudioSettings.BitDepthType PendingBitDepth { get; private set; }
+
     public bool IsSampleRateRestartRequired => PendingSampleRate != _sampleRate;
+
+    public bool IsChannelModeRestartRequired => PendingChannelMode != _channelMode;
+
+    public bool IsBitDepthRestartRequired => PendingBitDepth != _bitDepth;
+
+    public bool IsAudioSettingsRestartRequired =>
+        IsSampleRateRestartRequired ||
+        IsChannelModeRestartRequired ||
+        IsBitDepthRestartRequired;
+
+    public string PendingAudioSettingsSummary
+    {
+        get
+        {
+            List<string> changes = [];
+            if (IsSampleRateRestartRequired)
+                changes.Add($"采样率：{PendingSampleRate} Hz");
+            if (IsChannelModeRestartRequired)
+                changes.Add($"声道：{FormatChannelMode(PendingChannelMode)}");
+            if (IsBitDepthRestartRequired)
+                changes.Add($"位宽：{FormatBitDepth(PendingBitDepth)}");
+            return string.Join("\n", changes.Select(change => $"• {change}"));
+        }
+    }
 
     public PlayMode CurrentPlayMode
     {
@@ -447,7 +489,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 }
 
                 _musicPlayer.Dispose();
-                _musicPlayer = new MusicPlayerManaged(_sampleRate);
+                _musicPlayer = CreateMusicPlayer();
                 ApplyEqualizerSettingsToPlayer();
                 SubscribePlayerEvents(albumArtVersion, _currentMd5, filePath);
                 _disableAutoAdvance = false;
@@ -549,9 +591,50 @@ public partial class MainViewModel : ObservableObject, IDisposable
         {
             PendingSampleRate = _configProvider.GetConfig().Audio.SampleRate;
             Equalizer.SetSampleRate(PendingSampleRate);
-            OnPropertyChanged(nameof(IsSampleRateRestartRequired));
+            NotifyAudioSettingsRestartStateChanged();
+            return;
+        }
+
+        if (e.SettingName == nameof(SettingsViewModel.SelectedChannel))
+        {
+            PendingChannelMode = _configProvider.GetConfig().Audio.Channel;
+            NotifyAudioSettingsRestartStateChanged();
+            return;
+        }
+
+        if (e.SettingName == nameof(SettingsViewModel.SelectedBitDepth))
+        {
+            PendingBitDepth = _configProvider.GetConfig().Audio.BitDepth;
+            NotifyAudioSettingsRestartStateChanged();
         }
     }
+
+    private void NotifyAudioSettingsRestartStateChanged()
+    {
+        OnPropertyChanged(nameof(IsSampleRateRestartRequired));
+        OnPropertyChanged(nameof(IsChannelModeRestartRequired));
+        OnPropertyChanged(nameof(IsBitDepthRestartRequired));
+        OnPropertyChanged(nameof(IsAudioSettingsRestartRequired));
+        OnPropertyChanged(nameof(PendingAudioSettingsSummary));
+    }
+
+    private static string FormatChannelMode(AudioSettings.ChannelType channelMode) => channelMode switch
+    {
+        AudioSettings.ChannelType.System => "System",
+        AudioSettings.ChannelType.Mono => "Mono",
+        AudioSettings.ChannelType.Stereo => "Stereo",
+        AudioSettings.ChannelType.Surround51 => "Surround 5.1",
+        AudioSettings.ChannelType.Surround71 => "Surround 7.1",
+        _ => channelMode.ToString()
+    };
+
+    private static string FormatBitDepth(AudioSettings.BitDepthType bitDepth) => bitDepth switch
+    {
+        AudioSettings.BitDepthType.System => "System",
+        AudioSettings.BitDepthType.Bit16 => "16bit",
+        AudioSettings.BitDepthType.Bit32 => "32bit",
+        _ => bitDepth.ToString()
+    };
 
     public void PollSpectrumData()
     {

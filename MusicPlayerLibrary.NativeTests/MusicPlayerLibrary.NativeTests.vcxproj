@@ -74,9 +74,13 @@
   </PropertyGroup>
   <PropertyGroup Label="Vcpkg">
     <VcpkgEnableManifest>true</VcpkgEnableManifest>
-    <VcpkgManifestRoot>$(SolutionDir)</VcpkgManifestRoot>
     <VcpkgAdditionalInstallOptions>--allow-unsupported</VcpkgAdditionalInstallOptions>
   </PropertyGroup>
+	<ItemDefinitionGroup>
+	  <ClCompile>
+		<PreprocessorDefinitions>NATIVE_TRACE_REDIRECT_DISABLED;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+	  </ClCompile>
+	</ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
@@ -130,6 +134,15 @@
     <IncludePath>../MusicPlayerLibrary;$(VC_IncludePath);$(WindowsSDK_IncludePath);</IncludePath>
   </PropertyGroup>
   <ItemGroup>
+	<ClCompile Include="..\MusicPlayerLibrary\Audio\AudioOutputFormat.cpp">
+	  <Link>AudioOutputFormat.cpp</Link>
+	</ClCompile>
+	<ClCompile Include="..\MusicPlayerLibrary\Audio\FFT\FFTExecuter.cpp">
+	  <Link>FFTExecuter.cpp</Link>
+	</ClCompile>
+    <ClCompile Include="..\MusicPlayerLibrary\Audio\FFT\AudioPipelinePerformanceHelper.cpp">
+      <Link>AudioPipelinePerformanceHelper.cpp</Link>
+    </ClCompile>
     <ClCompile Include="..\MusicPlayerLibrary\Audio\DSP\EqualizerDsp.cpp">
       <Link>EqualizerDsp.cpp</Link>
     </ClCompile>

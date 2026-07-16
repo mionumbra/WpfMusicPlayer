@@ -58,7 +58,7 @@ static std::vector<uint8_t> Aes128EcbDecrypt(const std::vector<uint8_t>& cipher,
         throw std::runtime_error("EVP_DecryptInit_ex failed");
     }
     EVP_CIPHER_CTX_set_padding(ctx, 1);
-    if (EVP_DecryptUpdate(ctx, plain.data(), &outlen1, cipher.data(), (int)cipher.size()) != 1)
+    if (EVP_DecryptUpdate(ctx, plain.data(), &outlen1, cipher.data(), static_cast<int>(cipher.size())) != 1)
     {
         EVP_CIPHER_CTX_free(ctx);
         throw std::runtime_error("EVP_DecryptUpdate failed");
@@ -126,7 +126,7 @@ namespace
                 return 0;
 
             const uint64_t bytes_to_read_64 =
-                (std::min)(static_cast<uint64_t>(count), audio_length_ - position_);
+                std::min(static_cast<uint64_t>(count), audio_length_ - position_);
             const uint32_t bytes_to_read = static_cast<uint32_t>(bytes_to_read_64);
             const uint64_t source_position = audio_offset_ + position_;
             if (source_position < audio_offset_

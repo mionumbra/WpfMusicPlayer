@@ -29,9 +29,12 @@
 
 // 添加要在此处预编译的标头
 
-#if !defined(NATIVE_TRACE_REDIRECT_ENABLED)
+#if !defined(NATIVE_TRACE_REDIRECT_DISABLED) && !defined(NATIVE_TRACE_REDIRECT_ENABLED)
 #define NATIVE_TRACE_REDIRECT_ENABLED
 #endif
 #include "Core/NativeTraceRedirect.h" // For Debug
+#if defined(NATIVE_TRACE_REDIRECT_DISABLED)
+#define NATIVE_TRACE(...) ((void)0)
+#endif
 
 #endif //PCH_H
