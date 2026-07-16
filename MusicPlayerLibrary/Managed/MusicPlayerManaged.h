@@ -38,6 +38,7 @@ namespace MusicPlayerLibrary
 		
 		MusicPlayerManaged();
 		MusicPlayerManaged(int sample_rate);
+		MusicPlayerManaged(int sample_rate, int channel_mode, int bit_depth);
 
 	private:
 		void check_if_null();

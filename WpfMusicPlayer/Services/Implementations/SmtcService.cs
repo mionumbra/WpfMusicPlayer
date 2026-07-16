@@ -112,7 +112,7 @@ public class SmtcService : ISmtcService
                 var ras = new InMemoryRandomAccessStream();
                 var writer = new DataWriter(ras.GetOutputStreamAt(0));
                 writer.WriteBytes(bytes);
-                writer.StoreAsync().GetResults();
+                writer.StoreAsync().Wait();
                 writer.DetachStream();
                 writer.Dispose();
                 ras.Seek(0);

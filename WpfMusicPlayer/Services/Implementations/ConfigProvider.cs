@@ -39,7 +39,8 @@ namespace WpfMusicPlayer.Services.Implementations
                 },
                 Audio = new AudioSettings
                 {
-                    Channel = AudioSettings.ChannelType.Stereo,
+                    Channel = AudioSettings.ChannelType.System,
+                    BitDepth = AudioSettings.BitDepthType.System,
                     SampleRate = 48000
                 }
             };

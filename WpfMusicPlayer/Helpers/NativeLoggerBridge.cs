@@ -15,17 +15,17 @@ public class NativeLoggerBridge
 
     // for native method to invoke using reflection
     // ReSharper disable once UnusedMember.Global
-    public void LogTrace(string message) => _logger.LogTrace(message);
+    public void LogTrace(string message) => _logger.LogTrace("{Message}", message);
     
     // ReSharper disable once UnusedMember.Global
-    public void LogDebug(string message) => _logger.LogDebug(message);
+    public void LogDebug(string message) => _logger.LogDebug("{Message}", message);
     
     // ReSharper disable once UnusedMember.Global
-    public void LogInformation(string message) => _logger.LogInformation(message);
+    public void LogInformation(string message) => _logger.LogInformation("{Message}", message);
     
     // ReSharper disable once UnusedMember.Global
-    public void LogWarning(string message) => _logger.LogWarning(message);
+    public void LogWarning(string message) => _logger.LogWarning("{Message}", message);
     
     // ReSharper disable once UnusedMember.Global
-    public void LogError(string message) => _logger.LogError(message);
+    public void LogError(string message) => _logger.LogError("{Message}", message);
 }

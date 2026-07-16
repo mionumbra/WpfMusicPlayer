@@ -153,13 +153,16 @@
         </Link>
     </ItemDefinitionGroup>
     <ItemGroup>
+		<ClInclude Include="Audio\AudioOutputFormat.h" />
         <ClInclude Include="Audio\DSP\EqualizerDsp.h"/>
         <ClInclude Include="Audio\DSP\FapoEqualizer.h"/>
+        <ClInclude Include="Audio\FFT\AudioPipelinePerformanceHelper.h" />
         <ClInclude Include="Audio\FFT\FFTExecuter.h"/>
         <ClInclude Include="Audio\MusicPlayerLibrary.h"/>
         <ClInclude Include="Audio\MusicPlayerMessage.h" />
         <ClInclude Include="Core\FileAbstractionLayer.h"/>
         <ClInclude Include="Core\LocaleConverter.h"/>
+        <ClInclude Include="Core\NativeLibraryRuntime.h" />
         <ClInclude Include="Core\NativeLogWriter.h" />
         <ClInclude Include="Core\NativeTraceRedirect.h"/>
         <ClInclude Include="Core\AudioThreadScheduleHelper.h" />
@@ -173,6 +176,7 @@
         <ClInclude Include="Managed\ManagedLoggerFactory.h" />
         <ClInclude Include="Managed\ManagedLogWriter.h" />
         <ClInclude Include="Managed\MusicPlayerEventBridge.h" />
+        <ClInclude Include="Managed\MusicPlayerLibraryRuntime.h" />
         <ClInclude Include="Managed\MusicPlayerManaged.h" />
         <ClInclude Include="Managed\SmtcInteropHelper.h" />
         <ClInclude Include="pch.h" />
@@ -185,16 +189,19 @@
         <ClInclude Include="Resource.h" />
     </ItemGroup>
     <ItemGroup>
+        <ClCompile Include="Audio\FFT\AudioPipelinePerformanceHelper.cpp"/>
         <ClCompile Include="Lyric\MLPipeline\MLPipelineCommon.cpp" />
         <ClCompile Include="Lyric\MLPipeline\NCNNPipeline.cpp" />
         <ClCompile Include="Lyric\MLPipeline\VocabularyIO.cpp" />
         <ClCompile Include="Managed\AssemblyInfo.cpp" />
         <ClCompile Include="Audio\DSP\EqualizerDsp.cpp" />
         <ClCompile Include="Audio\DSP\FapoEqualizer.cpp" />
+		<ClCompile Include="Audio\AudioOutputFormat.cpp" />
         <ClCompile Include="Audio\FFT\FFTExecuter.cpp" />
         <ClCompile Include="Audio\MusicPlayerLibrary.cpp" />
         <ClCompile Include="Core\AudioThreadScheduleHelper.cpp" />
         <ClCompile Include="Core\LocaleConverter.cpp" />
+        <ClCompile Include="Core\NativeLibraryRuntime.cpp" />
         <ClCompile Include="Core\NativeTraceRedirect.cpp" />
         <ClCompile Include="Crypto\NcmDecryptor.cpp" />
         <ClCompile Include="Lyric\LrcFileController.cpp" />
@@ -203,6 +210,7 @@
         <ClCompile Include="Managed\ManagedLoggerFactory.cpp" />
         <ClCompile Include="Managed\ManagedLogWriter.cpp" />
         <ClCompile Include="Managed\MusicPlayerEventBridge.cpp" />
+        <ClCompile Include="Managed\MusicPlayerLibraryRuntime.cpp" />
         <ClCompile Include="Managed\MusicPlayerManaged.cpp" />
         <ClCompile Include="Managed\SmtcInteropHelper.cpp" />
         <ClCompile Include="pch.cpp">

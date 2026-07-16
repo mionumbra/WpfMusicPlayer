@@ -1079,7 +1079,8 @@ public sealed class LrcFileControllerTest
             Assert.AreEqual("♪ ♪ ♪ ♪ ♪ ♪", vm.Lyrics[1].Text);
             Assert.IsTrue(vm.Lyrics[1].IsProgressEnabled);
             Assert.AreEqual(1, vm.CurrentLyricIndex);
-            Assert.AreEqual(0.5, vm.Lyrics[1].Progress, 0.001);
+            // gap: 2000ms->7000ms
+            Assert.AreEqual(0.4, vm.Lyrics[1].Progress, 0.001);
 
             await vm.ExportWplrcCommand.ExecuteAsync(null);
 

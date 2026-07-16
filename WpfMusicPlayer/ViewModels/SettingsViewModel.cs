@@ -14,6 +14,11 @@ public sealed class SettingChangedEventArgs(string settingName) : EventArgs
     public string SettingName { get; } = settingName;
 }
 
+public sealed record BitDepthOption(AudioSettings.BitDepthType Value, string DisplayName)
+{
+    public override string ToString() => DisplayName;
+}
+
 public class SettingsViewModel : ObservableObject
 {
     private readonly IConfigProvider _configProvider;
@@ -60,6 +65,16 @@ public class SettingsViewModel : ObservableObject
     }
 
     public int SelectedSampleRate
+    {
+        get;
+        set
+        {
+            if (SetProperty(ref field, value))
+                ApplyToConfig();
+        }
+    }
+
+    public AudioSettings.BitDepthType SelectedBitDepth
     {
         get;
         set
@@ -130,6 +145,13 @@ public class SettingsViewModel : ObservableObject
     public AudioSettings.ChannelType[] ChannelOptions { get; } =
         Enum.GetValues<AudioSettings.ChannelType>();
 
+    public BitDepthOption[] BitDepthOptions { get; } =
+    [
+        new(AudioSettings.BitDepthType.System, "System"),
+        new(AudioSettings.BitDepthType.Bit16, "16bit"),
+        new(AudioSettings.BitDepthType.Bit32, "32bit")
+    ];
+
     public int[] SampleRateOptions { get; } = [8000, 11025, 16000, 22050, 44100, 48000, 88200, 96000, 192000];
 
     private void LoadFromConfig()
@@ -139,6 +161,7 @@ public class SettingsViewModel : ObservableObject
         SelectedTheme = config.UI.Theme;
         SelectedBackground = config.UI.Background;
         SelectedChannel = config.Audio.Channel;
+        SelectedBitDepth = config.Audio.BitDepth;
         SelectedSampleRate = config.Audio.SampleRate;
         SelectedVolume = config.Audio.Volume;
         SelectedDesktopLyricEnabled = config.DesktopLyric.IsDesktopLyricEnabled;
@@ -155,6 +178,7 @@ public class SettingsViewModel : ObservableObject
         config.UI.Theme = SelectedTheme;
         config.UI.Background = SelectedBackground;
         config.Audio.Channel = SelectedChannel;
+        config.Audio.BitDepth = SelectedBitDepth;
         config.Audio.SampleRate = SelectedSampleRate;
         config.Audio.Volume = SelectedVolume;
         config.DesktopLyric.IsDesktopLyricEnabled = SelectedDesktopLyricEnabled;

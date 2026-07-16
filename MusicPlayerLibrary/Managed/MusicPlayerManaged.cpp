@@ -25,11 +25,36 @@ MusicPlayerLibrary::MusicPlayerManaged::MusicPlayerManaged(int sample_rate)
 	try
 	{
 		event_bridge = new MusicPlayerEventBridge(this);
-		native_handle = new MusicPlayer(event_bridge);
-		native_handle->SetSampleRate(sample_rate);
+		AudioOutputFormat requested{};
+		requested.requested_sample_rate = sample_rate;
+		native_handle = new MusicPlayer(event_bridge, requested);
 	}
 	catch (const std::exception& exception)
 	{
+		delete event_bridge;
+		event_bridge = nullptr;
+		native_handle = nullptr;
+		throw ToManagedException(exception);
+	}
+}
+
+MusicPlayerLibrary::MusicPlayerManaged::MusicPlayerManaged(
+	int sample_rate,
+	int channel_mode,
+	int bit_depth)
+{
+	try
+	{
+		event_bridge = new MusicPlayerEventBridge(this);
+		AudioOutputFormat requested{};
+		requested.requested_sample_rate = sample_rate;
+		requested.requested_channel_mode = static_cast<AudioChannelMode>(channel_mode);
+		requested.requested_bit_depth = static_cast<AudioBitDepth>(bit_depth);
+		native_handle = new MusicPlayer(event_bridge, requested);
+	}
+	catch (const std::exception& exception)
+	{
+		delete event_bridge;
 		event_bridge = nullptr;
 		native_handle = nullptr;
 		throw ToManagedException(exception);

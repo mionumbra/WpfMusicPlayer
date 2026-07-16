@@ -39,7 +39,7 @@ namespace WpfMusicPlayer
         private bool _isClosing;
         private bool _hasDesktopLyricStateBeforeMiniPlayer;
         private bool _wasDesktopLyricVisibleBeforeMiniPlayer;
-        private bool _isSampleRateRestartPromptOpen;
+        private bool _isAudioSettingsRestartPromptOpen;
         private UISettings.BackgroundMode _appliedBackgroundMode;
 
         public MainWindow(MainViewModel viewModel, ISmtcService smtcService)
@@ -152,9 +152,11 @@ namespace WpfMusicPlayer
                 return;
             }
 
-            if (e.PropertyName == nameof(MainViewModel.PendingSampleRate))
+            if (e.PropertyName is nameof(MainViewModel.PendingSampleRate)
+                or nameof(MainViewModel.PendingChannelMode)
+                or nameof(MainViewModel.PendingBitDepth))
             {
-                PromptRestartForSampleRateChange();
+                PromptRestartForAudioSettingsChange();
                 return;
             }
 
@@ -184,17 +186,17 @@ namespace WpfMusicPlayer
             }
         }
 
-        private void PromptRestartForSampleRateChange()
+        private void PromptRestartForAudioSettingsChange()
         {
-            if (!ViewModel.IsSampleRateRestartRequired || _isSampleRateRestartPromptOpen)
+            if (!ViewModel.IsAudioSettingsRestartRequired || _isAudioSettingsRestartPromptOpen)
                 return;
 
-            _isSampleRateRestartPromptOpen = true;
+            _isAudioSettingsRestartPromptOpen = true;
             try
             {
                 var selection = WpfMessageBox.Show(
-                    $"采样率将在重启后切换为 {ViewModel.PendingSampleRate} Hz。是否立即重启以应用设置更改？",
-                    "应用采样率设置",
+                    $"以下音频设置将在重启后应用：\n{ViewModel.PendingAudioSettingsSummary}\n\n是否立即重启应用程序？",
+                    "应用音频设置",
                     WpfMessageBoxButton.OKCancel,
                     WpfMessageBoxIcon.Information);
 
@@ -205,7 +207,7 @@ namespace WpfMusicPlayer
             }
             finally
             {
-                _isSampleRateRestartPromptOpen = false;
+                _isAudioSettingsRestartPromptOpen = false;
             }
         }
 

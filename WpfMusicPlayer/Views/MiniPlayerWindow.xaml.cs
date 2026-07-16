@@ -23,11 +23,6 @@ public partial class MiniPlayerWindow : Window
         RestoreRequested?.Invoke(this, EventArgs.Empty);
     }
 
-    private void PlaylistButton_Click(object sender, RoutedEventArgs e)
-    {
-        // Stub for the future mini playlist page.
-    }
-
     private void RootBorder_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
         if (e.ButtonState != MouseButtonState.Pressed || IsWithinButton(e.OriginalSource as DependencyObject))

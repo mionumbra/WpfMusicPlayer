@@ -19,6 +19,9 @@ namespace MusicPlayerLibrary
     public ref class NativeTraceRedirectManager
     {
         static Object^ reflectedNativeTraceRedirectBridge;
+    internal:
+        static void SetNativeTraceRedirectBridge(Object^ logger);
+        static void ClearNativeTraceRedirectBridge();
     public:
         static void Init(System::Object^ logger);
         static Object^ GetNativeTraceRedirectBridge();

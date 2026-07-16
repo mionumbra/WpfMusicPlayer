@@ -41,6 +41,9 @@ public partial class DesktopLyricViewModel
                     OnPropertyChanged(nameof(HasRomanji));
                     OnPropertyChanged(nameof(RomanjiVisibility));
                     break;
+                case nameof(LyricsViewModel.CurrentRomanizationSchema):
+                    OnPropertyChanged(nameof(RomanjiButtonContent));
+                    break;
             }
         };
     }
@@ -61,6 +64,9 @@ public partial class DesktopLyricViewModel
     
     public bool HasRomanji =>
         _lyricsVm.HasRomanjiAvailable;
+
+    public string RomanjiButtonContent =>
+        _lyricsVm.RomanjiButtonContent;
     
     public bool IsTranslationOn 
     {

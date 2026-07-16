@@ -71,7 +71,7 @@ const char* LanguageTypeToString(LrcLanguageHelper::LanguageType type)
     case LrcLanguageHelper::LanguageType::latin: return "latin";
     case LrcLanguageHelper::LanguageType::jp: return "jp";
     case LrcLanguageHelper::LanguageType::kr: return "kr";
-    case LrcLanguageHelper::LanguageType::ru: return "rL";
+    case LrcLanguageHelper::LanguageType::ru: return "ru";
     case LrcLanguageHelper::LanguageType::jyut: return "jyut";
     case LrcLanguageHelper::LanguageType::roma: return "roma";
     case LrcLanguageHelper::LanguageType::onomatopoeia:
@@ -488,7 +488,7 @@ LrcMultiNode::LrcMultiNode(int t, const std::vector<std::string>& texts,
                 else if (jyut_index != -1)
                     assign_with_language(jyut_index, LrcAuxiliaryInfoNative::Lyric);
                 else if (latin_index != -1)
-                    assign_with_language(jyut_index, LrcAuxiliaryInfoNative::Lyric);
+                    assign_with_language(latin_index, LrcAuxiliaryInfoNative::Lyric);
                 else
                     assign_with_language(onomatopoeia_index, LrcAuxiliaryInfoNative::Lyric);
             }
@@ -679,6 +679,20 @@ LrcLanguageHelper::LrcLanguageHelper()
     }
 }
 
+LrcLanguageHelper::~LrcLanguageHelper()
+{
+    release_native_resources();
+}
+
+void LrcLanguageHelper::release_native_resources() noexcept
+{
+    accepting_inference.store(false, std::memory_order_release);
+    std::lock_guard lock(dlib_mutex);
+    song_net_reasoning.reset();
+    line_net_reasoning.reset();
+    line_vocab_reasoning.clear();
+}
+
 std::string LrcLanguageHelper::lyric_type_to_std_string(LanguageType type)
 {
     switch (type)
@@ -687,7 +701,7 @@ std::string LrcLanguageHelper::lyric_type_to_std_string(LanguageType type)
     case LanguageType::latin: return "latin";
     case LanguageType::jp: return "jp";
     case LanguageType::kr: return "kr";
-    case LanguageType::ru: return "rL";
+    case LanguageType::ru: return "ru";
     case LanguageType::jyut: return "jyut";
     case LanguageType::roma: return "roma";
     default: return "onomatopoeia";
@@ -721,11 +735,13 @@ std::vector<float> LrcLanguageHelper::to_float_features(const std::vector<double
 LrcLanguageHelper::LanguageType
 LrcLanguageHelper::detect_line_language_type(const std::string& input)
 {
+    std::lock_guard lock(dlib_mutex);
+    if (!accepting_inference.load(std::memory_order_acquire) || !line_net_reasoning)
+        throw std::runtime_error("native lyric inference is shutting down");
+
     auto feat = extract_line_features(input, line_vocab_reasoning);
     const auto features = to_float_features(feat);
-    
-    std::lock_guard lock(dlib_mutex);
-    
+
     switch (int label_id = line_net_reasoning->predict(features); label_id)
     {
     case 0: return LanguageType::zh;
@@ -828,6 +844,8 @@ LrcLanguageHelper::LanguageClassification LrcLanguageHelper::detect_song_languag
     int reasoning_result;
     {
         std::lock_guard lock(dlib_mutex);
+        if (!accepting_inference.load(std::memory_order_acquire) || !song_net_reasoning)
+            throw std::runtime_error("native lyric inference is shutting down");
         auto features = to_float_features(song_feat);
         reasoning_result = song_net_reasoning->predict(features);
     }
@@ -907,6 +925,16 @@ LrcLanguageHelper& LrcLanguageHelper::GetSingleton()
 {
     static LrcLanguageHelper helper_instance;
     return helper_instance;
+}
+
+void LrcLanguageHelper::InitializeSingleton()
+{
+    (void)GetSingleton();
+}
+
+void LrcLanguageHelper::ShutdownSingleton() noexcept
+{
+    GetSingleton().release_native_resources();
 }
 
 LrcLanguageHelper::LanguageType LrcAbstractNode::get_language_type(int index) const
@@ -1227,7 +1255,7 @@ void LrcFileController::parse_lrc_file_stream(IFile* file_stream)
             continue;
         }
         // 解析时间tag
-        if (line.size() < 10)
+        if (line.size() < 7) // 现在能解析的最小tag为7位(如：[11:45]
         {
             clear_lrc_nodes();
 			throw std::runtime_error("Invalid lrc line, aborting!");
