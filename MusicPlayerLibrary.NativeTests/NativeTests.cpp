@@ -6,8 +6,11 @@
     DOCTEST_REQUIRE_MESSAGE(static_cast<bool>(condition), __VA_ARGS__)
 
 #include "Audio/AudioOutputFormat.h"
+#include "Audio/Pipeline/AudioPipeline.h"
 #include "Audio/DSP/EqualizerDsp.h"
 #include "Audio/DSP/FapoEqualizer.h"
+#include "Audio/Pipeline/Sink/FAudioSink.h"
+#include "Audio/Pipeline/Observer/FFTAudioObserve.h"
 #include "Audio/FFT/AudioPipelinePerformanceHelper.h"
 #include "Audio/FFT/FFTExecuter.h"
 
@@ -22,6 +25,7 @@ extern "C"
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -32,14 +36,364 @@ extern "C"
 #include <span>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <type_traits>
 #include <vector>
 
 namespace
 {
     using namespace MusicPlayerLibrary::AudioDsp;
+    using MusicPlayerLibrary::AudioOutputFormat;
+    using MusicPlayerLibrary::AudioSinkState;
+    using MusicPlayerLibrary::AudioStreamGeneration;
+    using MusicPlayerLibrary::DecodedAudioFormat;
+    using MusicPlayerLibrary::FAudioSink;
+	using MusicPlayerLibrary::FFTAudioObserve;
+    using MusicPlayerLibrary::IAudioObserve;
+    using MusicPlayerLibrary::IAudioSink;
+    using MusicPlayerLibrary::IAudioSource;
+    using MusicPlayerLibrary::NormalizedPcmBlock;
     using MusicPlayerLibrary::GetAudioPipelineBufferingProfile;
     using MusicPlayerLibrary::SelectAudioPipelineBufferingProfile;
+
+    struct CapturedPcmBlock
+    {
+        std::vector<std::uint8_t> bytes;
+        std::uint32_t frame_count = 0;
+        double pts_seconds = 0.0;
+		std::uint64_t stream_frame_offset = 0;
+        AudioStreamGeneration generation = 0;
+        bool end_of_stream = false;
+    };
+
+    CapturedPcmBlock CapturePcmBlock(const NormalizedPcmBlock& block)
+    {
+        return {
+            .bytes = std::vector<std::uint8_t>(
+                block.bytes.begin(), block.bytes.end()),
+            .frame_count = block.frame_count,
+            .pts_seconds = block.pts_seconds,
+			.stream_frame_offset = block.stream_frame_offset,
+            .generation = block.generation,
+            .end_of_stream = block.end_of_stream
+        };
+    }
+
+    struct FakeOutputDevice
+    {
+        std::uint64_t identity = 0;
+    };
+
+    class FakeAudioSink final : public IAudioSink
+    {
+        std::shared_ptr<FakeOutputDevice> device_;
+        AudioOutputFormat format_{};
+        AudioSinkState state_{};
+        AudioStreamGeneration next_generation_ = 0;
+        AudioStreamGeneration eos_generation_ = 0;
+        bool initialized_ = true;
+        bool started_ = false;
+        float master_volume_ = 1.0f;
+        std::array<int, EqualizerBandCount> equalizer_bands_{};
+        std::vector<CapturedPcmBlock> submitted_;
+        std::vector<CapturedPcmBlock> post_processed_;
+
+        void CapturePostProcessed(const NormalizedPcmBlock& block)
+        {
+            auto processed = CapturePcmBlock(block);
+            // Model sink-owned post-processing without touching the source PCM.
+            for (auto& sample_byte : processed.bytes)
+                sample_byte ^= std::uint8_t{0x5A};
+            post_processed_.push_back(std::move(processed));
+        }
+
+    public:
+        FakeAudioSink(
+            AudioOutputFormat format,
+            std::shared_ptr<FakeOutputDevice> device) :
+            device_(std::move(device)),
+            format_(std::move(format))
+        {
+        }
+
+        [[nodiscard]] const AudioOutputFormat& GetOutputFormat() const noexcept override
+        {
+            return format_;
+        }
+
+        [[nodiscard]] const AudioOutputFormat& GetDeviceFormat() const noexcept override
+        {
+            return format_;
+        }
+
+        [[nodiscard]] bool IsInitialized() const noexcept override
+        {
+            return initialized_;
+        }
+
+        AudioStreamGeneration BeginStream() override
+        {
+            state_ = {};
+            state_.generation = ++next_generation_;
+            eos_generation_ = 0;
+            started_ = false;
+            return state_.generation;
+        }
+
+        bool Submit(const NormalizedPcmBlock& block) override
+        {
+            if (!initialized_ || state_.generation == 0 ||
+                block.generation != state_.generation || block.bytes.empty() ||
+                block.frame_count == 0 || state_.stream_ended ||
+                eos_generation_ != 0)
+            {
+                return false;
+            }
+
+            submitted_.push_back(CapturePcmBlock(block));
+            CapturePostProcessed(block);
+            ++state_.buffers_queued;
+            state_.queued_frames += block.frame_count;
+            if (block.end_of_stream)
+                eos_generation_ = block.generation;
+            return true;
+        }
+
+        bool EndStream() noexcept override
+        {
+            if (!initialized_ || state_.generation == 0 || state_.stream_ended ||
+                eos_generation_ != 0)
+                return false;
+
+            const auto current_generation = state_.generation;
+            const std::size_t block_align =
+                format_.wave_format.Format.nBlockAlign;
+            CapturedPcmBlock marker{
+                .bytes = std::vector<std::uint8_t>(block_align, std::uint8_t{0}),
+                .frame_count = 1,
+                .generation = current_generation,
+                .end_of_stream = true
+            };
+            submitted_.push_back(marker);
+            for (auto& sample_byte : marker.bytes)
+                sample_byte ^= std::uint8_t{0x5A};
+            post_processed_.push_back(std::move(marker));
+            ++state_.buffers_queued;
+            ++state_.queued_frames;
+            eos_generation_ = current_generation;
+            return true;
+        }
+
+        bool Start() noexcept override
+        {
+            started_ = initialized_ && state_.generation != 0;
+            return started_;
+        }
+
+        void Stop() noexcept override
+        {
+            started_ = false;
+        }
+
+        void AbortStream() noexcept override
+        {
+            started_ = false;
+            eos_generation_ = 0;
+            state_.buffers_queued = 0;
+            state_.queued_frames = 0;
+            state_.samples_played = 0;
+			state_.media_frames_presented = 0;
+			state_.presentation_latency_frames = 0;
+            state_.stream_ended = false;
+        }
+
+        [[nodiscard]] AudioSinkState GetState() const noexcept override
+        {
+            return state_;
+        }
+
+        bool WaitForStreamEnd(std::chrono::milliseconds) override
+        {
+            return state_.stream_ended;
+        }
+
+        void SetMasterVolume(const float volume) noexcept override
+        {
+            master_volume_ = std::clamp(volume, 0.0f, 1.0f);
+        }
+
+        [[nodiscard]] int GetEqualizerBand(const int index) const noexcept override
+        {
+            return index >= 0 && static_cast<std::size_t>(index) < equalizer_bands_.size()
+                ? equalizer_bands_[static_cast<std::size_t>(index)]
+                : 0;
+        }
+
+        void SetEqualizerBand(const int index, const int value) noexcept override
+        {
+            if (index >= 0 && static_cast<std::size_t>(index) < equalizer_bands_.size())
+            {
+                equalizer_bands_[static_cast<std::size_t>(index)] =
+                    std::clamp(value, -24, 24);
+            }
+        }
+
+        bool SignalStreamEnd(const AudioStreamGeneration generation) noexcept
+        {
+            if (generation != state_.generation || generation != eos_generation_)
+                return false;
+            state_.buffers_queued = 0;
+            state_.queued_frames = 0;
+            state_.samples_played = 0;
+			state_.media_frames_presented = 0;
+			state_.presentation_latency_frames = 0;
+            state_.stream_ended = true;
+            started_ = false;
+            return true;
+        }
+
+        [[nodiscard]] const std::vector<CapturedPcmBlock>& Submitted() const noexcept
+        {
+            return submitted_;
+        }
+
+        [[nodiscard]] const std::vector<CapturedPcmBlock>& PostProcessed() const noexcept
+        {
+            return post_processed_;
+        }
+
+        [[nodiscard]] const std::shared_ptr<FakeOutputDevice>& Device() const noexcept
+        {
+            return device_;
+        }
+    };
+
+    class RecordingAudioObserve final : public IAudioObserve
+    {
+    public:
+        std::vector<AudioStreamGeneration> format_generations;
+        std::vector<AudioStreamGeneration> reset_generations;
+        std::vector<AudioStreamGeneration> eos_generations;
+        std::vector<CapturedPcmBlock> pcm_blocks;
+
+        void OnFormat(
+            const AudioOutputFormat&,
+            const AudioStreamGeneration generation) override
+        {
+            format_generations.push_back(generation);
+        }
+
+        void OnPcm(const NormalizedPcmBlock& block) override
+        {
+            pcm_blocks.push_back(CapturePcmBlock(block));
+        }
+
+        void OnReset(const AudioStreamGeneration generation) override
+        {
+            reset_generations.push_back(generation);
+        }
+
+        void OnEndOfStream(const AudioStreamGeneration generation) override
+        {
+            eos_generations.push_back(generation);
+        }
+
+	};
+
+    class ContractAudioSource final : public IAudioSource
+    {
+        AudioOutputFormat format_{};
+        std::shared_ptr<IAudioSink> sink_;
+        std::vector<std::shared_ptr<IAudioObserve>> observers_;
+        AudioStreamGeneration generation_ = 0;
+		std::uint64_t stream_frame_cursor_ = 0;
+        bool eos_observed_ = false;
+
+    public:
+        explicit ContractAudioSource(AudioOutputFormat format) :
+            format_(std::move(format))
+        {
+        }
+
+        void Connect(std::shared_ptr<IAudioSink> sink) override
+        {
+            sink_ = std::move(sink);
+        }
+
+        void Subscribe(std::shared_ptr<IAudioObserve> observe) override
+        {
+            if (observe && std::find(observers_.begin(), observers_.end(), observe) ==
+                observers_.end())
+            {
+                observers_.push_back(std::move(observe));
+            }
+        }
+
+        void ClearObservers() override
+        {
+            observers_.clear();
+        }
+
+        [[nodiscard]] const AudioOutputFormat& GetNormalizedFormat() const noexcept override
+        {
+            return format_;
+        }
+
+        AudioStreamGeneration BeginNormalizedStream()
+        {
+            if (!sink_ || !sink_->IsInitialized())
+                return 0;
+            generation_ = sink_->BeginStream();
+			stream_frame_cursor_ = 0;
+            eos_observed_ = false;
+            for (const auto& observer : observers_)
+            {
+                observer->OnFormat(format_, generation_);
+                observer->OnReset(generation_);
+            }
+            return generation_;
+        }
+
+        bool EmitNormalized(
+            const std::span<const std::uint8_t> bytes,
+            const std::uint32_t frame_count,
+            const double pts_seconds,
+            const bool final_block)
+        {
+            if (!sink_ || generation_ == 0 || eos_observed_)
+                return false;
+
+            const NormalizedPcmBlock observed_block{
+                .bytes = bytes,
+                .frame_count = frame_count,
+                .pts_seconds = pts_seconds,
+				.stream_frame_offset = stream_frame_cursor_,
+                .generation = generation_,
+                .end_of_stream = false
+            };
+            for (const auto& observer : observers_)
+                observer->OnPcm(observed_block);
+
+            if (!sink_->Submit(observed_block))
+                return false;
+			stream_frame_cursor_ += frame_count;
+
+            if (final_block)
+            {
+                if (!sink_->EndStream())
+                    return false;
+                eos_observed_ = true;
+                for (const auto& observer : observers_)
+                    observer->OnEndOfStream(generation_);
+            }
+            return true;
+        }
+
+        [[nodiscard]] AudioStreamGeneration Generation() const noexcept
+        {
+            return generation_;
+        }
+    };
 
     constexpr FAudioGUID PcmSubFormat{
         0x00000001, 0x0000, 0x0010,
@@ -115,7 +469,7 @@ namespace
     }
 
     FAudioWaveFormatExtensible MakeFloatFormat(
-        std::uint32_t sampleRate = 48'000,
+        std::uint32_t sampleRate = 48000,
         std::uint16_t channelCount = 2)
     {
         FAudioWaveFormatExtensible format{};
@@ -138,7 +492,7 @@ namespace
     }
 
     FAudioWaveFormatExtensible MakePcm24Format(
-        std::uint32_t sampleRate = 48'000,
+        std::uint32_t sampleRate = 48000,
         std::uint16_t channelCount = 2,
         std::uint16_t containerBits = 32)
     {
@@ -187,7 +541,7 @@ namespace
     MusicPlayerLibrary::AudioOutputFormat MakeResolvedOutputFormat(
         MusicPlayerLibrary::AudioChannelMode channelMode,
         MusicPlayerLibrary::AudioBitDepth bitDepth,
-        int sampleRate = 48'000)
+        int sampleRate = 48000)
     {
         MusicPlayerLibrary::AudioOutputFormat requested{};
         requested.requested_sample_rate = sampleRate;
@@ -217,7 +571,7 @@ namespace
             &rawContext,
             &fftLayout,
             AV_SAMPLE_FMT_S16,
-            48'000,
+            48000,
             &inputLayout,
             format.sample_format,
             format.sample_rate,
@@ -274,7 +628,7 @@ namespace
         {
             return GenBoundaries(
                 static_cast<float>(sample_rate), fft_size,
-                static_cast<std::size_t>(32), 20.0f, 20'000.0f);
+                static_cast<std::size_t>(32), 20.0f, 20000.0f);
         }
 
         [[nodiscard]] std::vector<double> Window(
@@ -304,13 +658,23 @@ namespace
                     "FFT probe did not return all legacy spectrum bands");
             return result;
         }
+
+		void AddTimelineSamples(
+			const std::uint8_t* samples,
+			const int frameCount,
+			const double streamPositionSeconds)
+		{
+			AddSamplesToRingBuffer(samples, frameCount, streamPositionSeconds);
+			while (GetRingBufferSize() >= static_cast<int>(FrameByteCount()))
+				ExecuteAudioFFT();
+		}
     };
 
     std::uint32_t LockFapo(
         FAPO* effect,
         const FAudioWaveFormatExtensible& inputFormat,
         const FAudioWaveFormatExtensible& outputFormat,
-        std::uint32_t maxFrameCount = 1'024,
+        std::uint32_t maxFrameCount = 1024,
         std::uint32_t inputCount = 1,
         std::uint32_t outputCount = 1,
         std::uint32_t outputMaxFrameCount = 0)
@@ -371,6 +735,7 @@ namespace
     {
         EqualizerDsp dsp;
         LimiterConfig limiter;
+        limiter.ceiling = 0.70f;
         NATIVE_REQUIRE(dsp.Prepare(sampleRate, channelCount, frameCount, limiter),
                 "EqualizerDsp::Prepare rejected a supported limiter format");
         return dsp;
@@ -378,8 +743,8 @@ namespace
 
     void TestZeroDbIdentity()
     {
-        constexpr std::uint32_t SampleRate = 48'000;
-        constexpr std::uint32_t FrameCount = 2'048;
+        constexpr std::uint32_t SampleRate = 48000;
+        constexpr std::uint32_t FrameCount = 2048;
 
         auto input = StereoSine(SampleRate, 777.0f, 0.35f, FrameCount);
         for (std::uint32_t frame = 0; frame < FrameCount; ++frame)
@@ -399,17 +764,17 @@ namespace
 
     void TestOneKilohertzPlusSixDb()
     {
-        constexpr std::uint32_t SampleRate = 48'000;
-        constexpr std::uint32_t WarmUpFrames = 4'096;
-        constexpr std::uint32_t MeasuredFrames = 4'096;
+        constexpr std::uint32_t SampleRate = 48000;
+        constexpr std::uint32_t WarmUpFrames = 4096;
+        constexpr std::uint32_t MeasuredFrames = 4096;
         constexpr std::uint32_t FrameCount = WarmUpFrames + MeasuredFrames;
 
         auto config = MakeDefaultTenBandConfig();
-        config.bands[5].frequency_hz = 1'000.0f;
+        config.bands[5].frequency_hz = 1000.0f;
         config.bands[5].q = 1.0f;
         config.bands[5].gain_db = 6.0f;
 
-        const auto input = StereoSine(SampleRate, 1'000.0f, 0.1f, FrameCount);
+        const auto input = StereoSine(SampleRate, 1000.0f, 0.1f, FrameCount);
         std::vector<float> output(input.size());
         auto dsp = MakePreparedDsp(SampleRate, FrameCount);
         const auto snapshot = CompileEqualizerSnapshot(config, SampleRate, 2);
@@ -434,13 +799,217 @@ namespace
                      "1 kHz peaking filter did not produce the configured gain");
     }
 
+    void TestAdaptiveLimiterMatchesInputLoudness()
+    {
+        constexpr std::uint32_t SampleRate = 48000;
+        constexpr std::uint32_t FrameCount = SampleRate;
+        constexpr std::uint32_t MeasurementStart = SampleRate / 2;
+		constexpr std::uint32_t ChunkFrames = 256;
+
+		for (const float equalizerGainDb : {6.0f, -6.0f, 24.0f, -24.0f})
+        {
+            auto config = MakeDefaultTenBandConfig();
+            config.bands[5].frequency_hz = 1000.0f;
+            config.bands[5].q = 1.0f;
+            config.bands[5].gain_db = equalizerGainDb;
+            const auto snapshot = CompileEqualizerSnapshot(
+                config, SampleRate, equalizerGainDb > 0.0f ? 31 : 32);
+
+            LimiterConfig limiter;
+            limiter.enabled = true;
+            limiter.ceiling = 1.0f;
+            limiter.match_input_loudness = true;
+            EqualizerDsp dsp;
+			NATIVE_REQUIRE(dsp.Prepare(SampleRate, 2, ChunkFrames, limiter),
+                    "adaptive limiter rejected a supported stereo format");
+
+            const auto input = StereoSine(
+                SampleRate, 1000.0f, 0.15f, FrameCount);
+            std::vector<float> output(input.size());
+			for (std::uint32_t offset = 0; offset < FrameCount;
+				offset += ChunkFrames)
+			{
+				const auto frames = std::min(ChunkFrames, FrameCount - offset);
+				NATIVE_REQUIRE(dsp.Process(
+						snapshot,
+						input.data() + static_cast<std::size_t>(offset) * 2,
+						output.data() + static_cast<std::size_t>(offset) * 2,
+						frames,
+						false),
+					"adaptive limiter rejected chunked equalized input");
+			}
+
+            double inputSquareSum = 0.0;
+            double outputSquareSum = 0.0;
+            float outputPeak = 0.0f;
+			float wholeStreamOutputPeak = 0.0f;
+			for (const float sample : output)
+				wholeStreamOutputPeak = std::max(
+					wholeStreamOutputPeak, std::abs(sample));
+            const auto limiterDelay = dsp.GetLimiterDelayFrames();
+            for (std::uint32_t frame = MeasurementStart;
+                 frame < FrameCount; ++frame)
+            {
+                const auto outputIndex = static_cast<std::size_t>(frame) * 2;
+                const auto inputFrame = frame >= limiterDelay
+                    ? frame - limiterDelay
+                    : 0;
+                const auto inputIndex = static_cast<std::size_t>(inputFrame) * 2;
+                inputSquareSum += input[inputIndex] * input[inputIndex];
+                outputSquareSum += output[outputIndex] * output[outputIndex];
+                outputPeak = std::max(outputPeak, std::abs(output[outputIndex]));
+            }
+
+            const auto measuredFrames = FrameCount - MeasurementStart;
+            const double inputRms = std::sqrt(inputSquareSum / measuredFrames);
+            const double outputRms = std::sqrt(outputSquareSum / measuredFrames);
+            const double loudnessErrorDb = 20.0 * std::log10(outputRms / inputRms);
+            NATIVE_REQUIRE(std::isfinite(loudnessErrorDb) &&
+						std::abs(loudnessErrorDb) <= 0.5,
+                    "adaptive limiter did not match output RMS to decoded input RMS");
+            NATIVE_REQUIRE(outputPeak <= 1.0f + 1.0e-6f,
+                    "adaptive limiter exceeded full scale");
+			if (equalizerGainDb == 24.0f)
+			{
+				NATIVE_REQUIRE(wholeStreamOutputPeak >= 0.99f,
+					"high-level EQ boost did not exercise the peak limiter");
+			}
+        }
+    }
+
+	void TestAdaptiveLimiterResetClearsLoudnessHistory()
+	{
+		constexpr std::uint32_t SampleRate = 48000;
+		constexpr std::uint32_t ChunkFrames = 256;
+		LimiterConfig limiter;
+		limiter.enabled = true;
+		limiter.ceiling = 1.0f;
+		limiter.match_input_loudness = true;
+
+		EqualizerDsp reused;
+		EqualizerDsp fresh;
+		NATIVE_REQUIRE(
+			reused.Prepare(SampleRate, 2, ChunkFrames, limiter) &&
+			fresh.Prepare(SampleRate, 2, ChunkFrames, limiter),
+			"adaptive limiter reset test could not prepare its DSP instances");
+
+		auto boostedConfig = MakeDefaultTenBandConfig();
+		boostedConfig.bands[5].gain_db = 24.0f;
+		const auto boostedSnapshot = CompileEqualizerSnapshot(
+			boostedConfig, SampleRate, 91);
+		const auto warmInput = StereoSine(
+			SampleRate, 1000.0f, 0.15f, SampleRate / 4);
+		std::vector<float> warmOutput(warmInput.size());
+		for (std::uint32_t offset = 0; offset < SampleRate / 4;
+			offset += ChunkFrames)
+		{
+			const auto frames = std::min(
+				ChunkFrames, SampleRate / 4 - offset);
+			NATIVE_REQUIRE(reused.Process(
+					boostedSnapshot,
+					warmInput.data() + static_cast<std::size_t>(offset) * 2,
+					warmOutput.data() + static_cast<std::size_t>(offset) * 2,
+					frames,
+					false),
+				"adaptive limiter warm-up failed");
+		}
+
+		auto cutConfig = MakeDefaultTenBandConfig();
+		cutConfig.bands[5].gain_db = -24.0f;
+		const auto resetSnapshot = CompileEqualizerSnapshot(
+			cutConfig, SampleRate, 92);
+		const auto resetInput = StereoSine(
+			SampleRate, 1000.0f, 0.15f, ChunkFrames);
+		std::vector<float> reusedOutput(resetInput.size());
+		std::vector<float> freshOutput(resetInput.size());
+		NATIVE_REQUIRE(
+			reused.Process(resetSnapshot, resetInput.data(), reusedOutput.data(),
+				ChunkFrames, false) &&
+			fresh.Process(resetSnapshot, resetInput.data(), freshOutput.data(),
+				ChunkFrames, false),
+			"adaptive limiter reset generation was rejected");
+		for (std::size_t index = 0; index < reusedOutput.size(); ++index)
+		{
+			RequireClose(
+				freshOutput[index], reusedOutput[index], 1.0e-6f,
+				"reset generation retained adaptive loudness history");
+		}
+	}
+
+	void TestAdaptiveLimiterMatchesStackedEqualizerBands()
+	{
+		constexpr std::uint32_t SampleRate = 48000;
+		constexpr std::uint32_t FrameCount = SampleRate;
+		constexpr std::uint32_t ChunkFrames = 256;
+		constexpr std::uint32_t MeasurementStart = SampleRate / 2;
+
+		for (const float bandGainDb : {24.0f, -24.0f})
+		{
+			auto config = MakeDefaultTenBandConfig();
+			for (auto& band : config.bands)
+				band.gain_db = bandGainDb;
+			const auto snapshot = CompileEqualizerSnapshot(
+				config, SampleRate, bandGainDb > 0.0f ? 93 : 94);
+
+			LimiterConfig limiter;
+			limiter.enabled = true;
+			limiter.ceiling = 1.0f;
+			limiter.match_input_loudness = true;
+			EqualizerDsp dsp;
+			NATIVE_REQUIRE(dsp.Prepare(
+					SampleRate, 2, ChunkFrames, limiter),
+				"stacked-EQ adaptive limiter could not be prepared");
+
+			const auto input = StereoSine(
+				SampleRate, 1000.0f, 0.01f, FrameCount);
+			std::vector<float> output(input.size());
+			for (std::uint32_t offset = 0; offset < FrameCount;
+				offset += ChunkFrames)
+			{
+				const auto frames = std::min(ChunkFrames, FrameCount - offset);
+				NATIVE_REQUIRE(dsp.Process(
+						snapshot,
+						input.data() + static_cast<std::size_t>(offset) * 2,
+						output.data() + static_cast<std::size_t>(offset) * 2,
+						frames,
+						false),
+					"stacked-EQ adaptive limiter rejected a PCM chunk");
+			}
+
+			double inputSquareSum = 0.0;
+			double outputSquareSum = 0.0;
+			float outputPeak = 0.0f;
+			const auto limiterDelay = dsp.GetLimiterDelayFrames();
+			for (std::uint32_t frame = MeasurementStart;
+				frame < FrameCount; ++frame)
+			{
+				const auto outputIndex = static_cast<std::size_t>(frame) * 2;
+				const auto inputIndex = static_cast<std::size_t>(
+					frame - limiterDelay) * 2;
+				inputSquareSum += input[inputIndex] * input[inputIndex];
+				outputSquareSum += output[outputIndex] * output[outputIndex];
+				outputPeak = std::max(outputPeak, std::abs(output[outputIndex]));
+			}
+			const double loudnessErrorDb = 10.0 * std::log10(
+				outputSquareSum / inputSquareSum);
+			NATIVE_REQUIRE(std::isfinite(loudnessErrorDb) &&
+					std::abs(loudnessErrorDb) <= 0.75,
+				std::format(
+					"adaptive limiter could not compensate stacked legal EQ bands: gain={} dB, error={} dB",
+					bandGainDb,
+					loudnessErrorDb));
+			NATIVE_REQUIRE(outputPeak <= 1.0f + 1.0e-6f,
+				"stacked-EQ adaptive limiter exceeded full scale");
+		}
+	}
+
     void TestNyquistAndConfiguredRates()
     {
         constexpr std::array<std::uint32_t, 9> SampleRates{
-            8'000, 11'025, 16'000, 22'050, 44'100,
-            48'000, 88'200, 96'000, 192'000
+            8000, 11025, 16000, 22050, 44100,
+            48000, 88200, 96000, 192000
         };
-        constexpr std::uint32_t FrameCount = 1'024;
+        constexpr std::uint32_t FrameCount = 1024;
 
         auto config = MakeDefaultTenBandConfig();
         for (auto& band : config.bands)
@@ -462,7 +1031,7 @@ namespace
                         "configured-rate coefficients must remain finite");
             }
 
-            if (sampleRate == 16'000)
+            if (sampleRate == 16000)
             {
                 const auto& coefficients = snapshot.bands[9];
                 NATIVE_REQUIRE(coefficients.b0 == 1.0f && coefficients.b1 == 0.0f &&
@@ -473,7 +1042,7 @@ namespace
                         "Nyquist-rejected 16 kHz band must not be enabled");
             }
 
-            const auto input = StereoSine(sampleRate, 1'000.0f, 0.1f, FrameCount);
+            const auto input = StereoSine(sampleRate, 1000.0f, 0.1f, FrameCount);
             std::vector<float> output(input.size());
             auto dsp = MakePreparedDsp(sampleRate, FrameCount);
             NATIVE_REQUIRE(dsp.Process(snapshot, input.data(), output.data(), FrameCount, false),
@@ -492,8 +1061,8 @@ namespace
             std::uint32_t delay_frames;
         };
         constexpr std::array<DelayCase, 2> Cases{{
-            {48'000, 239},
-            {44'100, 219}
+            {48000, 239},
+            {44100, 219}
         }};
 
         for (const auto& testCase : Cases)
@@ -529,7 +1098,7 @@ namespace
 
     void TestLimiterLinksStereoAtCeiling()
     {
-        constexpr std::uint32_t SampleRate = 48'000;
+        constexpr std::uint32_t SampleRate = 48000;
         constexpr std::uint32_t DelayFrames = 239;
         constexpr std::uint32_t FrameCount = DelayFrames + 1;
         std::vector<float> input(static_cast<std::size_t>(FrameCount) * 2, 0.0f);
@@ -551,7 +1120,7 @@ namespace
 
     void TestLimiterDoesNotApplyMakeupGain()
     {
-        constexpr std::uint32_t SampleRate = 48'000;
+        constexpr std::uint32_t SampleRate = 48000;
         constexpr std::uint32_t DelayFrames = 239;
         constexpr std::uint32_t MeasuredFrames = 32;
         constexpr std::uint32_t FrameCount = DelayFrames + MeasuredFrames;
@@ -575,9 +1144,9 @@ namespace
 
     void TestLimiterReleaseIsLinear()
     {
-        constexpr std::uint32_t SampleRate = 48'000;
+        constexpr std::uint32_t SampleRate = 48000;
         constexpr std::uint32_t DelayFrames = 239;
-        constexpr std::uint32_t ReleaseFrames = 2'400;
+        constexpr std::uint32_t ReleaseFrames = 2400;
         constexpr std::uint32_t FrameCount = DelayFrames + ReleaseFrames + 1;
         std::vector<float> input(static_cast<std::size_t>(FrameCount) * 2, 0.5f);
         std::vector<float> output(input.size(), 0.0f);
@@ -608,7 +1177,7 @@ namespace
 
     void TestLimiterSilentInputDrainsTail()
     {
-        constexpr std::uint32_t SampleRate = 48'000;
+        constexpr std::uint32_t SampleRate = 48000;
         constexpr std::uint32_t DelayFrames = 239;
         auto dsp = MakePreparedLimiter(SampleRate, DelayFrames);
         const auto snapshot = CompileEqualizerSnapshot(
@@ -640,7 +1209,7 @@ namespace
 
     void TestLimiterResetGenerationDropsTail()
     {
-        constexpr std::uint32_t SampleRate = 48'000;
+        constexpr std::uint32_t SampleRate = 48000;
         constexpr std::uint32_t DelayFrames = 239;
         auto dsp = MakePreparedLimiter(SampleRate, DelayFrames + 1);
         const auto firstSnapshot = CompileEqualizerSnapshot(
@@ -664,8 +1233,8 @@ namespace
 
     void TestLimiterIsChunkInvariant()
     {
-        constexpr std::uint32_t SampleRate = 48'000;
-        constexpr std::uint32_t FrameCount = 4'093;
+        constexpr std::uint32_t SampleRate = 48000;
+        constexpr std::uint32_t FrameCount = 4093;
         constexpr std::uint32_t ChunkFrames = 127;
         std::vector<float> input(static_cast<std::size_t>(FrameCount) * 2);
         for (std::uint32_t frame = 0; frame < FrameCount; ++frame)
@@ -704,7 +1273,7 @@ namespace
 
     void TestFapoFactoryAndRegistration()
     {
-        constexpr std::uint32_t SampleRate = 48'000;
+        constexpr std::uint32_t SampleRate = 48000;
         const auto snapshot = CompileEqualizerSnapshot(
             MakeDefaultTenBandConfig(), SampleRate, 20);
         LimiterConfig limiter;
@@ -736,7 +1305,7 @@ namespace
 
     void TestFapoAdvertisesExtensibleFormats()
     {
-        constexpr std::uint32_t SampleRate = 48'000;
+        constexpr std::uint32_t SampleRate = 48000;
         const auto snapshot = CompileEqualizerSnapshot(
             MakeDefaultTenBandConfig(), SampleRate, 29);
         auto effect = MakeFapo(snapshot, LimiterConfig{});
@@ -789,8 +1358,8 @@ namespace
 
     void TestFapoInPlaceMatchesOutOfPlace()
     {
-        constexpr std::uint32_t SampleRate = 48'000;
-        constexpr std::uint32_t FrameCount = 2'048;
+        constexpr std::uint32_t SampleRate = 48000;
+        constexpr std::uint32_t FrameCount = 2048;
         const auto initial = CompileEqualizerSnapshot(
             MakeDefaultTenBandConfig(), SampleRate, 21);
         auto config = MakeDefaultTenBandConfig();
@@ -811,7 +1380,7 @@ namespace
         NATIVE_REQUIRE(LockFapo(outOfPlaceEffect.get(), format, format, FrameCount) == FAUDIO_OK,
                 "out-of-place FAPO lock failed");
 
-        auto input = StereoSine(SampleRate, 1'000.0f, 0.1f, FrameCount);
+        auto input = StereoSine(SampleRate, 1000.0f, 0.1f, FrameCount);
         for (std::uint32_t frame = 0; frame < FrameCount; ++frame)
             input[static_cast<std::size_t>(frame) * 2 + 1] +=
                 0.03f * std::cos(0.11f * frame);
@@ -847,7 +1416,7 @@ namespace
 
     void TestFapoDisabledValidPassThrough()
     {
-        constexpr std::uint32_t SampleRate = 48'000;
+        constexpr std::uint32_t SampleRate = 48000;
         constexpr std::uint32_t FrameCount = 257;
         auto config = MakeDefaultTenBandConfig();
         config.bands[5].gain_db = 9.0f;
@@ -858,6 +1427,14 @@ namespace
                 "disabled pass-through FAPO lock failed");
 
         auto input = StereoSine(SampleRate, 777.0f, 0.37f, FrameCount);
+		std::vector<float> warmOutput(input.size(), 0.0f);
+		const auto warmResult = ProcessFapo(
+			effect.get(), input.data(), FAPO_BUFFER_VALID,
+			warmOutput.data(), FrameCount, true);
+		NATIVE_REQUIRE(warmResult.ValidFrameCount == FrameCount &&
+				MusicPlayerLibrary::AudioDsp::EqualizerFapoHasTail(effect.get()),
+			"enabled FAPO did not establish state before its disable transition");
+
         std::vector<float> output(
             input.size(), std::numeric_limits<float>::quiet_NaN());
         const auto result = ProcessFapo(
@@ -868,12 +1445,23 @@ namespace
                 "disabled pass-through did not preserve valid metadata");
         NATIVE_REQUIRE(output == input,
                 "disabled out-of-place FAPO was not an exact pass-through");
+
+		std::vector<float> resetOutput(input.size(), 1.0f);
+		const auto resetResult = ProcessFapo(
+			effect.get(), nullptr, FAPO_BUFFER_SILENT,
+			resetOutput.data(), FrameCount, true);
+		NATIVE_REQUIRE(resetResult.BufferFlags == FAPO_BUFFER_SILENT &&
+				std::all_of(
+					resetOutput.begin(), resetOutput.end(),
+					[](const float sample) { return sample == 0.0f; }) &&
+				!MusicPlayerLibrary::AudioDsp::EqualizerFapoHasTail(effect.get()),
+			"re-enabled FAPO replayed DSP state retained across disable");
         effect->UnlockForProcess(effect.get());
     }
 
     void TestFapoRejectsUnsafeProcessBuffers()
     {
-        constexpr std::uint32_t SampleRate = 48'000;
+        constexpr std::uint32_t SampleRate = 48000;
         constexpr std::uint32_t LockedFrameCount = 1;
         const auto snapshot = CompileEqualizerSnapshot(
             MakeDefaultTenBandConfig(), SampleRate, 30);
@@ -925,7 +1513,7 @@ namespace
 
     void TestFapoSilentInputNeverReadsBuffer()
     {
-        constexpr std::uint32_t SampleRate = 48'000;
+        constexpr std::uint32_t SampleRate = 48000;
         constexpr std::uint32_t FrameCount = 127;
         auto config = MakeDefaultTenBandConfig();
         config.bands[5].gain_db = 6.0f;
@@ -960,8 +1548,8 @@ namespace
 
     void TestFapoRejectsInvalidParameterBlocks()
     {
-        constexpr std::uint32_t SampleRate = 48'000;
-        constexpr std::uint32_t FrameCount = 1'024;
+        constexpr std::uint32_t SampleRate = 48000;
+        constexpr std::uint32_t FrameCount = 1024;
         const auto initial = CompileEqualizerSnapshot(
             MakeDefaultTenBandConfig(), SampleRate, 25);
         auto config = MakeDefaultTenBandConfig();
@@ -970,7 +1558,7 @@ namespace
         LimiterConfig limiter;
         limiter.enabled = false;
         const auto format = MakeFloatFormat(SampleRate);
-        const auto input = StereoSine(SampleRate, 1'000.0f, 0.1f, FrameCount);
+        const auto input = StereoSine(SampleRate, 1000.0f, 0.1f, FrameCount);
 
         const auto verifyRejected = [&](EqualizerDspSnapshot update,
                                         std::uint32_t byteCount,
@@ -1007,7 +1595,7 @@ namespace
 
     void TestFapoGetParametersValidatesDestination()
     {
-        constexpr std::uint32_t SampleRate = 48'000;
+        constexpr std::uint32_t SampleRate = 48000;
         constexpr std::uint8_t Sentinel = 0xa5;
         const auto initial = CompileEqualizerSnapshot(
             MakeDefaultTenBandConfig(), SampleRate, 31);
@@ -1046,7 +1634,7 @@ namespace
 
     void TestFapoLockRejectsInvalidFormats()
     {
-        constexpr std::uint32_t SampleRate = 48'000;
+        constexpr std::uint32_t SampleRate = 48000;
         const auto snapshot = CompileEqualizerSnapshot(
             MakeDefaultTenBandConfig(), SampleRate, 27);
         auto effect = MakeFapo(snapshot, LimiterConfig{});
@@ -1077,9 +1665,9 @@ namespace
                 "FAPO accepted a non-float32 extensible format");
 
         auto mismatchedRate = valid;
-        mismatchedRate.Format.nSamplesPerSec = 44'100;
+        mismatchedRate.Format.nSamplesPerSec = 44100;
         mismatchedRate.Format.nAvgBytesPerSec =
-            mismatchedRate.Format.nBlockAlign * 44'100;
+            mismatchedRate.Format.nBlockAlign * 44100;
         NATIVE_REQUIRE(LockFapo(effect.get(), valid, mismatchedRate) != FAUDIO_OK,
                 "FAPO accepted mismatched sample rates");
 
@@ -1097,7 +1685,7 @@ namespace
 
     void TestFapoSilentInputDrainsTail()
     {
-        constexpr std::uint32_t SampleRate = 48'000;
+        constexpr std::uint32_t SampleRate = 48000;
         constexpr std::uint32_t DelayFrames = 239;
         const auto snapshot = CompileEqualizerSnapshot(
             MakeDefaultTenBandConfig(), SampleRate, 28);
@@ -1144,6 +1732,62 @@ namespace
         effect->UnlockForProcess(effect.get());
     }
 
+    void TestFapoValidZeroBlocksDrainUntilReportedTailEnds()
+    {
+        constexpr std::uint32_t SampleRate = 48000;
+        constexpr std::uint32_t ChunkFrames = 256;
+        constexpr std::uint32_t OldFixedDrainFrames = SampleRate * 55 / 1000;
+        constexpr std::uint32_t SafetyLimitFrames = SampleRate * 3;
+
+        auto config = MakeDefaultTenBandConfig();
+        // Exercise the slowest production EQ band at its public gain limit.
+        // Q remains the shipping default because callers cannot change it.
+        config.bands[0].gain_db = 24.0f;
+        const auto snapshot = CompileEqualizerSnapshot(
+            config, SampleRate, 38);
+        LimiterConfig limiter;
+        limiter.enabled = false;
+        auto effect = MakeFapo(snapshot, limiter);
+        const auto format = MakeFloatFormat(SampleRate);
+        NATIVE_REQUIRE(
+            LockFapo(effect.get(), format, format, ChunkFrames) == FAUDIO_OK,
+            "valid-zero tail-drain FAPO lock failed");
+
+        std::array<float, 2> impulse{0.5f, 0.5f};
+        std::array<float, 2> impulseOutput{};
+        const auto initialSequence = EqualizerFapoProcessSequence(effect.get());
+        (void)ProcessFapo(
+            effect.get(), impulse.data(), FAPO_BUFFER_VALID,
+            impulseOutput.data(), 1, true);
+        NATIVE_REQUIRE(
+            EqualizerFapoProcessSequence(effect.get()) == initialSequence + 1,
+            "FAPO process sequence did not publish the impulse pass");
+        NATIVE_REQUIRE(EqualizerFapoHasTail(effect.get()),
+            "FAPO helper did not publish the equalizer tail");
+
+        std::vector<float> zeros(static_cast<std::size_t>(ChunkFrames) * 2, 0.0f);
+        std::vector<float> output(zeros.size());
+        std::uint32_t drainedFrames = 0;
+        while (EqualizerFapoHasTail(effect.get()) &&
+               drainedFrames < SafetyLimitFrames)
+        {
+            const auto before = EqualizerFapoProcessSequence(effect.get());
+            (void)ProcessFapo(
+                effect.get(), zeros.data(), FAPO_BUFFER_VALID,
+                output.data(), ChunkFrames, true);
+            NATIVE_REQUIRE(
+                EqualizerFapoProcessSequence(effect.get()) == before + 1,
+                "FAPO process sequence did not publish a zero-drain pass");
+            drainedFrames += ChunkFrames;
+        }
+
+        NATIVE_REQUIRE(!EqualizerFapoHasTail(effect.get()),
+            "valid zero blocks did not fully drain the reported DSP tail");
+        NATIVE_REQUIRE(drainedFrames > OldFixedDrainFrames,
+            "tail regression fixture no longer exceeds the removed 55 ms heuristic");
+        effect->UnlockForProcess(effect.get());
+    }
+
     void TestAudioPipelineBufferingProfiles()
     {
         const auto fast = SelectAudioPipelineBufferingProfile(15.0);
@@ -1179,7 +1823,7 @@ namespace
 
     void TestAudioOutputFormatMappings()
     {
-        const auto systemFormat = MakeFloatFormat(48'000, 2);
+        const auto systemFormat = MakeFloatFormat(48000, 2);
         struct Mapping
         {
             MusicPlayerLibrary::AudioChannelMode mode;
@@ -1197,12 +1841,12 @@ namespace
         for (const auto& mapping : mappings)
         {
             MusicPlayerLibrary::AudioOutputFormat requested{};
-            requested.requested_sample_rate = 96'000;
+            requested.requested_sample_rate = 96000;
             requested.requested_channel_mode = mapping.mode;
             requested.requested_bit_depth = MusicPlayerLibrary::AudioBitDepth::Bit16;
             const auto resolved = MusicPlayerLibrary::ResolveAudioOutputFormat(
                 requested, systemFormat);
-            NATIVE_REQUIRE(resolved.sample_rate == 96'000,
+            NATIVE_REQUIRE(resolved.sample_rate == 96000,
                     "explicit output sample rate was not retained");
             NATIVE_REQUIRE(resolved.channel_count == mapping.channels &&
                     resolved.channel_mask == mapping.mask &&
@@ -1219,11 +1863,167 @@ namespace
         floatRequest.requested_bit_depth = MusicPlayerLibrary::AudioBitDepth::Bit32;
         const auto floatResolved = MusicPlayerLibrary::ResolveAudioOutputFormat(
             floatRequest, systemFormat);
-        NATIVE_REQUIRE(floatResolved.sample_rate == 48'000 &&
+        NATIVE_REQUIRE(floatResolved.sample_rate == 48000 &&
                 floatResolved.sample_format == AV_SAMPLE_FMT_FLT &&
                 floatResolved.wave_format.Format.wBitsPerSample == 32 &&
                 floatResolved.wave_format.Format.nBlockAlign == 8,
                 "32-bit float output format was not resolved consistently");
+    }
+
+    void TestSinkPreGainIsAppliedInsideDsp()
+    {
+        constexpr std::uint32_t SampleRate = 48000;
+		constexpr std::uint32_t FrameCount = 4096;
+        constexpr float PreGain = 0.70f;
+
+        const auto input = StereoSine(SampleRate, 777.0f, 0.35f, FrameCount);
+        std::vector<float> output(input.size());
+        auto dsp = MakePreparedDsp(SampleRate, FrameCount);
+        const auto snapshot = CompileEqualizerSnapshot(
+            MakeDefaultTenBandConfig(), SampleRate, 2, PreGain);
+
+        NATIVE_REQUIRE(dsp.Process(
+                    snapshot, input.data(), output.data(), FrameCount, false),
+                "sink pre-gain snapshot was rejected");
+        for (std::size_t index = 0; index < input.size(); ++index)
+        {
+            RequireClose(
+                input[index] * PreGain,
+                output[index],
+                1.0e-6f,
+                "sink pre-gain was not applied before the DSP output");
+        }
+    }
+
+    void TestBitPerfectFormatHandshakeRequiresExactPackedPcm()
+    {
+        const auto output = MakeResolvedOutputFormat(
+            MusicPlayerLibrary::AudioChannelMode::Stereo,
+            MusicPlayerLibrary::AudioBitDepth::Bit16,
+            48000);
+        const DecodedAudioFormat matching{
+            .sample_rate = 48000,
+            .channel_count = 2,
+            .channel_mask = SPEAKER_STEREO,
+            .bit_depth = 16,
+            .sample_format = AV_SAMPLE_FMT_S16
+        };
+        NATIVE_REQUIRE(MusicPlayerLibrary::AreAudioFormatsBitPerfect(
+                    matching, output),
+                "an exact packed decoded/output format did not bypass normalization");
+
+		const auto pcm24Output = MakeResolvedOutputFormat(
+			MusicPlayerLibrary::AudioChannelMode::Stereo,
+			MusicPlayerLibrary::AudioBitDepth::Bit24,
+			48000);
+		const DecodedAudioFormat matchingPcm24{
+			.sample_rate = 48000,
+			.channel_count = 2,
+			.channel_mask = SPEAKER_STEREO,
+			.bit_depth = 24,
+			.sample_format = AV_SAMPLE_FMT_S32
+		};
+		NATIVE_REQUIRE(MusicPlayerLibrary::AreAudioFormatsBitPerfect(
+				matchingPcm24, pcm24Output),
+			"packed PCM24-in-S32 did not satisfy its exact sink contract");
+
+		const auto floatOutput = MakeResolvedOutputFormat(
+			MusicPlayerLibrary::AudioChannelMode::Stereo,
+			MusicPlayerLibrary::AudioBitDepth::Bit32,
+			48000);
+		const DecodedAudioFormat matchingFloat{
+			.sample_rate = 48000,
+			.channel_count = 2,
+			.channel_mask = SPEAKER_STEREO,
+			.bit_depth = 32,
+			.sample_format = AV_SAMPLE_FMT_FLT
+		};
+		NATIVE_REQUIRE(MusicPlayerLibrary::AreAudioFormatsBitPerfect(
+				matchingFloat, floatOutput),
+			"packed float32 did not satisfy its exact sink contract");
+
+        auto mismatch = matching;
+        mismatch.sample_rate = 44100;
+        NATIVE_REQUIRE(!MusicPlayerLibrary::AreAudioFormatsBitPerfect(
+                    mismatch, output),
+                "a sample-rate conversion was marked bit-perfect");
+        mismatch = matching;
+        mismatch.channel_count = 1;
+        NATIVE_REQUIRE(!MusicPlayerLibrary::AreAudioFormatsBitPerfect(
+                    mismatch, output),
+                "a channel-count conversion was marked bit-perfect");
+        mismatch = matching;
+        mismatch.channel_mask = SPEAKER_MONO;
+        NATIVE_REQUIRE(!MusicPlayerLibrary::AreAudioFormatsBitPerfect(
+                    mismatch, output),
+                "a channel-layout conversion was marked bit-perfect");
+        mismatch = matching;
+        mismatch.bit_depth = 24;
+        NATIVE_REQUIRE(!MusicPlayerLibrary::AreAudioFormatsBitPerfect(
+                    mismatch, output),
+                "a valid-bit-depth conversion was marked bit-perfect");
+        mismatch = matching;
+        mismatch.sample_format = AV_SAMPLE_FMT_S16P;
+        NATIVE_REQUIRE(!MusicPlayerLibrary::AreAudioFormatsBitPerfect(
+                    mismatch, output),
+                "planar PCM was marked as a byte-for-byte sink match");
+        mismatch = matching;
+        mismatch.channel_mask = 0;
+        NATIVE_REQUIRE(!MusicPlayerLibrary::AreAudioFormatsBitPerfect(
+                    mismatch, output),
+                "an unknown source layout was marked bit-perfect");
+
+        auto malformedOutput = output;
+        malformedOutput.wave_format.Format.nBlockAlign = 8;
+        NATIVE_REQUIRE(!MusicPlayerLibrary::AreAudioFormatsBitPerfect(
+                    matching, malformedOutput),
+                "a mismatched sink frame size was marked bit-perfect");
+		malformedOutput = output;
+		malformedOutput.wave_format.Format.nSamplesPerSec = 44100;
+		NATIVE_REQUIRE(!MusicPlayerLibrary::AreAudioFormatsBitPerfect(
+				matching, malformedOutput),
+			"inconsistent sink WAVE sample rate was marked bit-perfect");
+		malformedOutput = output;
+		malformedOutput.wave_format.Format.nChannels = 1;
+		NATIVE_REQUIRE(!MusicPlayerLibrary::AreAudioFormatsBitPerfect(
+				matching, malformedOutput),
+			"inconsistent sink WAVE channel count was marked bit-perfect");
+		malformedOutput = output;
+		malformedOutput.wave_format.dwChannelMask = SPEAKER_MONO;
+		NATIVE_REQUIRE(!MusicPlayerLibrary::AreAudioFormatsBitPerfect(
+				matching, malformedOutput),
+			"inconsistent sink WAVE channel mask was marked bit-perfect");
+		malformedOutput = output;
+		malformedOutput.wave_format.SubFormat = IeeeFloatSubFormat;
+		NATIVE_REQUIRE(!MusicPlayerLibrary::AreAudioFormatsBitPerfect(
+				matching, malformedOutput),
+			"inconsistent sink WAVE subformat was marked bit-perfect");
+		malformedOutput = output;
+		++malformedOutput.wave_format.Format.nAvgBytesPerSec;
+		NATIVE_REQUIRE(!MusicPlayerLibrary::AreAudioFormatsBitPerfect(
+				matching, malformedOutput),
+			"inconsistent sink WAVE byte rate was marked bit-perfect");
+		malformedOutput = output;
+		++malformedOutput.wave_format.Format.cbSize;
+		NATIVE_REQUIRE(!MusicPlayerLibrary::AreAudioFormatsBitPerfect(
+				matching, malformedOutput),
+			"noncanonical WAVE extensible size was marked bit-perfect");
+		malformedOutput = output;
+		malformedOutput.bit_depth = MusicPlayerLibrary::AudioBitDepth::Bit24;
+		malformedOutput.wave_format.Samples.wValidBitsPerSample = 24;
+		auto malformedInput = matching;
+		malformedInput.bit_depth = 24;
+		NATIVE_REQUIRE(!MusicPlayerLibrary::AreAudioFormatsBitPerfect(
+				malformedInput, malformedOutput),
+			"valid bits wider than the PCM container were marked bit-perfect");
+		malformedOutput = output;
+		malformedOutput.channel_mask = SPEAKER_MONO;
+		malformedOutput.wave_format.dwChannelMask = SPEAKER_MONO;
+		malformedInput = matching;
+		malformedInput.channel_mask = SPEAKER_MONO;
+		NATIVE_REQUIRE(!MusicPlayerLibrary::AreAudioFormatsBitPerfect(
+				malformedInput, malformedOutput),
+			"a channel mask with the wrong speaker count was marked bit-perfect");
     }
 
     void TestRawAudioFormatInfoMappings()
@@ -1254,7 +2054,7 @@ namespace
         for (const auto& mapping : mappings)
         {
             MusicPlayerLibrary::AudioOutputFormat requested{};
-            requested.requested_sample_rate = 96'000;
+            requested.requested_sample_rate = 96000;
             requested.requested_channel_mode = mapping.mode;
             requested.requested_bit_depth =
                 MusicPlayerLibrary::AudioBitDepth::Bit24;
@@ -1262,7 +2062,7 @@ namespace
                 requested, MakeFloatFormat());
             const auto info = MusicPlayerLibrary::GetAudioFormatInfo(resolved);
             NATIVE_REQUIRE(info.channel_type_id == mapping.expectedChannelTypeId &&
-                        info.sample_rate == 96'000 && info.bit_depth == 24,
+                        info.sample_rate == 96000 && info.bit_depth == 24,
                     "resolved output was not converted to raw format metadata");
         }
 
@@ -1285,34 +2085,34 @@ namespace
     {
         const double bitrate =
             MusicPlayerLibrary::CalculateAudioBitrateKBytesPerSecond(
-                32'000, 2.0);
+                32000, 2.0);
         NATIVE_REQUIRE(std::abs(bitrate - 16.0) < 1.0e-9,
                 "128 kbit/s did not resolve to 16 KByte/s");
         NATIVE_REQUIRE(MusicPlayerLibrary::CalculateAudioBitrateKBytesPerSecond(
-                    256'000, 0.0) == 0.0 &&
+                    256000, 0.0) == 0.0 &&
                     MusicPlayerLibrary::CalculateAudioBitrateKBytesPerSecond(
                     0, 2.0) == 0.0,
                 "audio bitrate accepted an incomplete observation");
         NATIVE_REQUIRE(MusicPlayerLibrary::CalculateAudioBitrateKBytesPerSecond(
-                    256'000, std::numeric_limits<double>::infinity()) == 0.0,
+                    256000, std::numeric_limits<double>::infinity()) == 0.0,
                 "audio bitrate accepted a non-finite duration");
 
         MusicPlayerLibrary::AudioBitrateTracker tracker;
         NATIVE_REQUIRE(tracker.GetKBytesPerSecond() == 0.0,
                 "audio bitrate tracker did not start empty");
-        tracker.ObserveEncodedBytes(16'000);
-        tracker.ObserveDecodedSamples(12'000, 48'000);
-        tracker.ObserveDecodedSamples(12'000, 48'000);
+        tracker.ObserveEncodedBytes(16000);
+        tracker.ObserveDecodedSamples(12000, 48000);
+        tracker.ObserveDecodedSamples(12000, 48000);
         NATIVE_REQUIRE(std::abs(tracker.GetKBytesPerSecond() - 32.0) < 1.0e-9,
                 "audio bitrate tracker did not combine multiple decoded frames");
 
-        tracker.ObserveEncodedBytes(48'000);
-        tracker.ObserveDecodedSamples(24'000, 48'000);
+        tracker.ObserveEncodedBytes(48000);
+        tracker.ObserveDecodedSamples(24000, 48000);
         NATIVE_REQUIRE(std::abs(tracker.GetKBytesPerSecond() - 64.0) < 1.0e-9,
                 "audio bitrate tracker did not compute a VBR weighted average");
 
         tracker.ObserveEncodedBytes(0);
-        tracker.ObserveDecodedSamples(1'024, 0);
+        tracker.ObserveDecodedSamples(1024, 0);
         NATIVE_REQUIRE(std::abs(tracker.GetKBytesPerSecond() - 64.0) < 1.0e-9,
                 "audio bitrate tracker accepted an invalid observation");
         tracker.Reset();
@@ -1324,39 +2124,39 @@ namespace
     {
         const double thresholdBitrate =
             MusicPlayerLibrary::CalculateAverageAudioBitrateBitsPerSecond(
-                20'000'000, 200.0);
-        NATIVE_REQUIRE(std::abs(thresholdBitrate - 800'000.0) < 1.0e-9,
+                20000000, 200.0);
+        NATIVE_REQUIRE(std::abs(thresholdBitrate - 800000.0) < 1.0e-9,
                 "whole-stream average bitrate was calculated incorrectly");
         NATIVE_REQUIRE(!MusicPlayerLibrary::IsLoselessAudio(thresholdBitrate),
                 "exactly 800 kbit/s was classified as loseless audio");
 
         const double aboveThresholdBitrate =
             MusicPlayerLibrary::CalculateAverageAudioBitrateBitsPerSecond(
-                25'000'000, 200.0);
+                25000000, 200.0);
         NATIVE_REQUIRE(MusicPlayerLibrary::IsLoselessAudio(aboveThresholdBitrate),
                 "audio above 800 kbit/s was not classified as loseless");
         NATIVE_REQUIRE(!MusicPlayerLibrary::IsLoselessAudio(
                     MusicPlayerLibrary::CalculateAverageAudioBitrateBitsPerSecond(
-                        25'000'000, 0.0)),
+                        25000000, 0.0)),
                 "audio with an unknown duration was classified as loseless");
         NATIVE_REQUIRE(MusicPlayerLibrary::CalculateAverageAudioBitrateBitsPerSecond(
-                    25'000'000, -1.0) == 0.0 &&
+                    25000000, -1.0) == 0.0 &&
                     MusicPlayerLibrary::CalculateAverageAudioBitrateBitsPerSecond(
-                    25'000'000, std::numeric_limits<double>::quiet_NaN()) == 0.0 &&
+                    25000000, std::numeric_limits<double>::quiet_NaN()) == 0.0 &&
                     !MusicPlayerLibrary::IsLoselessAudio(
                         std::numeric_limits<double>::infinity()),
                 "invalid average bitrate inputs were accepted");
 
-        NATIVE_REQUIRE(!MusicPlayerLibrary::IsHiResAudio(48'000) &&
-                    MusicPlayerLibrary::IsHiResAudio(48'001) &&
-                    MusicPlayerLibrary::IsHiResAudio(96'000),
+        NATIVE_REQUIRE(!MusicPlayerLibrary::IsHiResAudio(48000) &&
+                    MusicPlayerLibrary::IsHiResAudio(48001) &&
+                    MusicPlayerLibrary::IsHiResAudio(96000),
                 "Hi-Res sample-rate threshold was applied incorrectly");
     }
 
     void TestExplicit24BitAudioOutputFormatMapping()
     {
         MusicPlayerLibrary::AudioOutputFormat requested{};
-        requested.requested_sample_rate = 96'000;
+        requested.requested_sample_rate = 96000;
         requested.requested_channel_mode =
             MusicPlayerLibrary::AudioChannelMode::Stereo;
         requested.requested_bit_depth = MusicPlayerLibrary::AudioBitDepth::Bit24;
@@ -1364,7 +2164,7 @@ namespace
             requested, MakeFloatFormat());
         const auto& waveFormat = resolved.wave_format;
 
-        NATIVE_REQUIRE(resolved.sample_rate == 96'000 &&
+        NATIVE_REQUIRE(resolved.sample_rate == 96000 &&
                     resolved.channel_count == 2 &&
                     resolved.bit_depth == MusicPlayerLibrary::AudioBitDepth::Bit24,
                 "explicit 24-bit output request was not retained");
@@ -1381,11 +2181,11 @@ namespace
 
     void TestSystemAudioOutputFormatMapping()
     {
-        auto systemFormat = MakeFloatFormat(44'100, 6);
+        auto systemFormat = MakeFloatFormat(44100, 6);
         systemFormat.dwChannelMask = SPEAKER_5POINT1_SURROUND;
         const auto resolved = MusicPlayerLibrary::ResolveAudioOutputFormat(
             MusicPlayerLibrary::AudioOutputFormat{}, systemFormat);
-        NATIVE_REQUIRE(resolved.sample_rate == 44'100 &&
+        NATIVE_REQUIRE(resolved.sample_rate == 44100 &&
                 resolved.channel_count == 6 &&
                 resolved.channel_mask == SPEAKER_5POINT1_SURROUND &&
                 resolved.ffmpeg_channel_layout == "5.1(side)",
@@ -1395,7 +2195,7 @@ namespace
                 "System bit depth did not use the float device format");
         const auto resolvedInfo = MusicPlayerLibrary::GetAudioFormatInfo(resolved);
         NATIVE_REQUIRE(resolvedInfo.channel_type_id == 3 &&
-                    resolvedInfo.sample_rate == 44'100 &&
+                    resolvedInfo.sample_rate == 44100 &&
                     resolvedInfo.bit_depth == 32,
                 "System request did not report the resolved device metadata");
 
@@ -1418,12 +2218,12 @@ namespace
         for (const auto containerBits : SystemContainerBits)
         {
             const auto systemFormat = MakePcm24Format(
-                88'200, 2, containerBits);
+                88200, 2, containerBits);
             const auto resolved = MusicPlayerLibrary::ResolveAudioOutputFormat(
                 MusicPlayerLibrary::AudioOutputFormat{}, systemFormat);
             const auto& waveFormat = resolved.wave_format;
 
-            NATIVE_REQUIRE(resolved.sample_rate == 88'200 &&
+            NATIVE_REQUIRE(resolved.sample_rate == 88200 &&
                         resolved.channel_count == 2 &&
                         resolved.bit_depth == MusicPlayerLibrary::AudioBitDepth::Bit24,
                     "System PCM24 format was not detected from its valid bits");
@@ -1459,7 +2259,7 @@ namespace
             for (const auto bitDepth : bitDepths)
             {
                 MusicPlayerLibrary::AudioOutputFormat requested{};
-                requested.requested_sample_rate = 48'000;
+                requested.requested_sample_rate = 48000;
                 requested.requested_channel_mode = channelMode;
                 requested.requested_bit_depth = bitDepth;
                 const auto output = MusicPlayerLibrary::ResolveAudioOutputFormat(
@@ -1534,21 +2334,21 @@ namespace
                     monoPcm[2] == monoPcm[3] && monoPcm[2] < 0,
                 "mono FFT conversion did not produce matching stereo channels");
 
-        constexpr int InputFrames = 1'024;
+        constexpr int InputFrames = 1024;
         std::vector<float> stereo(static_cast<std::size_t>(InputFrames) * 2);
         for (int frame = 0; frame < InputFrames; ++frame)
         {
             stereo[static_cast<std::size_t>(frame) * 2] =
                 0.5f * std::sin(2.0f * std::numbers::pi_v<float> * 440.0f *
-                                static_cast<float>(frame) / 44'100.0f);
+                                static_cast<float>(frame) / 44100.0f);
             stereo[static_cast<std::size_t>(frame) * 2 + 1] =
                 0.25f * std::cos(2.0f * std::numbers::pi_v<float> * 880.0f *
-                                 static_cast<float>(frame) / 44'100.0f);
+                                 static_cast<float>(frame) / 44100.0f);
         }
         const auto stereoFormat = MakeResolvedOutputFormat(
             MusicPlayerLibrary::AudioChannelMode::Stereo,
             MusicPlayerLibrary::AudioBitDepth::Bit32,
-            44'100);
+            44100);
         MusicPlayerLibrary::FFTExecuter stereoExecutor(stereoFormat);
         const auto stereoResult = stereoExecutor.ResampleToFftFormat(
             reinterpret_cast<const std::uint8_t*>(stereo.data()), InputFrames);
@@ -1568,7 +2368,7 @@ namespace
         const auto format = MakeResolvedOutputFormat(
             MusicPlayerLibrary::AudioChannelMode::Stereo,
             MusicPlayerLibrary::AudioBitDepth::Bit24,
-            48'000);
+            48000);
         RequirePackedFrameLayoutMatchesFaudio(format, FrameCount);
 
         const std::array<std::int32_t, FrameCount * 2> input{
@@ -1647,12 +2447,12 @@ namespace
         const auto format = MakeResolvedOutputFormat(
             MusicPlayerLibrary::AudioChannelMode::Stereo,
             MusicPlayerLibrary::AudioBitDepth::Bit16,
-            48'000);
+            48000);
         FFTExecuterProbe executor(format);
 
-        NATIVE_REQUIRE(executor.FrameCount() == 2'048,
+        NATIVE_REQUIRE(executor.FrameCount() == 2048,
                 "legacy FFT frame size is no longer fixed at 2048");
-        NATIVE_REQUIRE(executor.SampleRate() == 48'000,
+        NATIVE_REQUIRE(executor.SampleRate() == 48000,
                 "legacy FFT sample rate is no longer fixed at 48 kHz");
 
         constexpr std::array<std::size_t, 33> ExpectedBoundaries{
@@ -1667,7 +2467,7 @@ namespace
                                ExpectedBoundaries.begin()),
                 "legacy logarithmic FFT band boundaries changed");
 
-        std::vector<std::int16_t> fullScalePcm(executor.FrameCount() * 2, 32'767);
+        std::vector<std::int16_t> fullScalePcm(executor.FrameCount() * 2, 32767);
         std::vector<std::uint8_t> fullScaleBytes(executor.FrameByteCount());
         std::memcpy(
             fullScaleBytes.data(), fullScalePcm.data(), fullScaleBytes.size());
@@ -1698,7 +2498,7 @@ namespace
                         static_cast<double>(executor.FrameCount()));
                 }
                 const auto quantized = static_cast<std::int16_t>(
-                    std::lround(std::clamp(sample, -1.0, 1.0) * 32'767.0));
+                    std::lround(std::clamp(sample, -1.0, 1.0) * 32767.0));
                 pcm[frame * 2] = quantized;
                 pcm[frame * 2 + 1] = quantized;
             }
@@ -1725,12 +2525,531 @@ namespace
                 "legacy FFT bands no longer use peak-bin aggregation");
     }
 
+	void TestFftTimelineFollowsPresentationCursor()
+	{
+		constexpr int SampleRate = 48000;
+		constexpr int TotalFrames = 8192;
+		constexpr int ToneChangeFrame = 4096;
+		constexpr int LowBin = 20;
+		constexpr int HighBin = 300;
+		constexpr int FftFrames = 2048;
+		constexpr int HopFrames = 768;
+		constexpr int FirstAllHighWindowEnd = FftFrames + 6 * HopFrames;
+		const auto format = MakeResolvedOutputFormat(
+			MusicPlayerLibrary::AudioChannelMode::Stereo,
+			MusicPlayerLibrary::AudioBitDepth::Bit16,
+			SampleRate);
+
+		std::vector<std::int16_t> pcm(static_cast<std::size_t>(TotalFrames) * 2);
+		for (int frame = 0; frame < TotalFrames; ++frame)
+		{
+			const int bin = frame < ToneChangeFrame ? LowBin : HighBin;
+			const double sample = 0.25 * std::sin(
+				2.0 * std::numbers::pi * static_cast<double>(bin) *
+				static_cast<double>(frame) / FftFrames);
+			const auto quantized = static_cast<std::int16_t>(
+				std::lround(sample * 32767.0));
+			pcm[static_cast<std::size_t>(frame) * 2] = quantized;
+			pcm[static_cast<std::size_t>(frame) * 2 + 1] = quantized;
+		}
+
+		FFTExecuterProbe burst(format);
+		burst.AddTimelineSamples(
+			reinterpret_cast<const std::uint8_t*>(pcm.data()),
+			TotalFrames,
+			0.0);
+
+		FFTExecuterProbe chunked(format);
+		constexpr int ChunkFrames = 256;
+		for (int offset = 0; offset < TotalFrames; offset += ChunkFrames)
+		{
+			const int frameCount = (std::min)(ChunkFrames, TotalFrames - offset);
+			chunked.AddTimelineSamples(
+				reinterpret_cast<const std::uint8_t*>(
+					pcm.data() + static_cast<std::size_t>(offset) * 2),
+				frameCount,
+				static_cast<double>(offset) / SampleRate);
+		}
+
+		auto copyAt = [](FFTExecuterProbe& executor, const int frame)
+		{
+			std::vector<float> result(32, -1.0f);
+			const int copied = executor.CopyAudioFFTDataAt(
+				result.data(), static_cast<int>(result.size()),
+				static_cast<double>(frame) / SampleRate);
+			result.resize(copied > 0 ? static_cast<std::size_t>(copied) : 0);
+			return result;
+		};
+
+		NATIVE_REQUIRE(copyAt(burst, FftFrames - 1).empty(),
+			"FFT exposed a future window before the presentation cursor reached it");
+		const auto burstLow = copyAt(burst, FftFrames);
+		const auto chunkedLow = copyAt(chunked, FftFrames);
+		const auto burstBetweenWindows = copyAt(
+			burst, FftFrames + HopFrames - 1);
+		const auto burstHigh = copyAt(burst, FirstAllHighWindowEnd);
+		const auto chunkedHigh = copyAt(chunked, FirstAllHighWindowEnd);
+
+		NATIVE_REQUIRE(burstLow.size() == 32 && chunkedLow.size() == 32 &&
+			burstBetweenWindows.size() == 32 &&
+			burstHigh.size() == 32 && chunkedHigh.size() == 32,
+			"timestamped FFT timeline did not return complete spectra");
+		for (std::size_t band = 0; band < burstLow.size(); ++band)
+		{
+			RequireClose(burstLow[band], chunkedLow[band], 1.0e-6f,
+				"prefetch burst changed the low-frequency spectrum at a fixed cursor");
+			RequireClose(burstLow[band], burstBetweenWindows[band], 1.0e-6f,
+				"cursor between FFT timestamps selected a future spectrum");
+			RequireClose(burstHigh[band], chunkedHigh[band], 1.0e-6f,
+				"PCM chunking changed the high-frequency spectrum at a fixed cursor");
+		}
+		const auto lowPeak = static_cast<std::size_t>(std::distance(
+			burstLow.begin(), std::max_element(burstLow.begin(), burstLow.end())));
+		const auto highPeak = static_cast<std::size_t>(std::distance(
+			burstHigh.begin(), std::max_element(burstHigh.begin(), burstHigh.end())));
+		NATIVE_REQUIRE(lowPeak != highPeak,
+			"presentation cursor did not advance from low to high-frequency PCM");
+
+		burst.ResetBuffers();
+		NATIVE_REQUIRE(copyAt(burst, TotalFrames).empty(),
+			"FFT reset retained a spectrum from the previous generation");
+	}
+
+	void TestFftObserverPublishesGenerationAfterReset()
+	{
+		constexpr std::uint32_t FrameCount = 4096;
+		const auto format = MakeResolvedOutputFormat(
+			MusicPlayerLibrary::AudioChannelMode::Stereo,
+			MusicPlayerLibrary::AudioBitDepth::Bit16,
+			48000);
+		FFTAudioObserve observer(format);
+		observer.OnFormat(format, 1);
+
+		std::vector<std::int16_t> pcm(static_cast<std::size_t>(FrameCount) * 2);
+		for (std::uint32_t frame = 0; frame < FrameCount; ++frame)
+		{
+			const auto sample = static_cast<std::int16_t>(std::lround(
+				0.25 * std::sin(2.0 * std::numbers::pi * 40.0 * frame / 2048.0) *
+				32767.0));
+			pcm[static_cast<std::size_t>(frame) * 2] = sample;
+			pcm[static_cast<std::size_t>(frame) * 2 + 1] = sample;
+		}
+		const NormalizedPcmBlock block{
+			.bytes = std::span<const std::uint8_t>(
+				reinterpret_cast<const std::uint8_t*>(pcm.data()),
+				pcm.size() * sizeof(std::int16_t)),
+			.frame_count = FrameCount,
+			.stream_frame_offset = 0,
+			.generation = 1
+		};
+		observer.OnPcm(block);
+
+		std::array<float, 32> spectrum{};
+		int copied = 0;
+		const auto deadline = std::chrono::steady_clock::now() +
+			std::chrono::seconds(1);
+		while (copied == 0 && std::chrono::steady_clock::now() < deadline)
+		{
+			copied = observer.CopySpectrum(
+				spectrum.data(), static_cast<int>(spectrum.size()), 1, FrameCount);
+			if (copied == 0)
+				std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		}
+		NATIVE_REQUIRE(copied == static_cast<int>(spectrum.size()),
+			"FFT observer did not publish the initial generation spectrum");
+
+		// OnFormat and OnReset are separate interface callbacks. Publishing the
+		// new generation must itself clear the old timeline so a concurrent UI
+		// read in the interval between those callbacks cannot see stale data.
+		observer.OnFormat(format, 2);
+		NATIVE_REQUIRE(observer.CopySpectrum(
+				spectrum.data(), static_cast<int>(spectrum.size()), 2, FrameCount) == 0,
+			"FFT observer exposed the previous timeline under a new generation");
+	}
+
+    void TestAudioPipelineRoutesNormalizedPcmBeforeSinkEffects()
+    {
+        const auto format = MakeResolvedOutputFormat(
+            MusicPlayerLibrary::AudioChannelMode::Stereo,
+            MusicPlayerLibrary::AudioBitDepth::Bit16,
+            48000);
+        auto device = std::make_shared<FakeOutputDevice>();
+        device->identity = 41;
+        auto sink = std::make_shared<FakeAudioSink>(format, device);
+        auto observer = std::make_shared<RecordingAudioObserve>();
+        ContractAudioSource source(format);
+        source.Connect(sink);
+        source.Subscribe(observer);
+        source.Subscribe(observer); // Subscriptions are identity-idempotent.
+
+        const auto generation = source.BeginNormalizedStream();
+        NATIVE_REQUIRE(generation == 1 && source.Generation() == generation,
+                "source did not adopt the sink's first stream generation");
+        NATIVE_REQUIRE(observer->format_generations ==
+                    std::vector<AudioStreamGeneration>{generation} &&
+                    observer->reset_generations ==
+                    std::vector<AudioStreamGeneration>{generation},
+                "observer did not receive exactly one format/reset for the generation");
+
+        const std::array<std::uint8_t, 8> firstPcm{
+            0x10, 0x11, 0x20, 0x21, 0x30, 0x31, 0x40, 0x41};
+        const std::array<std::uint8_t, 4> finalPcm{0x50, 0x51, 0x60, 0x61};
+        NATIVE_REQUIRE(source.EmitNormalized(firstPcm, 2, 0.0, false),
+                "source rejected the first normalized PCM block");
+        NATIVE_REQUIRE(source.EmitNormalized(finalPcm, 1, 2.0 / 48000.0, true),
+                "source rejected the final normalized PCM block");
+
+        const auto& submitted = sink->Submitted();
+        NATIVE_REQUIRE(submitted.size() == 3,
+                "sink did not receive normalized PCM plus an explicit EOS marker");
+        NATIVE_REQUIRE(!submitted[0].end_of_stream &&
+                    !submitted[1].end_of_stream && submitted[2].end_of_stream &&
+                    std::count_if(
+                        submitted.begin(), submitted.end(),
+                        [](const CapturedPcmBlock& block)
+                        {
+                            return block.end_of_stream;
+                        }) == 1,
+                "only the explicit sink marker must carry end-of-stream");
+        NATIVE_REQUIRE(submitted.front().generation == generation &&
+                    submitted.back().generation == generation,
+                "sink blocks did not retain their source generation");
+
+        NATIVE_REQUIRE(observer->pcm_blocks.size() == 2 &&
+                    observer->pcm_blocks[0].bytes ==
+                        std::vector<std::uint8_t>(firstPcm.begin(), firstPcm.end()) &&
+                    observer->pcm_blocks[1].bytes ==
+                        std::vector<std::uint8_t>(finalPcm.begin(), finalPcm.end()),
+                "observer did not receive the normalized source PCM byte-for-byte");
+		NATIVE_REQUIRE(observer->pcm_blocks[0].stream_frame_offset == 0 &&
+			observer->pcm_blocks[1].stream_frame_offset == 2 &&
+			submitted[0].stream_frame_offset == 0 &&
+			submitted[1].stream_frame_offset == 2,
+			"normalized PCM did not retain a continuous generation-relative timeline");
+        NATIVE_REQUIRE(!observer->pcm_blocks[0].end_of_stream &&
+                    !observer->pcm_blocks[1].end_of_stream &&
+                    observer->eos_generations ==
+                        std::vector<AudioStreamGeneration>{generation},
+                "observer EOS must be a generation-scoped event, separate from PCM");
+        NATIVE_REQUIRE(sink->PostProcessed().size() == 3 &&
+                    sink->PostProcessed()[0].bytes != observer->pcm_blocks[0].bytes &&
+                    sink->PostProcessed()[1].bytes != observer->pcm_blocks[1].bytes,
+                "fake sink did not model post-processing after observation");
+        NATIVE_REQUIRE(!sink->GetState().stream_ended &&
+                    !sink->WaitForStreamEnd(std::chrono::milliseconds(0)),
+                "submitting the EOS block must not impersonate the output callback");
+        NATIVE_REQUIRE(sink->SignalStreamEnd(generation) &&
+                    sink->WaitForStreamEnd(std::chrono::milliseconds(0)),
+                "matching EOS callback did not complete the stream");
+        const auto endedState = sink->GetState();
+        NATIVE_REQUIRE(endedState.stream_ended &&
+                    endedState.generation == generation &&
+                    endedState.buffers_queued == 0 &&
+                    endedState.queued_frames == 0 &&
+					endedState.samples_played == 0 &&
+					endedState.media_frames_presented == 0 &&
+					endedState.presentation_latency_frames == 0,
+                "completed output stream did not reset its session state");
+    }
+
+    void TestAudioPipelineRejectsStaleGenerations()
+    {
+        const auto format = MakeResolvedOutputFormat(
+            MusicPlayerLibrary::AudioChannelMode::Stereo,
+            MusicPlayerLibrary::AudioBitDepth::Bit16,
+            48000);
+        auto sink = std::make_shared<FakeAudioSink>(
+            format, std::make_shared<FakeOutputDevice>());
+        auto observer = std::make_shared<RecordingAudioObserve>();
+        ContractAudioSource source(format);
+        source.Connect(sink);
+        source.Subscribe(observer);
+
+        const auto firstGeneration = source.BeginNormalizedStream();
+        const std::array<std::uint8_t, 4> firstPcm{1, 2, 3, 4};
+        NATIVE_REQUIRE(source.EmitNormalized(firstPcm, 1, 0.0, false),
+                "first generation rejected valid normalized PCM");
+
+        const auto secondGeneration = source.BeginNormalizedStream();
+        NATIVE_REQUIRE(secondGeneration == firstGeneration + 1,
+                "BeginStream did not advance the stream generation");
+        const std::array<std::uint8_t, 4> stalePcm{0xE1, 0xE2, 0xE3, 0xE4};
+        const NormalizedPcmBlock staleBlock{
+            .bytes = stalePcm,
+            .frame_count = 1,
+            .generation = firstGeneration,
+            .end_of_stream = true
+        };
+        NATIVE_REQUIRE(!sink->Submit(staleBlock),
+                "sink accepted PCM from a replaced stream generation");
+        NATIVE_REQUIRE(!sink->SignalStreamEnd(firstGeneration) &&
+                    !sink->GetState().stream_ended,
+                "late EOS from a replaced generation completed the active stream");
+
+        const std::array<std::uint8_t, 4> currentPcm{5, 6, 7, 8};
+        NATIVE_REQUIRE(source.EmitNormalized(currentPcm, 1, 1.0, true),
+                "active generation rejected its final normalized PCM");
+        NATIVE_REQUIRE(!source.EmitNormalized(currentPcm, 1, 1.1, false),
+                "source accepted PCM after publishing its generation EOS");
+        NATIVE_REQUIRE(sink->SignalStreamEnd(secondGeneration) &&
+                    sink->GetState().stream_ended,
+                "active generation EOS did not complete its stream");
+
+        const std::vector<AudioStreamGeneration> expectedGenerations{
+            firstGeneration, secondGeneration};
+        NATIVE_REQUIRE(observer->format_generations == expectedGenerations &&
+                    observer->reset_generations == expectedGenerations &&
+                    observer->eos_generations ==
+                    std::vector<AudioStreamGeneration>{secondGeneration},
+                "observer lifecycle events were not isolated by generation");
+        NATIVE_REQUIRE(std::none_of(
+                    sink->Submitted().begin(), sink->Submitted().end(),
+                    [&stalePcm](const CapturedPcmBlock& block)
+                    {
+                        return block.bytes == std::vector<std::uint8_t>(
+                            stalePcm.begin(), stalePcm.end());
+                    }),
+                "stale-generation PCM reached the sink queue");
+    }
+
+    void TestAudioSinkCreatesExplicitEosForEmptyStream()
+    {
+        const auto format = MakeResolvedOutputFormat(
+            MusicPlayerLibrary::AudioChannelMode::Stereo,
+            MusicPlayerLibrary::AudioBitDepth::Bit16,
+            48000);
+        FakeAudioSink sink(format, std::make_shared<FakeOutputDevice>());
+        const auto generation = sink.BeginStream();
+
+        NATIVE_REQUIRE(sink.EndStream(),
+                "empty stream did not synthesize an explicit EOS marker");
+        NATIVE_REQUIRE(!sink.EndStream(),
+                "sink accepted a duplicate EOS marker for the same generation");
+        NATIVE_REQUIRE(sink.Submitted().size() == 1,
+                "empty stream submitted more than one EOS marker");
+        const auto& marker = sink.Submitted().front();
+        NATIVE_REQUIRE(marker.end_of_stream &&
+                    marker.generation == generation &&
+                    marker.frame_count == 1 &&
+                    marker.bytes.size() ==
+                        format.wave_format.Format.nBlockAlign &&
+                    std::all_of(
+                        marker.bytes.begin(), marker.bytes.end(),
+                        [](const std::uint8_t value) { return value == 0; }),
+                "empty-stream EOS marker was not one silent normalized frame");
+        NATIVE_REQUIRE(!sink.GetState().stream_ended,
+                "EOS submission completed an empty stream before its callback");
+        NATIVE_REQUIRE(sink.SignalStreamEnd(generation) &&
+                    sink.GetState().stream_ended,
+                "empty-stream EOS callback did not complete the generation");
+    }
+
+    void TestAudioSinksShareDeviceButKeepEosStateIndependent()
+    {
+        const auto format = MakeResolvedOutputFormat(
+            MusicPlayerLibrary::AudioChannelMode::Stereo,
+            MusicPlayerLibrary::AudioBitDepth::Bit16,
+            48000);
+        auto device = std::make_shared<FakeOutputDevice>();
+        device->identity = 73;
+        auto firstSink = std::make_shared<FakeAudioSink>(format, device);
+        auto secondSink = std::make_shared<FakeAudioSink>(format, device);
+        NATIVE_REQUIRE(firstSink->Device() == secondSink->Device() &&
+                    firstSink->Device()->identity == 73,
+                "sinks did not retain the same application-scoped output device");
+
+        ContractAudioSource firstSource(format);
+        ContractAudioSource secondSource(format);
+        firstSource.Connect(firstSink);
+        secondSource.Connect(secondSink);
+        const auto firstGeneration = firstSource.BeginNormalizedStream();
+        const auto secondGeneration = secondSource.BeginNormalizedStream();
+        const std::array<std::uint8_t, 4> firstPcm{10, 11, 12, 13};
+        const std::array<std::uint8_t, 4> secondPcm{20, 21, 22, 23};
+        NATIVE_REQUIRE(firstSource.EmitNormalized(firstPcm, 1, 0.0, true) &&
+                    secondSource.EmitNormalized(secondPcm, 1, 0.0, true),
+                "shared-device sinks did not accept independent source streams");
+
+        NATIVE_REQUIRE(firstSink->SignalStreamEnd(firstGeneration),
+                "first sink did not accept its EOS callback");
+        NATIVE_REQUIRE(firstSink->GetState().stream_ended &&
+                    !secondSink->GetState().stream_ended &&
+                    secondSink->GetState().buffers_queued == 2,
+                "one sink's EOS reset another sink sharing the device");
+        firstSink->AbortStream();
+        NATIVE_REQUIRE(!secondSink->GetState().stream_ended &&
+                    secondSink->GetState().buffers_queued == 2,
+                "aborting one sink disturbed another sink sharing the device");
+        NATIVE_REQUIRE(secondSink->SignalStreamEnd(secondGeneration) &&
+                    secondSink->GetState().stream_ended,
+                "second shared-device sink could not complete independently");
+    }
+
+    void TestFAudioSinkSkipsFlatEqualizerAndCompletesEos()
+    {
+        AudioOutputFormat request{};
+        request.requested_sample_rate = 48000;
+        request.requested_channel_mode =
+            MusicPlayerLibrary::AudioChannelMode::Stereo;
+        request.requested_bit_depth = MusicPlayerLibrary::AudioBitDepth::Bit32;
+        auto sink = std::make_shared<FAudioSink>(request);
+        sink->SetMasterVolume(0.0f);
+
+        NATIVE_REQUIRE(!sink->IsLimiterEnabled(),
+                "a flat equalizer unexpectedly enabled FAPO limiting");
+        sink->SetEqualizerBand(5, 6);
+        NATIVE_REQUIRE(sink->IsLimiterEnabled(),
+                "an effective equalizer band did not enable the limiter");
+        sink->SetEqualizerBand(5, 0);
+        NATIVE_REQUIRE(!sink->IsLimiterEnabled(),
+                "clearing every equalizer band did not disable the limiter");
+
+        const auto generation = sink->BeginStream();
+		constexpr std::uint32_t FrameCount = 256;
+		const auto pcm = StereoSine(48000, 440.0f, 0.1f, FrameCount);
+		const auto* pcmBytes = reinterpret_cast<const std::uint8_t*>(pcm.data());
+		const NormalizedPcmBlock block{
+			.bytes = std::span<const std::uint8_t>(
+				pcmBytes, pcm.size() * sizeof(float)),
+			.frame_count = FrameCount,
+			.generation = generation,
+			.end_of_stream = true
+		};
+		const bool submitted = sink->Submit(block);
+		const auto queuedState = sink->GetState();
+		const bool eosQueued = submitted;
+        const bool started = eosQueued && sink->Start();
+        const bool ended = started &&
+            sink->WaitForStreamEnd(std::chrono::seconds(10));
+        const auto state = sink->GetState();
+        sink->SetMasterVolume(1.0f);
+
+		NATIVE_REQUIRE(generation != 0 && submitted && eosQueued && started && ended,
+				"disabled FAPO did not pass PCM through the direct EOS path");
+		NATIVE_REQUIRE(queuedState.buffers_queued == 1 &&
+				queuedState.queued_frames == FrameCount,
+			"flat-EQ EOS appended audio frames beyond the final source PCM block");
+        NATIVE_REQUIRE(state.stream_ended && state.generation == generation &&
+                    state.error_code == 0,
+                "flat-EQ stream did not complete its FAudio EOS callback");
+    }
+
+    void TestFAudioSinkDrainsTailThenCompletesActualEos()
+    {
+        AudioOutputFormat floatRequest{};
+        floatRequest.requested_sample_rate = 48000;
+        floatRequest.requested_channel_mode =
+            MusicPlayerLibrary::AudioChannelMode::Stereo;
+        floatRequest.requested_bit_depth =
+            MusicPlayerLibrary::AudioBitDepth::Bit32;
+        auto sink = std::make_shared<FAudioSink>(floatRequest);
+
+        // A differently normalized sink must retain the same application-wide
+        // engine/mastering device. Constructing it also covers FAudio's
+        // PCM24-source -> internal-float FAPO lock path.
+        AudioOutputFormat pcm24Request{};
+        pcm24Request.requested_sample_rate = 192000;
+        pcm24Request.requested_channel_mode =
+            MusicPlayerLibrary::AudioChannelMode::Surround51;
+        pcm24Request.requested_bit_depth =
+            MusicPlayerLibrary::AudioBitDepth::Bit24;
+        auto pcm24Sink = std::make_shared<FAudioSink>(
+            pcm24Request, sink->GetDevice());
+        NATIVE_REQUIRE(pcm24Sink->GetDevice() == sink->GetDevice(),
+            "real FAudio sinks did not share one output device");
+        NATIVE_REQUIRE(
+            pcm24Sink->GetOutputFormat().sample_rate == 192000 &&
+            pcm24Sink->GetOutputFormat().channel_count == 6 &&
+            pcm24Sink->GetOutputFormat().bit_depth ==
+                MusicPlayerLibrary::AudioBitDepth::Bit24,
+            "PCM24 sink lost its independent normalized source-voice format");
+        pcm24Sink.reset();
+
+        sink->SetMasterVolume(0.0f);
+        sink->SetEqualizerBand(0, 24);
+        const auto generation = sink->BeginStream();
+        constexpr std::uint32_t FrameCount = 256;
+        std::vector<float> impulse(static_cast<std::size_t>(FrameCount) * 2, 0.0f);
+        impulse[0] = 0.25f;
+        impulse[1] = 0.25f;
+        const auto* impulseBytes = reinterpret_cast<const std::uint8_t*>(
+            impulse.data());
+        const NormalizedPcmBlock block{
+            .bytes = std::span<const std::uint8_t>(
+                impulseBytes, impulse.size() * sizeof(float)),
+            .frame_count = FrameCount,
+            .generation = generation,
+			.end_of_stream = true
+		};
+		const bool submitted = sink->Submit(block);
+		const bool eosQueued = submitted;
+		// Clearing the final band during terminal drain must not disable the
+		// FAPO before its process-sequence barrier completes.
+		sink->SetEqualizerBand(0, 0);
+		const bool limiterHeldThroughDrain = sink->IsLimiterEnabled();
+		const bool started = eosQueued && sink->Start();
+		bool presentationClockAdvanced = false;
+		bool presentationClockMonotonic = true;
+		std::uint64_t previousPresentedFrames = 0;
+		std::uint32_t observedPresentationLatency = 0;
+		const auto clockDeadline = std::chrono::steady_clock::now() +
+			std::chrono::seconds(2);
+		while (started && std::chrono::steady_clock::now() < clockDeadline)
+		{
+			const auto activeState = sink->GetState();
+			if (activeState.stream_ended)
+				break;
+			presentationClockMonotonic = presentationClockMonotonic &&
+				activeState.media_frames_presented >= previousPresentedFrames;
+			previousPresentedFrames = activeState.media_frames_presented;
+			observedPresentationLatency = (std::max)(
+				observedPresentationLatency,
+				activeState.presentation_latency_frames);
+			presentationClockAdvanced = presentationClockAdvanced ||
+				activeState.media_frames_presented > 0;
+			if (presentationClockAdvanced &&
+				activeState.samples_played >= FrameCount)
+			{
+				break;
+			}
+			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		}
+		const bool ended = started &&
+			sink->WaitForStreamEnd(std::chrono::seconds(10));
+        const auto state = sink->GetState();
+        sink->SetMasterVolume(1.0f);
+
+		NATIVE_REQUIRE(submitted && eosQueued && started,
+			"real FAudio sink did not accept PCM, drain request, and Start");
+		NATIVE_REQUIRE(limiterHeldThroughDrain,
+			"terminal drain disabled its FAPO before the tail barrier completed");
+		NATIVE_REQUIRE(presentationClockAdvanced && presentationClockMonotonic &&
+			observedPresentationLatency > 0,
+			"real FAudio sink did not expose a monotonic device-latency-adjusted clock");
+        NATIVE_REQUIRE(ended && state.stream_ended &&
+                    state.generation == generation && state.error_code == 0,
+            "real FAudio callbacks did not complete the drained EOS generation");
+		NATIVE_REQUIRE(state.buffers_queued == 0 &&
+					state.queued_frames == 0 && state.samples_played == 0 &&
+					state.media_frames_presented == 0 &&
+					state.presentation_latency_frames == 0,
+			"real EOS callback did not reset completed sink state");
+		const auto bypassGeneration = sink->BeginStream();
+		NATIVE_REQUIRE(bypassGeneration > generation && !sink->IsLimiterEnabled(),
+			"deferred flat EQ controls were not published at the next stream boundary");
+		sink->AbortStream();
+    }
+
 #define NATIVE_TEST_CASE(suite, name, function) \
     TEST_CASE(name * doctest::test_suite(suite)) { function(); }
 
     NATIVE_TEST_CASE("eq", "zero dB identity", TestZeroDbIdentity)
+    NATIVE_TEST_CASE("eq", "snapshot pre-gain is DSP-owned", TestSinkPreGainIsAppliedInsideDsp)
     NATIVE_TEST_CASE("eq", "1 kHz +6 dB", TestOneKilohertzPlusSixDb)
     NATIVE_TEST_CASE("eq", "Nyquist and configured rates", TestNyquistAndConfiguredRates)
+    NATIVE_TEST_CASE("limiter", "adaptive input loudness matching", TestAdaptiveLimiterMatchesInputLoudness)
+	NATIVE_TEST_CASE("limiter", "adaptive reset clears loudness history", TestAdaptiveLimiterResetClearsLoudnessHistory)
+	NATIVE_TEST_CASE("limiter", "adaptive stacked-band loudness matching", TestAdaptiveLimiterMatchesStackedEqualizerBands)
     NATIVE_TEST_CASE("limiter", "configured look-ahead delay", TestLimiterDelayAtConfiguredRates)
     NATIVE_TEST_CASE("limiter", "linked stereo ceiling", TestLimiterLinksStereoAtCeiling)
     NATIVE_TEST_CASE("limiter", "no make-up gain", TestLimiterDoesNotApplyMakeupGain)
@@ -1748,7 +3067,9 @@ namespace
     NATIVE_TEST_CASE("fapo", "GetParameters destination validated", TestFapoGetParametersValidatesDestination)
     NATIVE_TEST_CASE("fapo", "invalid lock formats rejected", TestFapoLockRejectsInvalidFormats)
     NATIVE_TEST_CASE("fapo", "silent input drains tail", TestFapoSilentInputDrainsTail)
+    NATIVE_TEST_CASE("fapo", "valid zero blocks drain reported tail", TestFapoValidZeroBlocksDrainUntilReportedTailEnds)
     NATIVE_TEST_CASE("format", "explicit mappings", TestAudioOutputFormatMappings)
+    NATIVE_TEST_CASE("format", "bit-perfect handshake requires exact packed PCM", TestBitPerfectFormatHandshakeRequiresExactPackedPcm)
     NATIVE_TEST_CASE("format", "raw metadata mappings", TestRawAudioFormatInfoMappings)
     NATIVE_TEST_CASE("format", "source bitrate calculation", TestAudioSourceBitrateCalculation)
     NATIVE_TEST_CASE("format", "average bitrate quality flags", TestAverageAudioQualityClassification)
@@ -1760,7 +3081,15 @@ namespace
     NATIVE_TEST_CASE("fft", "PCM24 FIFO and resampling frame bytes", Test24BitFifoAndFftFrameSizing)
     NATIVE_TEST_CASE("fft", "surround resampling", TestFftSurroundResampleMatchesSwresample)
     NATIVE_TEST_CASE("fft", "legacy core behavior", TestFftLegacyCoreBehavior)
+	NATIVE_TEST_CASE("fft", "presentation timeline ignores prefetch depth", TestFftTimelineFollowsPresentationCursor)
+	NATIVE_TEST_CASE("fft", "generation is published only after timeline reset", TestFftObserverPublishesGenerationAfterReset)
     NATIVE_TEST_CASE("buffering", "CPU profiles favor normalized FIFO", TestAudioPipelineBufferingProfiles)
+    NATIVE_TEST_CASE("audio pipeline", "normalized PCM precedes sink effects", TestAudioPipelineRoutesNormalizedPcmBeforeSinkEffects)
+    NATIVE_TEST_CASE("audio pipeline", "stale generations rejected", TestAudioPipelineRejectsStaleGenerations)
+    NATIVE_TEST_CASE("audio pipeline", "empty stream gets explicit EOS", TestAudioSinkCreatesExplicitEosForEmptyStream)
+    NATIVE_TEST_CASE("audio pipeline", "shared device keeps sink EOS independent", TestAudioSinksShareDeviceButKeepEosStateIndependent)
+    NATIVE_TEST_CASE("audio pipeline", "flat EQ skips FAPO and completes EOS", TestFAudioSinkSkipsFlatEqualizerAndCompletesEos)
+    NATIVE_TEST_CASE("audio pipeline", "real FAudio sink drains tail before EOS", TestFAudioSinkDrainsTailThenCompletesActualEos)
 
 #undef NATIVE_TEST_CASE
 #undef NATIVE_REQUIRE

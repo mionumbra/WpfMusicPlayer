@@ -73,39 +73,75 @@ std::vector<uint8_t> MusicPlayerLibrary::FFTExecuter::ResampleToFftFormat(
 
 void MusicPlayerLibrary::FFTExecuter::AddSamplesToRingBuffer(
 	const uint8_t* interleaved_samples,
-	const int frame_count)
+	const int frame_count,
+	const double pts_seconds)
 {
+	if (!interleaved_samples || frame_count <= 0 ||
+		!std::isfinite(pts_seconds) || input_sample_rate <= 0)
+	{
+		return;
+	}
+
+	const double input_duration = static_cast<double>(frame_count) /
+		input_sample_rate;
+	bool discontinuity = false;
+	{
+		std::lock_guard ring_buffer_lock(ring_buffer_mutex);
+		// Allow sub-sample rounding differences but reset on seeks or dropped
+		// source spans so a window never straddles two media epochs.
+		const double tolerance = (std::max)(
+			2.0 / input_sample_rate, 0.001);
+		discontinuity = ring_timeline_initialized &&
+			std::abs(pts_seconds - next_input_pts_seconds) > tolerance;
+	}
+	if (discontinuity)
+		ResetBuffers();
+
 	std::vector<uint8_t> samples =
 		ResampleToFftFormat(interleaved_samples, frame_count);
-	if (samples.empty())
-		return;
 
 	std::lock_guard ring_buffer_lock(ring_buffer_mutex);
+	if (!ring_timeline_initialized)
+	{
+		ring_buffer_start_pts_seconds = pts_seconds;
+		ring_timeline_initialized = true;
+	}
+	next_input_pts_seconds = pts_seconds + input_duration;
 	for (const uint8_t sample : samples)
 	{
 		spectrum_data_ring_buffer.push_back(sample);
 	}
 
-	// ReSharper disable once CppDFALoopConditionNotUpdated
-	while (spectrum_data_ring_buffer.size() > RING_BUFFER_MAX_SIZE)
+	// A slow observer must not create unbounded memory growth. Drop complete
+	// media hops while retaining enough samples for the next FFT window.
+	if (spectrum_data_ring_buffer.size() > RING_BUFFER_CAPACITY)
 	{
-		spectrum_data_ring_buffer.pop_front();
+		const std::size_t excess_frames =
+			(spectrum_data_ring_buffer.size() - RING_BUFFER_CAPACITY +
+				BYTES_PER_FRAME - 1) / BYTES_PER_FRAME;
+		const std::size_t drop_frames =
+			((excess_frames + FFT_HOP_SIZE - 1) / FFT_HOP_SIZE) *
+			FFT_HOP_SIZE;
+		const std::size_t drop_bytes = (std::min)(
+			drop_frames * BYTES_PER_FRAME,
+			spectrum_data_ring_buffer.size());
+		for (std::size_t index = 0; index < drop_bytes; ++index)
+			spectrum_data_ring_buffer.pop_front();
+		ring_buffer_start_pts_seconds +=
+			static_cast<double>(drop_bytes / BYTES_PER_FRAME) / sample_rate;
 	}
-	ring_buffer_has_unprocessed_data = true;
+	ring_buffer_has_unprocessed_data =
+		spectrum_data_ring_buffer.size() >= RING_BUFFER_MAX_SIZE;
 
 	// wake fft consumer thread
-	ring_buffer_cv.notify_one();
+	if (ring_buffer_has_unprocessed_data)
+		ring_buffer_cv.notify_one();
 }
 
 int MusicPlayerLibrary::FFTExecuter::GetRingBufferSize() const
 {
 	std::lock_guard lock(ring_buffer_mutex);
 	return static_cast<int>(spectrum_data_ring_buffer.size());
-}
-
-void MusicPlayerLibrary::FFTExecuter::SetOutputDelayMilliseconds(int milliseconds)
-{
-	delay_frames.store(milliseconds > 0 ? milliseconds / FFT_FRAME_INTERVAL_MS : 0);
 }
 
 void MusicPlayerLibrary::FFTExecuter::ApplyWindow(const std::vector<uint8_t>& input, std::vector<double>& output)
@@ -193,8 +229,9 @@ void MusicPlayerLibrary::FFTExecuter::MapFreqToSegments(
 
 void MusicPlayerLibrary::FFTExecuter::ExecuteAudioFFT()
 {
-
 	std::vector<uint8_t> raw_samples;
+	double spectrum_end_pts_seconds = 0.0;
+	std::uint64_t work_epoch = 0;
 	{
 		std::lock_guard lock(ring_buffer_mutex);
 		// Check whether the buffer contains a complete FFT frame.
@@ -205,7 +242,18 @@ void MusicPlayerLibrary::FFTExecuter::ExecuteAudioFFT()
 		raw_samples.assign(
 			spectrum_data_ring_buffer.begin(),
 			spectrum_data_ring_buffer.begin() + RING_BUFFER_MAX_SIZE);
-		ring_buffer_has_unprocessed_data = false;
+		spectrum_end_pts_seconds = ring_buffer_start_pts_seconds +
+			static_cast<double>(FFT_SIZE) / sample_rate;
+		work_epoch = timeline_epoch.load(std::memory_order_acquire);
+		const std::size_t hop_bytes = (std::min)(
+			FFT_HOP_SIZE * BYTES_PER_FRAME,
+			spectrum_data_ring_buffer.size());
+		for (std::size_t index = 0; index < hop_bytes; ++index)
+			spectrum_data_ring_buffer.pop_front();
+		ring_buffer_start_pts_seconds +=
+			static_cast<double>(hop_bytes / BYTES_PER_FRAME) / sample_rate;
+		ring_buffer_has_unprocessed_data =
+			spectrum_data_ring_buffer.size() >= RING_BUFFER_MAX_SIZE;
 	}
 
 	// windowing
@@ -226,12 +274,11 @@ void MusicPlayerLibrary::FFTExecuter::ExecuteAudioFFT()
 
 	auto boundaries = GenBoundaries(sample_rate, fft_size, segment_num);
 
-	{
-		std::lock_guard<std::mutex> lock(spectrum_data_mutex); spectrum_data.clear();
-		MapFreqToSegments(fft_result, spectrum_data, boundaries);
+	std::vector<float> new_spectrum;
+	MapFreqToSegments(fft_result, new_spectrum, boundaries);
 
-		for (size_t i = 0; i < spectrum_data.size(); ++i) {
-			float& val = spectrum_data[i];
+	for (size_t i = 0; i < new_spectrum.size(); ++i) {
+			float& val = new_spectrum[i];
 			// transition db
 			float db = 20.0f * log10f(val + 1e-6f);
 			constexpr float db_min = 10.0f;   // supress noise
@@ -246,14 +293,20 @@ void MusicPlayerLibrary::FFTExecuter::ExecuteAudioFFT()
 				float attenuation = 1.0f - 0.4f * static_cast<float>(i - high_freq_start) / (segment_num - high_freq_start);
 				val *= attenuation;
 			}
-		}
-
-		// Push the computed data to the delay queue for latency compensation.
-		spectrum_delay_queue.push_back(spectrum_data);
-		while (spectrum_delay_queue.size() > MAX_DELAY_QUEUE_SIZE)
-			spectrum_delay_queue.pop_front();
 	}
 
+	{
+		std::lock_guard<std::mutex> lock(spectrum_data_mutex);
+		if (work_epoch != timeline_epoch.load(std::memory_order_acquire))
+			return;
+		spectrum_data = new_spectrum;
+		spectrum_timeline.push_back({
+			.end_pts_seconds = spectrum_end_pts_seconds,
+			.bands = std::move(new_spectrum)
+		});
+		while (spectrum_timeline.size() > MAX_SPECTRUM_QUEUE_SIZE)
+			spectrum_timeline.pop_front();
+	}
 }
 
 int MusicPlayerLibrary::FFTExecuter::CopyAudioFFTData(float* destination, int destination_length)
@@ -262,19 +315,51 @@ int MusicPlayerLibrary::FFTExecuter::CopyAudioFFTData(float* destination, int de
 		return 0;
 
 	std::lock_guard lock(spectrum_data_mutex);
-	if (spectrum_delay_queue.empty())
+	if (spectrum_timeline.empty())
 		return 0;
 
-	int delay = delay_frames.load();
-	int queue_size = static_cast<int>(spectrum_delay_queue.size());
-	// Calculate the frame index from the configured delay.
-	int target = queue_size - 1 - delay;
-	if (target < 0) target = 0;
-
-	const auto& data = spectrum_delay_queue[target];
+	const auto& data = spectrum_timeline.back().bands;
 	const int copy_count = std::min(destination_length, static_cast<int>(data.size()));
 	if (copy_count > 0)
 		std::copy_n(data.data(), copy_count, destination);
+	return copy_count;
+}
+
+int MusicPlayerLibrary::FFTExecuter::CopyAudioFFTDataAt(
+	float* destination,
+	const int destination_length,
+	const double presentation_pts_seconds)
+{
+	if (destination == nullptr || destination_length <= 0 ||
+		!std::isfinite(presentation_pts_seconds))
+	{
+		return 0;
+	}
+
+	std::lock_guard lock(spectrum_data_mutex);
+	const auto target = std::upper_bound(
+		spectrum_timeline.begin(), spectrum_timeline.end(),
+		presentation_pts_seconds,
+		[](const double pts, const TimestampedSpectrum& spectrum)
+		{
+			return pts < spectrum.end_pts_seconds;
+		});
+	if (target == spectrum_timeline.begin())
+		return 0;
+
+	const auto selected = std::prev(target);
+	const int copy_count = std::min(
+		destination_length, static_cast<int>(selected->bands.size()));
+	if (copy_count > 0)
+		std::copy_n(selected->bands.data(), copy_count, destination);
+
+	// Once the presentation cursor has passed a spectrum it can no longer be
+	// selected. Retain the selected item as a stable fallback for underruns.
+	while (spectrum_timeline.size() > 1 &&
+		spectrum_timeline[1].end_pts_seconds <= presentation_pts_seconds)
+	{
+		spectrum_timeline.pop_front();
+	}
 	return copy_count;
 }
 
@@ -296,15 +381,22 @@ void MusicPlayerLibrary::FFTExecuter::ResetBuffers()
 
 	{
 		std::lock_guard lock(ring_buffer_mutex);
+		// Advance the epoch while holding the same lock used to snapshot FFT
+		// work. A worker can therefore observe either the old epoch with old
+		// samples or the new epoch with an empty ring, never a mixture of both.
+		timeline_epoch.fetch_add(1, std::memory_order_acq_rel);
 		spectrum_data_ring_buffer.clear();
 		ring_buffer_has_unprocessed_data = false;
+		ring_buffer_start_pts_seconds = 0.0;
+		next_input_pts_seconds = 0.0;
+		ring_timeline_initialized = false;
 	}
 
 	{
 		std::lock_guard lock(spectrum_data_mutex);
 		spectrum_data.clear();
 		spectrum_smooth_data.clear();
-		spectrum_delay_queue.clear();
+		spectrum_timeline.clear();
 	}
 }
 
@@ -325,22 +417,26 @@ void MusicPlayerLibrary::FFTExecuter::StopFFTThread()
 	if (fft_worker_thread.joinable())
 		fft_worker_thread.join();
 
-	spectrum_data.clear();
-	spectrum_smooth_data.clear();
-	spectrum_delay_queue.clear();
-	spectrum_data_ring_buffer.clear();
+	{
+		std::lock_guard lock(spectrum_data_mutex);
+		spectrum_data.clear();
+		spectrum_smooth_data.clear();
+		spectrum_timeline.clear();
+	}
+	{
+		std::lock_guard lock(ring_buffer_mutex);
+		spectrum_data_ring_buffer.clear();
+		ring_buffer_has_unprocessed_data = false;
+	}
 	fft_in.clear();
 	fft_out.clear();
 }
 
 void MusicPlayerLibrary::FFTExecuter::FFTWorkerLoop()
 {
-	auto next_fft_time = std::chrono::steady_clock::now();
-
 	while (fft_thread_running)
 	{
 		std::unique_lock lock(ring_buffer_mutex);
-		// FFT execution limitd to 60fps
 		ring_buffer_cv.wait(lock, [this]()
 			{
 				return !fft_thread_running ||
@@ -351,25 +447,8 @@ void MusicPlayerLibrary::FFTExecuter::FFTWorkerLoop()
 		if (!fft_thread_running)
 			break;
 
-		const auto now = std::chrono::steady_clock::now();
-		if (now < next_fft_time)
-		{
-			ring_buffer_cv.wait_until(lock, next_fft_time, [this]()
-				{
-					return !fft_thread_running;
-				});
-
-			if (!fft_thread_running)
-				break;
-
-			if (!ring_buffer_has_unprocessed_data ||
-				spectrum_data_ring_buffer.size() < RING_BUFFER_MAX_SIZE)
-				continue;
-		}
-
 		lock.unlock();
 		ExecuteAudioFFT();
-		next_fft_time = std::chrono::steady_clock::now() + std::chrono::milliseconds(FFT_FRAME_INTERVAL_MS);
 	}
 }
 
@@ -381,6 +460,7 @@ MusicPlayerLibrary::FFTExecuter::FFTExecuter(const AudioOutputFormat& output_for
 	{
 		throw std::invalid_argument("FFTExecuter requires a valid packed audio output format");
 	}
+	input_sample_rate = output_format.sample_rate;
 
 	AVChannelLayout input_layout{};
 	int result;

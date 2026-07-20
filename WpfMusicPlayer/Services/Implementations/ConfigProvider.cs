@@ -11,11 +11,30 @@ namespace WpfMusicPlayer.Services.Implementations
 {
     public class ConfigProvider : IConfigProvider
     {
-        public ConfigProvider(string configFileName = "config.xml") => Reload(configFileName);
+        private readonly IAudioOutputFormatProvider _audioOutputFormatProvider;
+        private readonly string _configFileName;
+
+        public ConfigProvider(IAudioOutputFormatProvider audioOutputFormatProvider)
+            : this(audioOutputFormatProvider, "config.xml")
+        {
+        }
+
+        public ConfigProvider(
+            IAudioOutputFormatProvider audioOutputFormatProvider,
+            string configFileName)
+        {
+            _audioOutputFormatProvider = audioOutputFormatProvider;
+            _configFileName = configFileName;
+            if (Reload(configFileName) != ErrorCode.NoError)
+            {
+                EnsureConfigSections();
+                MigrateLegacySystemAudioSettings();
+            }
+        }
 
         ~ConfigProvider()
         {
-            WriteFile();
+            WriteFile(_configFileName);
         }
 
         public enum ErrorCode
@@ -30,7 +49,15 @@ namespace WpfMusicPlayer.Services.Implementations
         }
         private ErrorCode InternalCreateConfigFile(string configFilePath)
         {
-            _configData = new ConfigData
+            _configData = CreateDefaultConfigData();
+
+            return InternalWriteFile(configFilePath);
+        }
+
+        private ConfigData CreateDefaultConfigData()
+        {
+            var systemFormat = _audioOutputFormatProvider.GetSystemDefaultOutputFormat();
+            return new ConfigData
             {
                 UI = new UISettings
                 {
@@ -39,13 +66,11 @@ namespace WpfMusicPlayer.Services.Implementations
                 },
                 Audio = new AudioSettings
                 {
-                    Channel = AudioSettings.ChannelType.System,
-                    BitDepth = AudioSettings.BitDepthType.System,
-                    SampleRate = 48000
+                    Channel = systemFormat.Channel,
+                    BitDepth = systemFormat.BitDepth,
+                    SampleRate = systemFormat.SampleRate
                 }
             };
-
-            return InternalWriteFile(configFilePath);
         }
         public ErrorCode CreateConfigFile(string configFileName = "config.xml")
         {
@@ -92,6 +117,7 @@ namespace WpfMusicPlayer.Services.Implementations
                             return ErrorCode.ConfigFileError;
 
                         _configData = xmlConfigData;
+                        EnsureConfigSections();
                     }
                     catch (InvalidOperationException)
                     {
@@ -102,6 +128,9 @@ namespace WpfMusicPlayer.Services.Implementations
                 {
                     return ErrorCode.PermissionDenied;
                 }
+
+                if (MigrateLegacySystemAudioSettings())
+                    return InternalWriteFile(configFile);
             }
             catch (PathTooLongException)
             {
@@ -113,6 +142,32 @@ namespace WpfMusicPlayer.Services.Implementations
             }
 
             return ErrorCode.NoError;
+        }
+
+        private bool MigrateLegacySystemAudioSettings()
+        {
+            var audio = _configData.Audio ??= new AudioSettings();
+            var migrateChannel = audio.Channel == AudioSettings.ChannelType.System;
+            var migrateBitDepth = audio.BitDepth == AudioSettings.BitDepthType.System;
+            var migrateSampleRate = audio.SampleRate <= 0;
+            if (!migrateChannel && !migrateBitDepth && !migrateSampleRate)
+                return false;
+
+            var systemFormat = _audioOutputFormatProvider.GetSystemDefaultOutputFormat();
+            if (migrateChannel)
+                audio.Channel = systemFormat.Channel;
+            if (migrateBitDepth)
+                audio.BitDepth = systemFormat.BitDepth;
+            if (migrateSampleRate)
+                audio.SampleRate = systemFormat.SampleRate;
+            return true;
+        }
+
+        private void EnsureConfigSections()
+        {
+            _configData.Audio ??= new AudioSettings();
+            _configData.UI ??= new UISettings();
+            _configData.DesktopLyric ??= new DesktopLyricSettings();
         }
 
         private ErrorCode InternalWriteFile(string configFilePath)
@@ -160,6 +215,6 @@ namespace WpfMusicPlayer.Services.Implementations
             return ref _configData;
         }
 
-        private static ConfigData _configData = new ConfigData();
+        private ConfigData _configData = new ConfigData();
     }
 }

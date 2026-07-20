@@ -1,0 +1,323 @@
+// SPDX-License-Identifier: MIT
+
+using System.Xml.Serialization;
+using WpfMusicPlayer.Models;
+using WpfMusicPlayer.Services.Abstractions;
+using WpfMusicPlayer.Services.Implementations;
+using WpfMusicPlayer.ViewModels;
+using static WpfMusicPlayer.Models.ConfigData;
+using static WpfMusicPlayer.Services.Implementations.ConfigProvider;
+
+namespace WpfMusicPlayer.Test;
+
+[TestClass]
+public sealed class SettingsViewModelTest
+{
+    [TestMethod]
+    public void AudioOptions_HideLegacySystemValues()
+    {
+        var configProvider = new FakeConfigProvider(CreateAudioConfig(
+            48_000,
+            AudioSettings.ChannelType.Stereo,
+            AudioSettings.BitDepthType.Bit24));
+        var audioOutputFormatProvider = new FakeAudioOutputFormatProvider(
+            new SystemAudioOutputFormat(
+                48_000,
+                AudioSettings.ChannelType.Stereo,
+                AudioSettings.BitDepthType.Bit24));
+
+        var viewModel = new SettingsViewModel(
+            configProvider,
+            audioOutputFormatProvider);
+
+        Assert.IsFalse(viewModel.ChannelOptions.Contains(
+            AudioSettings.ChannelType.System));
+        Assert.IsFalse(viewModel.BitDepthOptions.Any(option =>
+            option.Value == AudioSettings.BitDepthType.System));
+    }
+
+    [TestMethod]
+    public void ApplySystemOutputSettings_UpdatesAllValuesWithOneWriteAndOneAggregateEvent()
+    {
+        var configProvider = new FakeConfigProvider(CreateAudioConfig(
+            48_000,
+            AudioSettings.ChannelType.Stereo,
+            AudioSettings.BitDepthType.Bit16));
+        var systemFormat = new SystemAudioOutputFormat(
+            176_400,
+            AudioSettings.ChannelType.Surround51,
+            AudioSettings.BitDepthType.Bit24);
+        var audioOutputFormatProvider = new FakeAudioOutputFormatProvider(systemFormat);
+        var viewModel = new SettingsViewModel(
+            configProvider,
+            audioOutputFormatProvider);
+        var eventCount = 0;
+        SettingChangedEventArgs? observedEvent = null;
+        SystemAudioOutputFormat? valuesObservedByHandler = null;
+        viewModel.SettingChanged += (_, eventArgs) =>
+        {
+            eventCount++;
+            observedEvent = eventArgs;
+            valuesObservedByHandler = new SystemAudioOutputFormat(
+                viewModel.SelectedSampleRate,
+                viewModel.SelectedChannel,
+                viewModel.SelectedBitDepth);
+        };
+
+        viewModel.ApplySystemOutputSettingsCommand.Execute(null);
+
+        Assert.AreEqual(1, audioOutputFormatProvider.QueryCount);
+        Assert.AreEqual(1, configProvider.WriteCount);
+        Assert.AreEqual(1, eventCount);
+        Assert.IsNotNull(observedEvent);
+        Assert.AreEqual(
+            SettingsViewModel.AudioOutputSettingsChangeName,
+            observedEvent!.SettingName);
+        Assert.IsTrue(valuesObservedByHandler.HasValue);
+        Assert.AreEqual(systemFormat, valuesObservedByHandler.Value);
+        Assert.IsTrue(configProvider.LastWrittenAudioFormat.HasValue);
+        Assert.AreEqual(systemFormat, configProvider.LastWrittenAudioFormat.Value);
+        Assert.AreEqual(systemFormat.SampleRate, viewModel.SelectedSampleRate);
+        Assert.AreEqual(systemFormat.Channel, viewModel.SelectedChannel);
+        Assert.AreEqual(systemFormat.BitDepth, viewModel.SelectedBitDepth);
+        Assert.Contains(systemFormat.SampleRate, viewModel.SampleRateOptions);
+
+        ref var persistedConfig = ref configProvider.GetConfig();
+        Assert.AreEqual(systemFormat.SampleRate, persistedConfig.Audio.SampleRate);
+        Assert.AreEqual(systemFormat.Channel, persistedConfig.Audio.Channel);
+        Assert.AreEqual(systemFormat.BitDepth, persistedConfig.Audio.BitDepth);
+    }
+
+    [TestMethod]
+    public void ApplySystemOutputSettings_WhenValuesMatch_DoesNotWriteOrRaiseEvent()
+    {
+        var systemFormat = new SystemAudioOutputFormat(
+            176_400,
+            AudioSettings.ChannelType.Surround71,
+            AudioSettings.BitDepthType.Bit32);
+        var configProvider = new FakeConfigProvider(CreateAudioConfig(
+            systemFormat.SampleRate,
+            systemFormat.Channel,
+            systemFormat.BitDepth));
+        var audioOutputFormatProvider = new FakeAudioOutputFormatProvider(systemFormat);
+        var viewModel = new SettingsViewModel(
+            configProvider,
+            audioOutputFormatProvider);
+        var eventCount = 0;
+        viewModel.SettingChanged += (_, _) => eventCount++;
+
+        viewModel.ApplySystemOutputSettingsCommand.Execute(null);
+
+        Assert.AreEqual(1, audioOutputFormatProvider.QueryCount);
+        Assert.AreEqual(0, configProvider.WriteCount);
+        Assert.AreEqual(0, eventCount);
+        Assert.Contains(systemFormat.SampleRate, viewModel.SampleRateOptions);
+    }
+
+    private static ConfigData CreateAudioConfig(
+        int sampleRate,
+        AudioSettings.ChannelType channel,
+        AudioSettings.BitDepthType bitDepth) =>
+        new()
+        {
+            Audio = new AudioSettings
+            {
+                SampleRate = sampleRate,
+                Channel = channel,
+                BitDepth = bitDepth
+            }
+        };
+}
+
+[TestClass]
+[DoNotParallelize]
+public sealed class ConfigProviderAudioMigrationTest
+{
+    [TestMethod]
+    public void Startup_CreatesNewConfigWithExplicitSystemOutputFormat()
+    {
+        var systemFormat = new SystemAudioOutputFormat(
+            96_000,
+            AudioSettings.ChannelType.Surround71,
+            AudioSettings.BitDepthType.Bit24);
+        var audioOutputFormatProvider = new FakeAudioOutputFormatProvider(systemFormat);
+        var fileName = $"audio-settings-test-{Guid.NewGuid():N}.xml";
+        var filePath = GetConfigFilePath(fileName);
+        ConfigProvider? provider = null;
+        try
+        {
+            provider = new ConfigProvider(audioOutputFormatProvider, fileName);
+
+            ref var createdConfig = ref provider.GetConfig();
+            Assert.AreEqual(systemFormat.SampleRate, createdConfig.Audio.SampleRate);
+            Assert.AreEqual(systemFormat.Channel, createdConfig.Audio.Channel);
+            Assert.AreEqual(systemFormat.BitDepth, createdConfig.Audio.BitDepth);
+            Assert.AreEqual(1, audioOutputFormatProvider.QueryCount);
+
+            var persistedXml = File.ReadAllText(filePath);
+            Assert.IsFalse(persistedXml.Contains(
+                "<channel-type>system</channel-type>",
+                StringComparison.Ordinal));
+            Assert.IsFalse(persistedXml.Contains(
+                "<bit-depth>system</bit-depth>",
+                StringComparison.Ordinal));
+        }
+        finally
+        {
+            if (provider is not null)
+                GC.SuppressFinalize(provider);
+            File.Delete(filePath);
+        }
+    }
+
+    [TestMethod]
+    public void Startup_MigratesLegacySystemValuesAndPreservesExplicitSampleRate()
+    {
+        var legacyConfig = CreateAudioConfig(
+            44_100,
+            AudioSettings.ChannelType.System,
+            AudioSettings.BitDepthType.System);
+        var systemFormat = new SystemAudioOutputFormat(
+            96_000,
+            AudioSettings.ChannelType.Surround51,
+            AudioSettings.BitDepthType.Bit32);
+        var audioOutputFormatProvider = new FakeAudioOutputFormatProvider(systemFormat);
+
+        WithConfigFile(legacyConfig, fileName =>
+        {
+            var provider = new ConfigProvider(audioOutputFormatProvider, fileName);
+            try
+            {
+                ref var migratedConfig = ref provider.GetConfig();
+                Assert.AreEqual(systemFormat.Channel, migratedConfig.Audio.Channel);
+                Assert.AreEqual(systemFormat.BitDepth, migratedConfig.Audio.BitDepth);
+                Assert.AreEqual(44_100, migratedConfig.Audio.SampleRate);
+                Assert.AreEqual(1, audioOutputFormatProvider.QueryCount);
+
+                var persistedXml = File.ReadAllText(GetConfigFilePath(fileName));
+                Assert.IsFalse(persistedXml.Contains(
+                    "<channel-type>system</channel-type>",
+                    StringComparison.Ordinal));
+                Assert.IsFalse(persistedXml.Contains(
+                    "<bit-depth>system</bit-depth>",
+                    StringComparison.Ordinal));
+            }
+            finally
+            {
+                GC.SuppressFinalize(provider);
+            }
+        });
+    }
+
+    [TestMethod]
+    public void Startup_PreservesExplicitAudioValuesWithoutQueryingSystemFormat()
+    {
+        var explicitConfig = CreateAudioConfig(
+            88_200,
+            AudioSettings.ChannelType.Mono,
+            AudioSettings.BitDepthType.Bit24);
+        var audioOutputFormatProvider = new FakeAudioOutputFormatProvider(
+            new SystemAudioOutputFormat(
+                48_000,
+                AudioSettings.ChannelType.Stereo,
+                AudioSettings.BitDepthType.Bit16));
+
+        WithConfigFile(explicitConfig, fileName =>
+        {
+            var provider = new ConfigProvider(audioOutputFormatProvider, fileName);
+            try
+            {
+                ref var loadedConfig = ref provider.GetConfig();
+                Assert.AreEqual(88_200, loadedConfig.Audio.SampleRate);
+                Assert.AreEqual(AudioSettings.ChannelType.Mono, loadedConfig.Audio.Channel);
+                Assert.AreEqual(AudioSettings.BitDepthType.Bit24, loadedConfig.Audio.BitDepth);
+                Assert.AreEqual(0, audioOutputFormatProvider.QueryCount);
+            }
+            finally
+            {
+                GC.SuppressFinalize(provider);
+            }
+        });
+    }
+
+    private static ConfigData CreateAudioConfig(
+        int sampleRate,
+        AudioSettings.ChannelType channel,
+        AudioSettings.BitDepthType bitDepth) =>
+        new()
+        {
+            Audio = new AudioSettings
+            {
+                SampleRate = sampleRate,
+                Channel = channel,
+                BitDepth = bitDepth
+            }
+        };
+
+    private static void WithConfigFile(
+        ConfigData config,
+        Action<string> assertion)
+    {
+        var fileName = $"audio-settings-test-{Guid.NewGuid():N}.xml";
+        var filePath = GetConfigFilePath(fileName);
+        try
+        {
+            using (var file = File.Create(filePath))
+            {
+                new XmlSerializer(typeof(ConfigData)).Serialize(file, config);
+            }
+
+            assertion(fileName);
+        }
+        finally
+        {
+            File.Delete(filePath);
+        }
+    }
+
+    private static string GetConfigFilePath(string fileName)
+    {
+        var assemblyDirectory = Path.GetDirectoryName(
+            typeof(ConfigProvider).Assembly.Location);
+        Assert.IsNotNull(assemblyDirectory);
+        return Path.Combine(assemblyDirectory, fileName);
+    }
+}
+
+internal sealed class FakeAudioOutputFormatProvider(SystemAudioOutputFormat format)
+    : IAudioOutputFormatProvider
+{
+    public int QueryCount { get; private set; }
+
+    public SystemAudioOutputFormat GetSystemDefaultOutputFormat()
+    {
+        QueryCount++;
+        return format;
+    }
+}
+
+internal sealed class FakeConfigProvider(ConfigData config) : IConfigProvider
+{
+    private ConfigData _config = config;
+
+    public int WriteCount { get; private set; }
+    public SystemAudioOutputFormat? LastWrittenAudioFormat { get; private set; }
+
+    public ErrorCode CreateConfigFile(string ConfigFileName = "config.xml") =>
+        ErrorCode.NoError;
+
+    public ErrorCode Reload(string ConfigFileName = "config.xml") =>
+        ErrorCode.NoError;
+
+    public ErrorCode WriteFile(string ConfigFileName = "config.xml")
+    {
+        WriteCount++;
+        LastWrittenAudioFormat = new SystemAudioOutputFormat(
+            _config.Audio.SampleRate,
+            _config.Audio.Channel,
+            _config.Audio.BitDepth);
+        return ErrorCode.NoError;
+    }
+
+    public ref ConfigData GetConfig() => ref _config;
+}

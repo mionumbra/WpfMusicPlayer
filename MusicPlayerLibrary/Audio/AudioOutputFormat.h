@@ -47,6 +47,19 @@ namespace MusicPlayerLibrary
 		int bit_depth = static_cast<int>(AudioBitDepth::Unknown);
 	};
 
+	// The decoded PCM contract offered by an audio source to a sink.  Unlike
+	// AudioFormatInfo this includes the physical FFmpeg sample representation,
+	// so planar/packed or integer/float conversions cannot be mistaken for a
+	// bit-perfect route.
+	struct DecodedAudioFormat
+	{
+		int sample_rate = 0;
+		std::uint16_t channel_count = 0;
+		std::uint64_t channel_mask = 0;
+		int bit_depth = static_cast<int>(AudioBitDepth::Unknown);
+		AVSampleFormat sample_format = AV_SAMPLE_FMT_NONE;
+	};
+
 	class AudioBitrateTracker
 	{
 		std::uint64_t encoded_bytes_ = 0;
@@ -91,6 +104,9 @@ namespace MusicPlayerLibrary
 		std::uint64_t channel_mask = 0) noexcept;
 	[[nodiscard]] AudioFormatInfo GetAudioFormatInfo(
 		const AudioOutputFormat& format) noexcept;
+	[[nodiscard]] bool AreAudioFormatsBitPerfect(
+		const DecodedAudioFormat& input,
+		const AudioOutputFormat& output) noexcept;
 
 	// Calculates the observed encoded-audio byte rate using decimal KBytes
 	// (1 KByte = 1000 bytes).

@@ -79,6 +79,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
         LyricsViewModel lyrics,
         DesktopLyricViewModel desktopLyric,
         DesktopTrayIconViewModel desktopTrayIcon,
+        IAudioOutputFormatProvider audioOutputFormatProvider,
         ILogger<MainViewModel> logger)
     {
         _configProvider = configProvider;
@@ -91,7 +92,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
         _previousLatencyMode = GCSettings.LatencyMode;
         _syncContext = SynchronizationContext.Current!;
         Equalizer = new EqualizerViewModel(ApplyEqualizerBand);
-        Settings = new SettingsViewModel(configProvider);
+        Settings = new SettingsViewModel(configProvider, audioOutputFormatProvider);
         Settings.SettingChanged += OnSettingChanged;
         Playlist = playlist;
         Playlist.IsMusicPlayingQuery = () => _musicPlayer!.IsPlaying();
@@ -286,6 +287,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
     {
         if (!Equalizer.IsBandEnabled(index)) return;
         _musicPlayer.SetEqualizerBand(index, value);
+        IsBitPerfect = _musicPlayer.IsBitPerfect();
     }
 
     [ObservableProperty]
@@ -356,11 +358,19 @@ public partial class MainViewModel : ObservableObject, IDisposable
     public partial bool IsHiResAudio { get; private set; }
 
     [ObservableProperty]
+    public partial bool IsBitPerfect { get; private set; }
+
+    [ObservableProperty]
     public partial string AudioSourceFormat { get; private set; } = string.Empty;
+
+    [ObservableProperty] 
+    public partial string DeviceOutputFormat { get; private set; } = string.Empty;
 
     public string AudioQualityTitle => IsLoselessAudio && IsHiResAudio
         ? HiResLosslessAudioTitle
         : LosslessAudioTitle;
+
+    public string BitPerfectTitle => "Bit-Perfect 输出";
 
     public PlaylistViewModel Playlist { get; }
 
@@ -459,14 +469,33 @@ public partial class MainViewModel : ObservableObject, IDisposable
         // 避免对_musicPlayer的重复析构
         _logger.LogInformation("Attempting to acquire OpenFile lock");
         await _openFileLock.WaitAsync().ConfigureAwait(false);
+        var player = _musicPlayer;
         int loadVersion;
         lock (_playerStateLock)
         {
             loadVersion = Interlocked.Increment(ref _albumArtVersion);
+            _activeLoadContext = null;
+            _disableAutoAdvance = true;
         }
 
         try
         {
+            lock (_playerStateLock)
+            {
+                if (loadVersion != Volatile.Read(ref _albumArtVersion))
+                {
+                    return;
+                }
+
+                player.CloseFile();
+            }
+
+            _syncContext.Post(_ =>
+            {
+                if (loadVersion == Volatile.Read(ref _albumArtVersion))
+                    IsBitPerfect = false;
+            }, null);
+
             _logger.LogInformation("OpenFile lock acquired, filePath: {FilePath}", filePath);
             if (ActiveView != ActiveView.Player
                 && ActiveView != ActiveView.Playlist
@@ -485,47 +514,40 @@ public partial class MainViewModel : ObservableObject, IDisposable
             if (isNcm)
                 _logger.LogInformation("NCM file detected, starting decode: {FilePath}", filePath);
 
-            try
+            var md5 = await ComputeFileMd5Async(filePath).ConfigureAwait(false);
+            _logger.LogInformation("File MD5 computed: {Md5}", md5);
+
+            var cached = _songDatabase.FindByMd5(md5);
+            var skipAlbumArtLoading = cached?.AlbumArt is { Length: > 0 };
+            if (skipAlbumArtLoading)
             {
-                var md5 = await ComputeFileMd5Async(filePath).ConfigureAwait(false);
-                _logger.LogInformation("File MD5 computed: {Md5}", md5);
-
-                var cached = _songDatabase.FindByMd5(md5);
-                var skipAlbumArtLoading = cached?.AlbumArt is { Length: > 0 };
-                if (skipAlbumArtLoading)
-                {
-                    _logger.LogInformation("Cached album art hit for {Md5}; native album art loading will be skipped", md5);
-                }
-
-                var loadContext = new PlayerLoadContext(loadVersion, filePath, md5, cached?.AlbumArt);
-                var newPlayer = CreateMusicPlayer();
-                lock (_playerStateLock)
-                {
-                    if (loadVersion != Volatile.Read(ref _albumArtVersion))
-                    {
-                        newPlayer.Dispose();
-                        return;
-                    }
-
-                    _musicPlayer.Dispose();
-                    _musicPlayer = newPlayer;
-                    _activeLoadContext = loadContext;
-                    ApplyEqualizerSettingsToPlayer(newPlayer);
-                    SubscribePlayerEvents(newPlayer, loadContext);
-                    _disableAutoAdvance = false;
-                    newPlayer.OpenFile(filePath, skipAlbumArtLoading);
-                }
-
-                if (!_enableAutoPlay)
-                {
-                    _syncContext.Post(_ => PlayPauseContent = PlayString, null);
-                }
+                _logger.LogInformation("Cached album art hit for {Md5}; native album art loading will be skipped", md5);
             }
-            catch
+
+            var loadContext = new PlayerLoadContext(loadVersion, filePath, md5, cached?.AlbumArt);
+            lock (_playerStateLock)
             {
-                ResetPlayerToUnloadedState(loadVersion);
-                throw;
+                if (loadVersion != Volatile.Read(ref _albumArtVersion))
+                {
+                    return;
+                }
+
+                ApplyEqualizerSettingsToPlayer(player);
+                SubscribePlayerEvents(player, loadContext);
+                _activeLoadContext = loadContext;
+                _disableAutoAdvance = false;
+                player.OpenFile(filePath, skipAlbumArtLoading);
             }
+
+            if (!_enableAutoPlay)
+            {
+                _syncContext.Post(_ => PlayPauseContent = PlayString, null);
+            }
+        }
+        catch
+        {
+            ResetPlayerToUnloadedState(loadVersion);
+            throw;
         }
         finally
         {
@@ -609,6 +631,17 @@ public partial class MainViewModel : ObservableObject, IDisposable
             return;
         }
 
+        if (e.SettingName == SettingsViewModel.AudioOutputSettingsChangeName)
+        {
+            ref var config = ref _configProvider.GetConfig();
+            PendingSampleRate = config.Audio.SampleRate;
+            PendingChannelMode = config.Audio.Channel;
+            PendingBitDepth = config.Audio.BitDepth;
+            Equalizer.SetSampleRate(PendingSampleRate);
+            NotifyAudioSettingsRestartStateChanged();
+            return;
+        }
+
         if (e.SettingName == nameof(SettingsViewModel.SelectedSampleRate))
         {
             PendingSampleRate = _configProvider.GetConfig().Audio.SampleRate;
@@ -655,7 +688,14 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
         int copied = _musicPlayer.CopyAudioFFTData(SpectrumData);
         if (copied <= 0)
+        {
+            if (_spectrumBufferHasData)
+            {
+                spectrum.Clear();
+                _spectrumBufferHasData = false;
+            }
             return;
+        }
 
         if (copied < spectrum.Length)
             spectrum[copied..].Clear();
@@ -685,36 +725,35 @@ public partial class MainViewModel : ObservableObject, IDisposable
         _isDisposed = true;
     }
 
-    public async Task SetSampleRate(int sampleRate)
+    public Task SetSampleRate(int sampleRate)
     {
         if (sampleRate < 8000 // Telephone quality
             || sampleRate > 192000) // Above high-resolution audio
         {
             throw new ArgumentOutOfRangeException(nameof(sampleRate), "Sample rate must be between 8000 and 192000 Hz.");
         }
-        _logger.LogInformation("Sample rate changed: {OldRate} -> {NewRate}", _sampleRate, sampleRate);
-        _sampleRate = sampleRate;
+        _logger.LogInformation(
+            "Sample rate change queued for restart: {OldRate} -> {NewRate}",
+            _sampleRate,
+            sampleRate);
         PendingSampleRate = sampleRate;
         Equalizer.SetSampleRate(sampleRate);
-        OnPropertyChanged(nameof(IsSampleRateRestartRequired));
-        if (_currentFilePath != null)
-        {
-            await OpenFileAsync(_currentFilePath);
-        }
+        NotifyAudioSettingsRestartStateChanged();
+        return Task.CompletedTask;
     }
 
     private void SubscribePlayerEvents(MusicPlayerManaged player, PlayerLoadContext loadContext)
     {
-        player.OnPlayerTimeChange += time => OnTimeChanged(player, loadContext, time);
-        player.OnPlayerFileInit += () => OnFileInit(player, loadContext);
-        player.OnPlayerAlbumArtInit += encodedImage =>
+        player.OnPlayerTimeChange = time => OnTimeChanged(player, loadContext, time);
+        player.OnPlayerFileInit = () => OnFileInit(player, loadContext);
+        player.OnPlayerAlbumArtInit = encodedImage =>
             ApplyIncomingAlbumArt(encodedImage, player, loadContext);
-        player.OnPlayerNcmRequireAlbumArtDownload += url =>
+        player.OnPlayerNcmRequireAlbumArtDownload = url =>
             QueueNcmAlbumArtDownload(url, player, loadContext);
-        player.OnPlayerStart += () => OnStart(player, loadContext);
-        player.OnPlayerPause += () => OnPause(player, loadContext);
-        player.OnPlayerStop += () => OnStop(player, loadContext);
-        player.OnPlayerError += exception => OnPlayerError(player, loadContext, exception);
+        player.OnPlayerStart = () => OnStart(player, loadContext);
+        player.OnPlayerPause = () => OnPause(player, loadContext);
+        player.OnPlayerStop = () => OnStop(player, loadContext);
+        player.OnPlayerError = exception => OnPlayerError(player, loadContext, exception);
     }
 
     private void SubscribeSmtcEvents()
@@ -749,7 +788,9 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 var albumCover = TryLoadAlbumCover(loadContext.AlbumArtPng);
                 var isLoselessAudio = player.IsLoselessAudio();
                 var isHiResAudio = player.IsHiResAudio();
+                var isBitPerfect = player.IsBitPerfect();
                 var audioSourceFormat = player.GetAudioSourceFormat() ?? string.Empty;
+                var deviceOutputFormat = player.GetDeviceOutputFormat() ?? string.Empty;
 
                 if (cached is null)
                 {
@@ -772,8 +813,10 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 AlbumCoverImage = albumCover;
                 BlurredAlbumCoverImage = null;
                 AudioSourceFormat = audioSourceFormat;
+                DeviceOutputFormat = deviceOutputFormat;
                 IsHiResAudio = isHiResAudio;
                 IsLoselessAudio = isLoselessAudio;
+                IsBitPerfect = isBitPerfect;
                 ProgressValue = 0;
                 CurrentTime = "0:00";
                 ProgressMaximum = length;
@@ -963,6 +1006,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
     private void OnStart(MusicPlayerManaged player, PlayerLoadContext loadContext)
     {
         if (!IsCurrentLoad(player, loadContext)) return;
+		var isBitPerfect = player.IsBitPerfect();
         _logger.LogInformation("OnStart: playback started, switching to SustainedLowLatency GC mode");
         GCSettings.LatencyMode = GCLatencyMode.SustainedLowLatency;
         if (!_playCountIncrementedForCurrentSong)
@@ -973,6 +1017,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
         _syncContext.Post(_ =>
         {
             if (!IsCurrentLoad(player, loadContext)) return;
+			IsBitPerfect = isBitPerfect;
             PlayPauseContent = PauseString;
             _smtcService.UpdatePlaybackStatus(PlaybackState.Playing);
             _enableAutoPlay = false;
@@ -1047,6 +1092,18 @@ public partial class MainViewModel : ObservableObject, IDisposable
         WpfMessageBox.Show(
             AudioSourceFormat,
             AudioQualityTitle,
+            WpfMessageBoxIcon.Information);
+    }
+
+    [RelayCommand]
+    private void ShowDeviceQualityInfo()
+    {
+        if (!IsBitPerfect)
+            return;
+        
+        WpfMessageBox.Show(
+            $"当前的音频未经过任何后处理。\n设备输出格式: {DeviceOutputFormat}",
+            BitPerfectTitle,
             WpfMessageBoxIcon.Information);
     }
 
@@ -1385,14 +1442,20 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
             resetVersion = Interlocked.Increment(ref _albumArtVersion);
             _disableAutoAdvance = true;
-            _musicPlayer.Dispose();
-            _musicPlayer = CreateMusicPlayer();
             _activeLoadContext = null;
             _currentFilePath = null;
             _currentMd5 = null;
             _enableAutoPlay = false;
             _pendingSeekTime = null;
             _playCountIncrementedForCurrentSong = false;
+            try
+            {
+                _musicPlayer.CloseFile();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to close the current audio file while resetting player state");
+            }
         }
 
         GCSettings.LatencyMode = _previousLatencyMode;
@@ -1411,6 +1474,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
         BlurredAlbumCoverImage = null;
         IsLoselessAudio = false;
         IsHiResAudio = false;
+        IsBitPerfect = false;
         AudioSourceFormat = string.Empty;
         SongTitle = NoFileOpenedTitle;
         ArtistName = UnknownArtist;

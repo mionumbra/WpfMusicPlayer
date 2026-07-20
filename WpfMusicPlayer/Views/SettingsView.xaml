@@ -83,6 +83,39 @@
             </Setter>
         </Style>
 
+        <Style x:Key="SettingsActionButtonStyle" TargetType="Button">
+            <Setter Property="Background" Value="#0078D7"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Padding" Value="14,7"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="ButtonBorder"
+                                Background="{TemplateBinding Background}"
+                                CornerRadius="4"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="ButtonBorder" Property="Background" Value="#168CE2"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="ButtonBorder" Property="Background" Value="#005A9E"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="ButtonBorder" Property="Opacity" Value="0.5"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
         <Style x:Key="SettingsScrollBarThumb" TargetType="Thumb">
             <Setter Property="OverridesDefaultStyle" Value="True"/>
             <Setter Property="IsTabStop" Value="False"/>
@@ -157,6 +190,13 @@
 
             <TextBlock Text="音频" Foreground="#0078D7" FontSize="15" FontWeight="SemiBold" Margin="0,0,0,14"/>
 			<TextBlock Text="注意：如果您更改了音频设置，您需要重新启动应用程序以使更改生效" Foreground="#FFFFE0" FontSize="12" FontWeight="Bold" Margin="0,0,0,14" TextWrapping="Wrap"/>
+
+            <Button Content="应用系统输出设置"
+                    Command="{Binding ApplySystemOutputSettingsCommand}"
+                    Style="{StaticResource SettingsActionButtonStyle}"
+                    HorizontalAlignment="Right"
+                    Margin="0,0,0,14"
+                    ToolTip="将声道、位宽和采样率设置为当前系统默认输出设备的格式"/>
 
             <Grid Margin="0,0,0,14">
                 <Grid.ColumnDefinitions>

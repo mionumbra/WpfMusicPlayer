@@ -13,6 +13,15 @@ namespace MusicPlayerLibrary::AudioDsp
     {
         constexpr std::uint32_t MaxChannelCount = 64;
         constexpr float TailThreshold = 1.0e-8f;
+		constexpr float LoudnessPowerFloor = 1.0e-30f;
+		// All ten public bands can move by +/-24 dB. Their theoretical summed
+		// bound is +/-240 dB, or 1e-12..1e12 in linear gain. The final limiter
+		// and anti-windup remain the full-scale safety boundary.
+		constexpr float MinimumLoudnessMatchGain = 1.0e-12f;
+		constexpr float MaximumLoudnessMatchGain = 1.0e12f;
+        constexpr double LoudnessPowerWindowSeconds = 0.100;
+        constexpr double LoudnessGainWindowSeconds = 0.050;
+		constexpr double LoudnessFeedbackWarmupSeconds = 0.250;
 
         [[nodiscard]] bool IsUsableBand(
             const EqualizerBandConfig& band, std::uint32_t sampleRate) noexcept
@@ -92,11 +101,15 @@ namespace MusicPlayerLibrary::AudioDsp
     EqualizerDspSnapshot CompileEqualizerSnapshot(
         const EqualizerConfig& config,
         std::uint32_t sampleRate,
-        std::uint64_t resetGeneration) noexcept
+        std::uint64_t resetGeneration,
+        const float preGain) noexcept
     {
         EqualizerDspSnapshot snapshot;
         snapshot.byte_size = sizeof(EqualizerDspSnapshot);
         snapshot.reset_generation = resetGeneration;
+        snapshot.pre_gain = std::isfinite(preGain)
+            ? std::clamp(preGain, 0.0f, 4.0f)
+            : 1.0f;
 
         for (std::size_t index = 0; index < EqualizerBandCount; ++index)
         {
@@ -145,10 +158,17 @@ namespace MusicPlayerLibrary::AudioDsp
         limiter_delay_frames_ = limiter.enabled ? lookahead_window_frames_ - 1u : 0u;
         limiter_release_frames_ = std::max(
             1u, static_cast<std::uint32_t>(releaseFrames));
+        loudness_power_history_ = static_cast<float>(std::exp(
+            -1.0 / (static_cast<double>(sampleRate) *
+                LoudnessPowerWindowSeconds)));
+        loudness_gain_history_ = static_cast<float>(std::exp(
+            -1.0 / (static_cast<double>(sampleRate) *
+                LoudnessGainWindowSeconds)));
         biquad_states_.assign(
             static_cast<std::size_t>(channelCount) * EqualizerBandCount, {});
         delay_line_.assign(
             static_cast<std::size_t>(lookahead_window_frames_) * channelCount, 0.0f);
+		input_power_delay_line_.assign(lookahead_window_frames_, 0.0f);
         peak_queue_.assign(
             static_cast<std::size_t>(lookahead_window_frames_) + 1u, {});
         Reset();
@@ -159,6 +179,8 @@ namespace MusicPlayerLibrary::AudioDsp
     {
         std::fill(biquad_states_.begin(), biquad_states_.end(), BiquadState{});
         std::fill(delay_line_.begin(), delay_line_.end(), 0.0f);
+		std::fill(
+			input_power_delay_line_.begin(), input_power_delay_line_.end(), 0.0f);
         std::fill(peak_queue_.begin(), peak_queue_.end(), PeakNode{});
         limiter_frame_index_ = 0;
         silent_input_frames_ = 0;
@@ -168,6 +190,12 @@ namespace MusicPlayerLibrary::AudioDsp
         limiter_gain_ = 1.0f;
         limiter_release_step_ = 0.0f;
         limiter_release_frames_remaining_ = 0;
+        input_loudness_power_ = 0.0f;
+        equalized_loudness_power_ = 0.0f;
+		delayed_input_loudness_power_ = 0.0f;
+		output_loudness_power_ = 0.0f;
+        loudness_match_gain_ = 1.0f;
+		loudness_measurement_frames_ = 0;
         has_tail_ = false;
         applied_reset_generation_ = ~std::uint64_t{0};
     }
@@ -184,7 +212,9 @@ namespace MusicPlayerLibrary::AudioDsp
             (frameCount != 0 &&
              (output == nullptr || (!inputSilent && input == nullptr))) ||
             snapshot.abi_version != EqualizerSnapshotAbiVersion ||
-            snapshot.byte_size != sizeof(EqualizerDspSnapshot))
+            snapshot.byte_size != sizeof(EqualizerDspSnapshot) ||
+            !std::isfinite(snapshot.pre_gain) ||
+            snapshot.pre_gain < 0.0f || snapshot.pre_gain > 4.0f)
         {
             return false;
         }
@@ -211,12 +241,16 @@ namespace MusicPlayerLibrary::AudioDsp
         std::array<float, MaxChannelCount> filteredSamples{};
         for (std::uint32_t frame = 0; frame < frameCount; ++frame)
         {
-            float linkedPeak = 0.0f;
+            float inputSquareSum = 0.0f;
+            float equalizedSquareSum = 0.0f;
             for (std::uint32_t channel = 0; channel < channel_count_; ++channel)
             {
                 const auto sampleIndex =
                     static_cast<std::size_t>(frame) * channel_count_ + channel;
-                float x = inputSilent ? 0.0f : input[sampleIndex];
+                const float inputSample = inputSilent
+                    ? 0.0f
+                    : input[sampleIndex];
+                float x = inputSample * snapshot.pre_gain;
 
                 for (std::size_t band = 0; band < EqualizerBandCount; ++band)
                 {
@@ -233,8 +267,56 @@ namespace MusicPlayerLibrary::AudioDsp
                 }
 
                 filteredSamples[channel] = x;
-                linkedPeak = std::max(linkedPeak, std::abs(x));
+                inputSquareSum += inputSample * inputSample;
+                equalizedSquareSum += x * x;
             }
+
+            if (limiter_.match_input_loudness && !inputSilent)
+            {
+                const float inverseChannelCount =
+                    1.0f / static_cast<float>(channel_count_);
+                const float inputPower = inputSquareSum * inverseChannelCount;
+                const float equalizedPower =
+                    equalizedSquareSum * inverseChannelCount;
+                const float currentPowerWeight = 1.0f - loudness_power_history_;
+                input_loudness_power_ =
+                    loudness_power_history_ * input_loudness_power_ +
+                    currentPowerWeight * inputPower;
+                equalized_loudness_power_ =
+                    loudness_power_history_ * equalized_loudness_power_ +
+                    currentPowerWeight * equalizedPower;
+
+                if (input_loudness_power_ >= LoudnessPowerFloor &&
+                    equalized_loudness_power_ >= LoudnessPowerFloor)
+                {
+                    const float targetGain = std::clamp(
+                        std::sqrt(input_loudness_power_ /
+                            equalized_loudness_power_),
+                        MinimumLoudnessMatchGain,
+                        MaximumLoudnessMatchGain);
+                    loudness_match_gain_ =
+                        loudness_gain_history_ * loudness_match_gain_ +
+                        (1.0f - loudness_gain_history_) * targetGain;
+                }
+            }
+            else if (!limiter_.match_input_loudness)
+            {
+                loudness_match_gain_ = 1.0f;
+            }
+
+            float linkedPeak = 0.0f;
+            for (std::uint32_t channel = 0; channel < channel_count_; ++channel)
+            {
+                filteredSamples[channel] *= loudness_match_gain_;
+                linkedPeak = std::max(
+                    linkedPeak, std::abs(filteredSamples[channel]));
+            }
+			const float inverseChannelCount =
+				1.0f / static_cast<float>(channel_count_);
+			const float currentInputPower =
+				inputSquareSum * inverseChannelCount;
+			float loudnessReferencePower = currentInputPower;
+			float finalOutputSquareSum = 0.0f;
 
             if (!limiter_.enabled)
             {
@@ -243,6 +325,8 @@ namespace MusicPlayerLibrary::AudioDsp
                     const auto sampleIndex =
                         static_cast<std::size_t>(frame) * channel_count_ + channel;
                     output[sampleIndex] = filteredSamples[channel];
+					finalOutputSquareSum +=
+						filteredSamples[channel] * filteredSamples[channel];
                     outputActive = outputActive ||
                         std::abs(filteredSamples[channel]) >= TailThreshold;
                 }
@@ -294,11 +378,14 @@ namespace MusicPlayerLibrary::AudioDsp
                 const std::size_t writeOffset = delay_write_frame_ * channel_count_;
                 for (std::uint32_t channel = 0; channel < channel_count_; ++channel)
                     delay_line_[writeOffset + channel] = filteredSamples[channel];
+				input_power_delay_line_[delay_write_frame_] = currentInputPower;
 
                 const std::size_t readFrame =
                     (delay_write_frame_ + lookahead_window_frames_ -
                      limiter_delay_frames_) % lookahead_window_frames_;
                 const std::size_t readOffset = readFrame * channel_count_;
+				loudnessReferencePower = input_power_delay_line_[readFrame];
+				input_power_delay_line_[readFrame] = 0.0f;
                 for (std::uint32_t channel = 0; channel < channel_count_; ++channel)
                 {
                     const auto sampleIndex =
@@ -310,6 +397,7 @@ namespace MusicPlayerLibrary::AudioDsp
                         -limiter_.ceiling,
                         limiter_.ceiling);
                     output[sampleIndex] = limitedSample;
+					finalOutputSquareSum += limitedSample * limitedSample;
                     outputActive = outputActive ||
                         std::abs(limitedSample) >= TailThreshold;
                 }
@@ -318,6 +406,60 @@ namespace MusicPlayerLibrary::AudioDsp
                     (delay_write_frame_ + 1u) % lookahead_window_frames_;
                 ++limiter_frame_index_;
             }
+
+			if (limiter_.match_input_loudness)
+			{
+				const auto feedbackWarmupFrames = static_cast<std::uint64_t>(
+					static_cast<double>(sample_rate_) * LoudnessFeedbackWarmupSeconds);
+				const auto feedbackMeasurementFrames = static_cast<std::uint64_t>(
+					static_cast<double>(sample_rate_) * LoudnessPowerWindowSeconds);
+				if (loudnessReferencePower >= LoudnessPowerFloor &&
+					loudness_measurement_frames_ !=
+						(std::numeric_limits<std::uint64_t>::max)())
+				{
+					++loudness_measurement_frames_;
+				}
+				if (loudness_measurement_frames_ == feedbackWarmupFrames)
+				{
+					delayed_input_loudness_power_ = 0.0f;
+					output_loudness_power_ = 0.0f;
+				}
+				if (loudness_measurement_frames_ >= feedbackWarmupFrames)
+				{
+					const float currentPowerWeight = 1.0f - loudness_power_history_;
+					delayed_input_loudness_power_ =
+						loudness_power_history_ * delayed_input_loudness_power_ +
+						currentPowerWeight * loudnessReferencePower;
+					output_loudness_power_ =
+						loudness_power_history_ * output_loudness_power_ +
+						currentPowerWeight *
+							(finalOutputSquareSum * inverseChannelCount);
+				}
+
+				if (loudness_measurement_frames_ >=
+						feedbackWarmupFrames + feedbackMeasurementFrames &&
+					delayed_input_loudness_power_ >= LoudnessPowerFloor &&
+					output_loudness_power_ >= LoudnessPowerFloor)
+				{
+					const float correction = std::sqrt(
+						delayed_input_loudness_power_ / output_loudness_power_);
+					const bool limiterIsConstraining = limiter_.enabled &&
+						limiter_gain_ < 1.0f - 1.0e-5f;
+					// Reducing an overly loud output is always safe. Do not wind the
+					// match gain upward when the peak limiter is already binding; an
+					// exact RMS match is then impossible without exceeding full scale.
+					if (correction <= 1.0f || !limiterIsConstraining)
+					{
+						const float targetGain = std::clamp(
+							loudness_match_gain_ * correction,
+							MinimumLoudnessMatchGain,
+							MaximumLoudnessMatchGain);
+						loudness_match_gain_ =
+							loudness_gain_history_ * loudness_match_gain_ +
+							(1.0f - loudness_gain_history_) * targetGain;
+					}
+				}
+			}
 
             if (inputSilent)
             {

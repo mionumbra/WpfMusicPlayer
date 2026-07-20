@@ -54,7 +54,7 @@
             </Setter>
         </Style>
 
-        <Style x:Key="AudioQualityBadgeStyle" TargetType="Button">
+        <Style x:Key="AudioBadgeBaseStyle" TargetType="Button">
             <Setter Property="Background" Value="#20FFFFFF"/>
             <Setter Property="Foreground" Value="#EEFFFFFF"/>
             <Setter Property="BorderBrush" Value="Transparent"/>
@@ -93,8 +93,25 @@
                     </ControlTemplate>
                 </Setter.Value>
             </Setter>
+        </Style>
+
+        <Style x:Key="AudioQualityBadgeStyle"
+               TargetType="Button"
+               BasedOn="{StaticResource AudioBadgeBaseStyle}">
             <Style.Triggers>
                 <DataTrigger Binding="{Binding IsLoselessAudio}" Value="True">
+                    <Setter Property="Visibility" Value="Visible"/>
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+
+        <Style x:Key="BitPerfectBadgeStyle"
+               TargetType="Button"
+               BasedOn="{StaticResource AudioBadgeBaseStyle}">
+            <Setter Property="IsEnabled" Value="False"/>
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding IsBitPerfect}" Value="True">
+                    <Setter Property="IsEnabled" Value="True"/>
                     <Setter Property="Visibility" Value="Visible"/>
                 </DataTrigger>
             </Style.Triggers>
@@ -244,22 +261,40 @@
                         SpectrumData="{Binding SpectrumData}"
                         BarBrush="#AAFFFFFF" BarSpacing="2" BarCornerRadius="1.5"
                         PeakBrush="#B0FFFFFF"/>
-                    <Button HorizontalAlignment="Center"
-                            Style="{StaticResource AudioQualityBadgeStyle}"
-                            Command="{Binding ShowAudioQualityInfoCommand}"
-                            ToolTip="{Binding AudioQualityTitle}">
-                        <StackPanel Orientation="Horizontal">
-                            <TextBlock Text="&#xF61F;"
-                                       FontFamily="Segoe MDL2 Assets"
-                                       FontSize="16"
-                                       VerticalAlignment="Center"/>
-                            <TextBlock Text="{Binding AudioQualityTitle}"
-                                       FontSize="14"
-                                       FontWeight="Normal"
-                                       Margin="6,0,0,0"
-                                       VerticalAlignment="Center"/>
-                        </StackPanel>
-                    </Button>
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                        <Button Style="{StaticResource AudioQualityBadgeStyle}"
+                                Command="{Binding ShowAudioQualityInfoCommand}"
+                                ToolTip="{Binding AudioQualityTitle}"
+                                Margin="4,0">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="&#xF61F;"
+                                           FontFamily="Segoe MDL2 Assets"
+                                           FontSize="16"
+                                           VerticalAlignment="Center"/>
+                                <TextBlock Text="{Binding AudioQualityTitle}"
+                                           FontSize="14"
+                                           FontWeight="Normal"
+                                           Margin="6,0,0,0"
+                                           VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Button>
+                        <Button Style="{StaticResource BitPerfectBadgeStyle}"
+                                Command="{Binding ShowDeviceQualityInfoCommand}"
+                                ToolTip="Bit-Perfect"
+                                Margin="4,0">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="&#xF623;"
+                                           FontFamily="Segoe MDL2 Assets"
+                                           FontSize="16"
+                                           VerticalAlignment="Center"/>
+                                <TextBlock Text="Bit-Perfect"
+                                           FontSize="14"
+                                           FontWeight="Normal"
+                                           Margin="6,0,0,0"
+                                           VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Button>
+                    </StackPanel>
                 </StackPanel>
 
                 <views:LyricsView x:Name="LandscapeLyricsView" Grid.Column="1" Margin="20,0,0,0"

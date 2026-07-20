@@ -160,13 +160,18 @@
         <ClInclude Include="Audio\FFT\FFTExecuter.h"/>
         <ClInclude Include="Audio\MusicPlayerLibrary.h"/>
         <ClInclude Include="Audio\MusicPlayerMessage.h" />
-        <ClInclude Include="Core\FileAbstractionLayer.h"/>
-        <ClInclude Include="Core\LocaleConverter.h"/>
+        <ClInclude Include="Audio\Pipeline\AudioPipeline.h" />
+        <ClInclude Include="Audio\Pipeline\Device\FAudioOutputDevice.h" />
+        <ClInclude Include="Audio\Pipeline\Observer\FFTAudioObserve.h" />
+        <ClInclude Include="Audio\Pipeline\Sink\FAudioSink.h" />
+        <ClInclude Include="Audio\Pipeline\Source\AudioFile.h" />
+        <ClInclude Include="Core\FileAbstractionLayer.h" />
+        <ClInclude Include="Core\LocaleConverter.h" />
         <ClInclude Include="Core\NativeLibraryRuntime.h" />
         <ClInclude Include="Core\NativeLogWriter.h" />
-        <ClInclude Include="Core\NativeTraceRedirect.h"/>
+        <ClInclude Include="Core\NativeTraceRedirect.h" />
         <ClInclude Include="Core\AudioThreadScheduleHelper.h" />
-        <ClInclude Include="Crypto\NcmDecryptor.h"/>
+        <ClInclude Include="Crypto\NcmDecryptor.h" />
         <ClInclude Include="Lyric\LrcFileController.h" />
         <ClInclude Include="Lyric\MLPipeline\MLPipelineCommon.h" />
         <ClInclude Include="Lyric\MLPipeline\NCNNPipeline.h" />
@@ -189,7 +194,11 @@
         <ClInclude Include="Resource.h" />
     </ItemGroup>
     <ItemGroup>
-        <ClCompile Include="Audio\FFT\AudioPipelinePerformanceHelper.cpp"/>
+        <ClCompile Include="Audio\FFT\AudioPipelinePerformanceHelper.cpp" />
+        <ClCompile Include="Audio\Pipeline\Device\FAudioOutputDevice.cpp" />
+        <ClCompile Include="Audio\Pipeline\Observer\FFTAudioObserve.cpp" />
+        <ClCompile Include="Audio\Pipeline\Sink\FAudioSink.cpp" />
+        <ClCompile Include="Audio\Pipeline\Source\AudioFile.cpp" />
         <ClCompile Include="Lyric\MLPipeline\MLPipelineCommon.cpp" />
         <ClCompile Include="Lyric\MLPipeline\NCNNPipeline.cpp" />
         <ClCompile Include="Lyric\MLPipeline\VocabularyIO.cpp" />
@@ -198,7 +207,6 @@
         <ClCompile Include="Audio\DSP\FapoEqualizer.cpp" />
 		<ClCompile Include="Audio\AudioOutputFormat.cpp" />
         <ClCompile Include="Audio\FFT\FFTExecuter.cpp" />
-        <ClCompile Include="Audio\MusicPlayerLibrary.cpp" />
         <ClCompile Include="Core\AudioThreadScheduleHelper.cpp" />
         <ClCompile Include="Core\LocaleConverter.cpp" />
         <ClCompile Include="Core\NativeLibraryRuntime.cpp" />

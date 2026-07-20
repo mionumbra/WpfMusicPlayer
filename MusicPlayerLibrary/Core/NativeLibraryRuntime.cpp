@@ -15,6 +15,7 @@
 #endif
 
 #include "Audio/FFT/AudioPipelinePerformanceHelper.h"
+#include "Audio/Pipeline/Device/FAudioOutputDevice.h"
 #include "Core/NativeLibraryRuntime.h"
 #include "Core/NativeTraceRedirect.h"
 #include "Lyric/LrcFileController.h"
@@ -59,6 +60,7 @@ void MusicPlayerLibrary::NativeLibraryRuntime::Initialize()
 			LrcLanguageHelper::ShutdownSingleton();
 			language_helper_initialized = false;
 		}
+		FAudioOutputDevice::ShutdownShared();
 		ncnn::destroy_gpu_instance();
 		NativeTraceRedirect::ShutdownNativeTraceRedirect();
 		runtime_state = NativeRuntimeState::Shutdown;
@@ -89,6 +91,7 @@ void MusicPlayerLibrary::NativeLibraryRuntime::Shutdown() noexcept
 	}
 
 	// 销毁ATLTRACE 重定向器
+	FAudioOutputDevice::ShutdownShared();
 	NativeTraceRedirect::ShutdownNativeTraceRedirect();
 	runtime_state = NativeRuntimeState::Shutdown;
 }

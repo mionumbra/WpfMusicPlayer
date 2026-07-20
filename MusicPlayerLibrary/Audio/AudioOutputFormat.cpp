@@ -7,6 +7,7 @@
 #include <bit>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <stdexcept>
 
 #if defined(__cplusplus)
@@ -281,6 +282,73 @@ MusicPlayerLibrary::AudioFormatInfo MusicPlayerLibrary::GetAudioFormatInfo(
 	};
 }
 
+bool MusicPlayerLibrary::AreAudioFormatsBitPerfect(
+	const DecodedAudioFormat& input,
+	const AudioOutputFormat& output) noexcept
+{
+	if (input.sample_rate <= 0 || input.channel_count == 0 ||
+		input.channel_mask == 0 || input.bit_depth <= 0 ||
+		input.sample_format == AV_SAMPLE_FMT_NONE ||
+		av_sample_fmt_is_planar(input.sample_format) != 0 ||
+		output.sample_rate <= 0 || output.channel_count == 0 ||
+		output.channel_mask == 0 || output.sample_format == AV_SAMPLE_FMT_NONE)
+	{
+		return false;
+	}
+
+	const int bytes_per_sample = av_get_bytes_per_sample(input.sample_format);
+	if (bytes_per_sample <= 0 || input.sample_format != output.sample_format ||
+		input.bit_depth > bytes_per_sample * 8 ||
+		std::popcount(input.channel_mask) != input.channel_count ||
+		std::popcount(output.channel_mask) != output.channel_count)
+		return false;
+
+	const FAudioGUID* expected_sub_format = nullptr;
+	switch (input.sample_format)
+	{
+	case AV_SAMPLE_FMT_S16:
+	case AV_SAMPLE_FMT_S32:
+		expected_sub_format = &PcmSubFormat;
+		break;
+	case AV_SAMPLE_FMT_FLT:
+		expected_sub_format = &IeeeFloatSubFormat;
+		break;
+	default:
+		return false;
+	}
+
+	const auto& wave = output.wave_format;
+	const auto expected_block_align = static_cast<std::uint32_t>(
+		input.channel_count) * static_cast<std::uint32_t>(bytes_per_sample);
+	const auto expected_average_bytes = static_cast<std::uint64_t>(
+		input.sample_rate) * expected_block_align;
+	if (wave.Format.wFormatTag != FAUDIO_FORMAT_EXTENSIBLE ||
+		wave.Format.cbSize !=
+			sizeof(FAudioWaveFormatExtensible) - sizeof(FAudioWaveFormatEx) ||
+		wave.Format.nSamplesPerSec != static_cast<std::uint32_t>(output.sample_rate) ||
+		wave.Format.nChannels != output.channel_count ||
+		wave.dwChannelMask != output.channel_mask ||
+		!SameGuid(wave.SubFormat, *expected_sub_format) ||
+		expected_block_align > (std::numeric_limits<std::uint16_t>::max)() ||
+		expected_average_bytes > (std::numeric_limits<std::uint32_t>::max)() ||
+		output.wave_format.Format.wBitsPerSample != bytes_per_sample * 8 ||
+		output.wave_format.Samples.wValidBitsPerSample != input.bit_depth ||
+		output.wave_format.Samples.wValidBitsPerSample >
+			output.wave_format.Format.wBitsPerSample ||
+		output.wave_format.Samples.wValidBitsPerSample !=
+			static_cast<std::uint16_t>(output.bit_depth) ||
+		output.wave_format.Format.nBlockAlign != expected_block_align ||
+		output.wave_format.Format.nAvgBytesPerSec != expected_average_bytes)
+	{
+		return false;
+	}
+
+	return input.sample_rate == output.sample_rate &&
+		input.channel_count == output.channel_count &&
+		input.channel_mask == output.channel_mask &&
+		input.bit_depth == static_cast<int>(output.bit_depth);
+}
+
 double MusicPlayerLibrary::CalculateAudioBitrateKBytesPerSecond(
 	const std::uint64_t encoded_bytes,
 	const double decoded_duration_seconds) noexcept
@@ -342,7 +410,7 @@ bool MusicPlayerLibrary::IsLoselessAudio(
 	const double average_bitrate_bits_per_second) noexcept
 {
 	return std::isfinite(average_bitrate_bits_per_second) &&
-		average_bitrate_bits_per_second > 800000.0;
+		average_bitrate_bits_per_second > 600000.0;
 }
 
 bool MusicPlayerLibrary::IsHiResAudio(const int source_sample_rate) noexcept

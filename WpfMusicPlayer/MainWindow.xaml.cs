@@ -152,9 +152,7 @@ namespace WpfMusicPlayer
                 return;
             }
 
-            if (e.PropertyName is nameof(MainViewModel.PendingSampleRate)
-                or nameof(MainViewModel.PendingChannelMode)
-                or nameof(MainViewModel.PendingBitDepth))
+            if (e.PropertyName == nameof(MainViewModel.IsAudioSettingsRestartRequired))
             {
                 PromptRestartForAudioSettingsChange();
                 return;

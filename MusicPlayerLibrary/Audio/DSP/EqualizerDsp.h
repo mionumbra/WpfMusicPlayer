@@ -15,7 +15,7 @@ namespace MusicPlayerLibrary::AudioDsp
             31.0f, 62.0f, 125.0f, 250.0f, 500.0f,
             1000.0f, 2000.0f, 4000.0f, 8000.0f, 16000.0f
         };
-    inline constexpr std::uint32_t EqualizerSnapshotAbiVersion = 1;
+    inline constexpr std::uint32_t EqualizerSnapshotAbiVersion = 2;
 
     enum class BiquadType : std::uint32_t { Peaking = 0 };
     struct EqualizerBandConfig
@@ -41,21 +41,30 @@ namespace MusicPlayerLibrary::AudioDsp
         std::uint32_t byte_size = 0;
         std::uint64_t reset_generation = 0;
         std::uint32_t enabled_mask = 0;
-        std::uint32_t reserved = 0;
+        // Sink-owned gain applied before EQ and limiting. Source-side PCM and
+        // observers therefore remain normalized but otherwise unprocessed.
+        float pre_gain = 1.0f;
         std::array<BiquadCoefficients, EqualizerBandCount> bands{};
     };
     struct LimiterConfig
     {
         bool enabled = true;
-        float ceiling = 0.70f;
+        float ceiling = 1.0f;
         float lookahead_ms = 5.0f;
         float release_ms = 50.0f;
+        // Match the final limited output toward the decoded input's running
+        // RMS, with feed-forward EQ compensation and limiter anti-windup.
+        // This is enabled only for sink EQ processing.
+        bool match_input_loudness = false;
     };
     static_assert(std::is_trivially_copyable_v<EqualizerDspSnapshot>);
 
     EqualizerConfig MakeDefaultTenBandConfig() noexcept;
     EqualizerDspSnapshot CompileEqualizerSnapshot(
-        const EqualizerConfig&, std::uint32_t, std::uint64_t) noexcept;
+        const EqualizerConfig&,
+        std::uint32_t,
+        std::uint64_t,
+        float pre_gain = 1.0f) noexcept;
 
     class EqualizerDsp final
     {
@@ -90,9 +99,18 @@ namespace MusicPlayerLibrary::AudioDsp
         float limiter_gain_ = 1.0f;
         float limiter_release_step_ = 0.0f;
         std::uint32_t limiter_release_frames_remaining_ = 0;
+        float input_loudness_power_ = 0.0f;
+        float equalized_loudness_power_ = 0.0f;
+		float delayed_input_loudness_power_ = 0.0f;
+		float output_loudness_power_ = 0.0f;
+        float loudness_match_gain_ = 1.0f;
+        float loudness_power_history_ = 0.0f;
+        float loudness_gain_history_ = 0.0f;
+		std::uint64_t loudness_measurement_frames_ = 0;
         bool has_tail_ = false;
         std::vector<BiquadState> biquad_states_;
         std::vector<float> delay_line_;
+		std::vector<float> input_power_delay_line_;
         std::vector<PeakNode> peak_queue_;
     };
 }

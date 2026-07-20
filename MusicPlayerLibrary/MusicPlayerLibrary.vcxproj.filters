@@ -1,6 +1,21 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
+    <ClInclude Include="Audio\Pipeline\AudioPipeline.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="Audio\Pipeline\Device\FAudioOutputDevice.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="Audio\Pipeline\Sink\FAudioSink.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="Audio\Pipeline\Observer\FFTAudioObserve.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="Audio\Pipeline\Source\AudioFile.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
     <Filter Include="源文件">
       <UniqueIdentifier>{4FC737F1-C7A5-4376-A066-2A32D752A2FF}</UniqueIdentifier>
       <Extensions>cpp;c;cc;cxx;c++;cppm;ixx;def;odl;idl;hpj;bat;asm;asmx</Extensions>
@@ -15,6 +30,15 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="Audio\Pipeline\Device\FAudioOutputDevice.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="Audio\Pipeline\Sink\FAudioSink.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="Audio\Pipeline\Observer\FFTAudioObserve.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
     <ClInclude Include="MusicPlayerLibrary.h">
       <Filter>头文件</Filter>
     </ClInclude>
@@ -44,7 +68,7 @@
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="MusicPlayerLibrary.cpp">
+    <ClCompile Include="Audio\Pipeline\Source\AudioFile.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
     <ClCompile Include="AssemblyInfo.cpp">
