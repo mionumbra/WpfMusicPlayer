@@ -5,6 +5,16 @@
 
 namespace
 {
+	bool HasAudioFormatInfo(
+		const MusicPlayerLibrary::AudioFormatInfo& format) noexcept
+	{
+		return format.channel_type_id !=
+				static_cast<int>(MusicPlayerLibrary::AudioChannelMode::Unknown) ||
+			format.sample_rate > 0 ||
+			format.bit_depth !=
+				static_cast<int>(MusicPlayerLibrary::AudioBitDepth::Unknown);
+	}
+
 	System::InvalidOperationException^ ToManagedException(const std::exception& exception)
 	{
 		const std::string message = exception.what();
@@ -12,6 +22,78 @@ namespace
 			gcnew System::String(message.c_str(), 0, static_cast<int>(message.size()),
 				System::Text::Encoding::UTF8));
 	}
+}
+
+System::String^ MusicPlayerLibrary::MusicPlayerManaged::FormatAudioChannelType(
+	const int channel_type_id)
+{
+	switch (static_cast<AudioChannelMode>(channel_type_id))
+	{
+	case AudioChannelMode::System: return "System";
+	case AudioChannelMode::Mono: return "Mono";
+	case AudioChannelMode::Stereo: return "Stereo";
+	case AudioChannelMode::Surround51: return "Surround 5.1";
+	case AudioChannelMode::Surround71: return "Surround 7.1";
+	case AudioChannelMode::Unknown:
+	default:
+		return "Unknown channel layout";
+	}
+}
+
+System::String^ MusicPlayerLibrary::MusicPlayerManaged::FormatAudioSampleRate(
+	const int sample_rate)
+{
+	if (sample_rate <= 0)
+		return "Unknown sample rate";
+	if (sample_rate < 1'000)
+	{
+		return System::String::Format(
+			System::Globalization::CultureInfo::InvariantCulture,
+			"{0} Hz", sample_rate);
+	}
+	return System::String::Format(
+		System::Globalization::CultureInfo::InvariantCulture,
+		"{0:0.###} kHz", sample_rate / 1'000.0);
+}
+
+System::String^ MusicPlayerLibrary::MusicPlayerManaged::FormatAudioBitDepth(
+	const int bit_depth)
+{
+	if (bit_depth == static_cast<int>(AudioBitDepth::System))
+		return "System";
+	if (bit_depth < 0)
+		return "Unknown bit depth";
+	return System::String::Format(
+		System::Globalization::CultureInfo::InvariantCulture,
+		"{0}-bit", bit_depth);
+}
+
+System::String^ MusicPlayerLibrary::MusicPlayerManaged::FormatAudioFormat(
+	const int channel_type_id,
+	const int sample_rate,
+	const int bit_depth,
+	const int bit_rate)
+{
+	return 
+		System::String::Format(
+		System::Globalization::CultureInfo::InvariantCulture,
+		"{0} / {1} / {2}, {3:f2} kbps",
+		FormatAudioSampleRate(sample_rate),
+		FormatAudioBitDepth(bit_depth),
+		FormatAudioChannelType(channel_type_id),
+		bit_rate / 1000.0);
+}
+
+System::String^ MusicPlayerLibrary::MusicPlayerManaged::FormatAudioFormat(int channel_type_id, int sample_rate,
+	int bit_depth)
+{
+	return 
+	System::String::Format(
+		System::Globalization::CultureInfo::InvariantCulture,
+		"{0} / {1} / {2}",
+		FormatAudioSampleRate(sample_rate),
+		FormatAudioBitDepth(bit_depth),
+		FormatAudioChannelType(channel_type_id));
 }
 
 MusicPlayerLibrary::MusicPlayerManaged::MusicPlayerManaged()
@@ -214,6 +296,47 @@ System::String^ MusicPlayerLibrary::MusicPlayerManaged::GetSongArtist()
 	// TODO: 在此处插入 return 语句
 	if (artist.empty()) return nullptr;
 	return gcnew System::String(artist.c_str());
+}
+
+System::String^ MusicPlayerLibrary::MusicPlayerManaged::GetAudioSourceFormat()
+{
+	if (!is_native_valid()) return nullptr;
+	const AudioFormatInfo format = native_handle->GetAudioSourceFormatInfo();
+	if (!HasAudioFormatInfo(format)) return nullptr;
+	return FormatAudioFormat(
+		format.channel_type_id, format.sample_rate, format.bit_depth, native_handle->GetAverageAudioBitrate());
+}
+
+System::String^ MusicPlayerLibrary::MusicPlayerManaged::GetDeviceOutputFormat()
+{
+	if (!is_native_valid()) return nullptr;
+	const AudioFormatInfo format = native_handle->GetDeviceOutputFormatInfo();
+	return FormatAudioFormat(
+		format.channel_type_id, format.sample_rate, format.bit_depth);
+}
+
+double MusicPlayerLibrary::MusicPlayerManaged::GetAudioSourceBitrate()
+{
+	if (!is_native_valid()) return 0.0;
+	return native_handle->GetAudioSourceBitrate();
+}
+
+int MusicPlayerLibrary::MusicPlayerManaged::GetAverageAudioBitrate()
+{
+	if (!is_native_valid()) return 0;
+	return native_handle->GetAverageAudioBitrate();
+}
+
+bool MusicPlayerLibrary::MusicPlayerManaged::IsLoselessAudio()
+{
+	if (!is_native_valid()) return false;
+	return native_handle->IsLoselessAudio();
+}
+
+bool MusicPlayerLibrary::MusicPlayerManaged::IsHiResAudio()
+{
+	if (!is_native_valid()) return false;
+	return native_handle->IsHiResAudio();
 }
 
 void MusicPlayerLibrary::MusicPlayerManaged::Start()

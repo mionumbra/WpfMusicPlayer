@@ -17,6 +17,7 @@
       "name": "ncnn",
       "default-features": false,
       "features": [ "vulkan" ]
-    }
+    },
+    "doctest"
   ]
 }

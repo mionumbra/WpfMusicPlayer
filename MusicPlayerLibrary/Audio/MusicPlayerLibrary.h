@@ -77,6 +77,11 @@ namespace MusicPlayerLibrary {
 		int fifo_audio_channels = 0;
 		AVSampleFormat fifo_audio_sample_fmt = AV_SAMPLE_FMT_NONE;
 		int fifo_sample_rate = 0;
+		AudioFormatInfo audio_source_format_info{};
+		AudioBitrateTracker audio_source_bitrate_tracker;
+		std::atomic<double> average_audio_bitrate_bits_per_second{ 0.0 };
+		std::atomic_bool is_loseless_audio{ false };
+		std::atomic_bool is_hi_res_audio{ false };
 		std::wstring song_title = {};
 		std::wstring song_artist = {};
 
@@ -138,6 +143,11 @@ namespace MusicPlayerLibrary {
 		int load_audio_context_from_file_stream();
 		void release_audio_context();
 		void reset_audio_context();
+		int get_average_audio_bitrate() const;
+		void reset_audio_quality_flags() noexcept;
+		void update_audio_quality_flags(
+			std::uint64_t stream_length_bytes,
+			int source_sample_rate) noexcept;
 		bool is_audio_context_initialized();
 		std::vector<std::uint8_t> get_id3_album_art_stream(int stream_index);
 		void require_download_ncm_album_art(const std::wstring& url);
@@ -158,6 +168,9 @@ namespace MusicPlayerLibrary {
 		int timed_read_packet();
 		int timed_send_decoder_packet(const AVPacket* input_packet);
 		int timed_receive_decoded_frame();
+		void reset_audio_source_bitrate() noexcept;
+		void observe_audio_source_packet(const AVPacket& source_packet) noexcept;
+		void observe_audio_source_frame(const AVFrame& decoded_frame) noexcept;
 		void audio_decode_worker_thread();
 		void audio_normalize_worker_thread();
 		void handle_worker_exception(const std::string& message, const char* worker_name);
@@ -256,6 +269,22 @@ namespace MusicPlayerLibrary {
 		double GetCurrentMusicPosition();
 		std::wstring GetSongTitle();
 		std::wstring GetSongArtist();
+		// Returns raw decoded-source metadata. For lossless/PCM sources the
+		// stream's effective bit depth is preferred; formats without a declared
+		// bit depth fall back to the decoder's sample representation.
+		[[nodiscard]] AudioFormatInfo GetAudioSourceFormatInfo() const noexcept;
+		// Returns raw metadata for the resolved format submitted to the device.
+		[[nodiscard]] AudioFormatInfo GetDeviceOutputFormatInfo() const noexcept;
+		// Returns the cumulative elementary-stream payload byte rate observed in
+		// the current continuous decode epoch. Container overhead is excluded.
+		// The unit is decimal KByte/s (1 KByte = 1000 bytes).
+		[[nodiscard]] double GetAudioSourceBitrate() const noexcept;
+		// Uses only the backing stream's average bitrate. The deliberately named
+		// heuristic is true only above 800 kbit/s.
+		[[nodiscard]] bool IsLoselessAudio() const noexcept;
+		// True only when the decoded source sample rate is above 48 kHz.
+		[[nodiscard]] bool IsHiResAudio() const noexcept;
+		[[nodiscard]] int GetAverageAudioBitrate() const noexcept;
 		void Start();
 		void Pause();
 		void Stop();

@@ -2,6 +2,7 @@
 
 #include "pch.h"
 
+#include <cmath>
 #include <cwctype>
 #include <format>
 #include <memory>
@@ -160,6 +161,56 @@ namespace
 		return std::chrono::duration<double, std::milli>(elapsed).count();
 	}
 
+	int GetEffectiveSourceBitDepth(
+		const AVCodecContext& codec_context,
+		const AVCodecParameters& codec_parameters) noexcept
+	{
+		const int reported_depths[] = {
+			codec_context.bits_per_raw_sample,
+			codec_parameters.bits_per_raw_sample,
+			codec_context.bits_per_coded_sample,
+			codec_parameters.bits_per_coded_sample
+		};
+		for (const int bit_depth : reported_depths)
+		{
+			if (bit_depth > 0)
+				return bit_depth;
+		}
+
+		const int bytes_per_sample = av_get_bytes_per_sample(codec_context.sample_fmt);
+		return bytes_per_sample > 0 ? bytes_per_sample * 8 : 0;
+	}
+
+	double GetAudioStreamDurationSeconds(
+		const AVFormatContext* format_context,
+		const int audio_stream_index) noexcept
+	{
+		if (!format_context || audio_stream_index < 0 ||
+			static_cast<unsigned int>(audio_stream_index) >= format_context->nb_streams)
+		{
+			return 0.0;
+		}
+
+		const AVStream* audio_stream = format_context->streams[audio_stream_index];
+		if (audio_stream && audio_stream->duration > 0 &&
+			audio_stream->duration != AV_NOPTS_VALUE && audio_stream->time_base.den != 0)
+		{
+			const double duration_seconds =
+				static_cast<double>(audio_stream->duration) * av_q2d(audio_stream->time_base);
+			if (std::isfinite(duration_seconds) && duration_seconds > 0.0)
+				return duration_seconds;
+		}
+
+		if (format_context->duration > 0 && format_context->duration != AV_NOPTS_VALUE)
+		{
+			const double duration_seconds =
+				static_cast<double>(format_context->duration) / AV_TIME_BASE;
+			if (std::isfinite(duration_seconds) && duration_seconds > 0.0)
+				return duration_seconds;
+		}
+		return 0.0;
+	}
+
 }
 
 int MusicPlayerLibrary::MusicPlayer::read_func(uint8_t* buf, int buf_size) {
@@ -202,6 +253,10 @@ int64_t MusicPlayerLibrary::MusicPlayer::seek_func_wrapper(void* opaque, int64_t
 
 inline int MusicPlayerLibrary::MusicPlayer::load_audio_context(const std::wstring& audio_filename, const std::wstring& file_extension_in, bool skip_album_art_loading)
 {
+	audio_source_format_info = {};
+	reset_audio_source_bitrate();
+	reset_audio_quality_flags();
+	length.store(0.0, std::memory_order_relaxed);
 	// 打开文件流
 	// std::ios::sync_with_stdio(false);
 	file_stream = GetDefaultFileSystem().OpenReadFile(audio_filename, true, false);
@@ -351,14 +406,26 @@ int MusicPlayerLibrary::MusicPlayer::load_audio_context_from_file_stream()
 		current_stream->codecpar->ch_layout.order);
 
 	int image_stream_id = -1;
+	std::uint64_t attached_picture_bytes = 0;
 
 	for (unsigned int i = 0; i < format_context->nb_streams; i++) {
 		if (AVStream* stream = format_context->streams[i]; stream->disposition & AV_DISPOSITION_ATTACHED_PIC) {
-			NATIVE_TRACE("info: open stream id %d read attaching pic\n", i);
-			image_stream_id = static_cast<int>(i);
-			break;
+			if (image_stream_id < 0)
+			{
+				NATIVE_TRACE("info: open stream id %d read attaching pic\n", i);
+				image_stream_id = static_cast<int>(i);
+			}
+			if (stream->attached_pic.size > 0)
+			{
+				attached_picture_bytes +=
+					static_cast<std::uint64_t>(stream->attached_pic.size);
+			}
 		}
 	}
+	const std::uint64_t estimated_audio_stream_length_bytes =
+		static_cast<std::uint64_t>(file_len) > attached_picture_bytes
+			? static_cast<std::uint64_t>(file_len) - attached_picture_bytes
+			: 0;
 
 	if (image_stream_id != -1 && !skip_album_art_loading && this->file_extension != L"ncm")
 	{
@@ -394,6 +461,39 @@ int MusicPlayerLibrary::MusicPlayer::load_audio_context_from_file_stream()
 		NATIVE_TRACE("err: avcodec_open2 failed, reason = %s\n", buf.get());
 		return fail_load();
 	}
+
+	const AVCodecParameters& codec_parameters =
+		*format_context->streams[audio_stream_index]->codecpar;
+	const int source_sample_rate = codec_context->sample_rate > 0
+		? codec_context->sample_rate
+		: codec_parameters.sample_rate;
+	const int source_channel_count = codec_context->ch_layout.nb_channels > 0
+		? codec_context->ch_layout.nb_channels
+		: codec_parameters.ch_layout.nb_channels;
+	const AVChannelLayout& source_channel_layout =
+		codec_context->ch_layout.nb_channels > 0
+			? codec_context->ch_layout
+			: codec_parameters.ch_layout;
+	const std::uint64_t source_channel_mask =
+		source_channel_layout.order == AV_CHANNEL_ORDER_NATIVE
+			? source_channel_layout.u.mask
+			: 0;
+	const int source_bit_depth =
+		GetEffectiveSourceBitDepth(*codec_context, codec_parameters);
+	audio_source_format_info = {
+		GetAudioChannelTypeId(source_channel_count, source_channel_mask),
+		source_sample_rate,
+		source_bit_depth > 0
+			? source_bit_depth
+			: static_cast<int>(AudioBitDepth::Unknown)
+	};
+	NATIVE_TRACE(
+		"info: audio source format: channel_type_id=%d, sample_rate=%d, bit_depth=%d\n",
+		audio_source_format_info.channel_type_id,
+		audio_source_format_info.sample_rate,
+		audio_source_format_info.bit_depth);
+	update_audio_quality_flags(
+		estimated_audio_stream_length_bytes, source_sample_rate);
 
 	// avoid ffmpeg warning
 	codec_context->pkt_timebase = format_context->streams[audio_stream_index]->time_base;
@@ -440,6 +540,10 @@ int MusicPlayerLibrary::MusicPlayer::load_audio_context_from_file_stream()
 
 void MusicPlayerLibrary::MusicPlayer::release_audio_context()
 {
+	audio_source_format_info = {};
+	reset_audio_source_bitrate();
+	reset_audio_quality_flags();
+	length.store(0.0, std::memory_order_relaxed);
 	if (avio_context)
 	{
 		avio_context_free(&avio_context);
@@ -471,6 +575,38 @@ void MusicPlayerLibrary::MusicPlayer::release_audio_context()
 	}
 }
 
+void MusicPlayerLibrary::MusicPlayer::reset_audio_quality_flags() noexcept
+{
+	average_audio_bitrate_bits_per_second.store(0.0, std::memory_order_relaxed);
+	is_loseless_audio.store(false, std::memory_order_relaxed);
+	is_hi_res_audio.store(false, std::memory_order_relaxed);
+}
+
+void MusicPlayerLibrary::MusicPlayer::update_audio_quality_flags(
+	const std::uint64_t stream_length_bytes,
+	const int source_sample_rate) noexcept
+{
+	const double duration_seconds =
+		GetAudioStreamDurationSeconds(format_context, audio_stream_index);
+	const double average_bitrate = CalculateAverageAudioBitrateBitsPerSecond(
+		stream_length_bytes, duration_seconds);
+
+	length.store(duration_seconds, std::memory_order_relaxed);
+	average_audio_bitrate_bits_per_second.store(
+		average_bitrate, std::memory_order_relaxed);
+	is_loseless_audio.store(
+		MusicPlayerLibrary::IsLoselessAudio(average_bitrate),
+		std::memory_order_relaxed);
+	is_hi_res_audio.store(
+		MusicPlayerLibrary::IsHiResAudio(source_sample_rate),
+		std::memory_order_relaxed);
+	NATIVE_TRACE(
+		"info: audio quality estimate: average_bitrate=%.0f bps, is_loseless_audio=%d, is_hi_res_audio=%d\n",
+		average_bitrate,
+		is_loseless_audio.load(std::memory_order_relaxed) ? 1 : 0,
+		is_hi_res_audio.load(std::memory_order_relaxed) ? 1 : 0);
+}
+
 void MusicPlayerLibrary::MusicPlayer::reset_audio_context()
 {
 	// release_audio_context();
@@ -491,7 +627,8 @@ void MusicPlayerLibrary::MusicPlayer::reset_audio_context()
 			playback_state.store(audio_playback_state_stopped);
 			return;
 		}
-		av_seek_frame(format_context, audio_stream_index, 0, AVSEEK_FLAG_BACKWARD);
+		if (av_seek_frame(format_context, audio_stream_index, 0, AVSEEK_FLAG_BACKWARD) >= 0)
+			reset_audio_source_bitrate();
 		avcodec_flush_buffers(codec_context);
 		// 重置滤镜图
 		NATIVE_TRACE("info: audio context reset, rebuilding filter graph\n");
@@ -508,6 +645,11 @@ void MusicPlayerLibrary::MusicPlayer::reset_audio_context()
 		fft_executer->ResetBuffers();
 	init_decoder_thread();
 	// load_audio_context_from_file_stream();
+}
+
+int MusicPlayerLibrary::MusicPlayer::get_average_audio_bitrate() const
+{
+	return average_audio_bitrate_bits_per_second.load();
 }
 
 bool MusicPlayerLibrary::MusicPlayer::is_audio_context_initialized()
@@ -1387,6 +1529,32 @@ int MusicPlayerLibrary::MusicPlayer::timed_receive_decoded_frame()
 	return result;
 }
 
+void MusicPlayerLibrary::MusicPlayer::reset_audio_source_bitrate() noexcept
+{
+	audio_source_bitrate_tracker.Reset();
+}
+
+void MusicPlayerLibrary::MusicPlayer::observe_audio_source_packet(
+	const AVPacket& source_packet) noexcept
+{
+	if (source_packet.size > 0)
+		audio_source_bitrate_tracker.ObserveEncodedBytes(
+			static_cast<std::uint64_t>(source_packet.size));
+}
+
+void MusicPlayerLibrary::MusicPlayer::observe_audio_source_frame(
+	const AVFrame& decoded_frame) noexcept
+{
+	const int sample_rate = decoded_frame.sample_rate > 0
+		? decoded_frame.sample_rate
+		: (codec_context ? codec_context->sample_rate : 0);
+	if (decoded_frame.nb_samples <= 0 || sample_rate <= 0)
+		return;
+
+	audio_source_bitrate_tracker.ObserveDecodedSamples(
+		decoded_frame.nb_samples, sample_rate);
+}
+
 void MusicPlayerLibrary::MusicPlayer::audio_decode_worker_thread()
 {
 	bool is_eof = false;
@@ -1421,6 +1589,10 @@ void MusicPlayerLibrary::MusicPlayer::audio_decode_worker_thread()
 			if (av_seek_frame(format_context, -1, static_cast<int64_t>(pts_seconds * AV_TIME_BASE), AVSEEK_FLAG_ANY) < 0) {
 				NATIVE_TRACE("err: resume failed\n");
 				playback_state.store(audio_playback_state_stopped);
+			}
+			else
+			{
+				reset_audio_source_bitrate();
 			}
 			avcodec_flush_buffers(codec_context);
 			is_pause = false;
@@ -1472,6 +1644,7 @@ void MusicPlayerLibrary::MusicPlayer::audio_decode_worker_thread()
 				FFMPEG_CRITICAL_ERROR(decoder_last_call_result);
 				break;
 			}
+			observe_audio_source_packet(*packet);
 		}
 		while (true)
 		{
@@ -1500,6 +1673,7 @@ void MusicPlayerLibrary::MusicPlayer::audio_decode_worker_thread()
 				FFMPEG_CRITICAL_ERROR(decoder_last_call_result);
 				break;
 			}
+			observe_audio_source_frame(*frame);
 			observe_audio_pipeline_stage_duration(
 				audio_pipeline_stage::decoder,
 				decoder_pending_work_milliseconds,
@@ -2376,6 +2550,38 @@ std::wstring MusicPlayerLibrary::MusicPlayer::GetSongArtist()
 		return song_artist;
 	}
 	return {};
+}
+
+MusicPlayerLibrary::AudioFormatInfo
+MusicPlayerLibrary::MusicPlayer::GetAudioSourceFormatInfo() const noexcept
+{
+	return audio_source_format_info;
+}
+
+MusicPlayerLibrary::AudioFormatInfo
+MusicPlayerLibrary::MusicPlayer::GetDeviceOutputFormatInfo() const noexcept
+{
+	return GetAudioFormatInfo(audio_output_format);
+}
+
+double MusicPlayerLibrary::MusicPlayer::GetAudioSourceBitrate() const noexcept
+{
+	return audio_source_bitrate_tracker.GetKBytesPerSecond();
+}
+
+bool MusicPlayerLibrary::MusicPlayer::IsLoselessAudio() const noexcept
+{
+	return is_loseless_audio.load(std::memory_order_relaxed);
+}
+
+bool MusicPlayerLibrary::MusicPlayer::IsHiResAudio() const noexcept
+{
+	return is_hi_res_audio.load(std::memory_order_relaxed);
+}
+
+int MusicPlayerLibrary::MusicPlayer::GetAverageAudioBitrate() const noexcept
+{
+	return get_average_audio_bitrate();
 }
 
 void MusicPlayerLibrary::MusicPlayer::Start()

@@ -71,6 +71,25 @@ namespace MusicPlayerLibrary
 		double GetCurrentMusicPosition();
 		System::String^ GetSongTitle();
 		System::String^ GetSongArtist();
+		System::String^ GetAudioSourceFormat();
+		System::String^ GetDeviceOutputFormat();
+		static System::String^ FormatAudioChannelType(int channel_type_id);
+		static System::String^ FormatAudioSampleRate(int sample_rate);
+		static System::String^ FormatAudioBitDepth(int bit_depth);
+		static System::String^ FormatAudioFormat(
+			int channel_type_id,
+			int sample_rate,
+			int bit_depth,
+			int bit_rate);
+		
+		static System::String^ FormatAudioFormat(
+			int channel_type_id,
+			int sample_rate,
+			int bit_depth);
+		double GetAudioSourceBitrate();
+		int GetAverageAudioBitrate();
+		bool IsLoselessAudio();
+		bool IsHiResAudio();
 		void Start();
 		void Pause();
 		void Stop();

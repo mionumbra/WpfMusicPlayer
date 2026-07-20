@@ -149,6 +149,7 @@ public class SettingsViewModel : ObservableObject
     [
         new(AudioSettings.BitDepthType.System, "System"),
         new(AudioSettings.BitDepthType.Bit16, "16bit"),
+        new(AudioSettings.BitDepthType.Bit24, "24bit"),
         new(AudioSettings.BitDepthType.Bit32, "32bit")
     ];
 

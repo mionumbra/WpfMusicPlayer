@@ -26,7 +26,7 @@ A simple music player, focused on audio pipeline and lyric experience.
 ## Technical stack
 - **Frontend:** WPF / C#  
 - **Backend:** Standard C++, C++/CLI wrapper isolated inside `MusicPlayerNative/Managed`
-- **Native Libraries:** FFmpeg, FAudio, OpenSSL, RapidJSON, cpp-base64, kissfft, uchardet, libiconv, NCNN
+- **Native Libraries:** FFmpeg, FAudio, OpenSSL, RapidJSON, cpp-base64, kissfft, uchardet, libiconv, NCNN, doctest(for native unittest)
 - **Framework:** .NET 10.0 (Long Term Support)  
 - **Minimum Supported Windows Version:** Windows 10 2004 (build 10.0.19041.0)  
 - **Target Windows Version:** Windows Latest (build 10.0.26100.0)

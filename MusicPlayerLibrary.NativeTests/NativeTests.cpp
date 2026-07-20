@@ -1,3 +1,10 @@
+#define DOCTEST_CONFIG_USE_STD_HEADERS
+#define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
+#include <doctest/doctest.h>
+
+#define NATIVE_REQUIRE(condition, ...) \
+    DOCTEST_REQUIRE_MESSAGE(static_cast<bool>(condition), __VA_ARGS__)
+
 #include "Audio/AudioOutputFormat.h"
 #include "Audio/DSP/EqualizerDsp.h"
 #include "Audio/DSP/FapoEqualizer.h"
@@ -9,6 +16,7 @@
 extern "C"
 {
 #include <libavfilter/avfilter.h>
+#include <libavutil/audio_fifo.h>
 #include <libswresample/swresample.h>
 }
 
@@ -17,16 +25,14 @@ extern "C"
 #include <cmath>
 #include <cstdint>
 #include <cstring>
-#include <functional>
 #include <format>
-#include <iostream>
 #include <limits>
 #include <memory>
 #include <numbers>
 #include <span>
-#include <stdexcept>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <vector>
 
 namespace
@@ -44,17 +50,17 @@ namespace
         {0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71}
     };
 
-    void Require(bool condition, std::string_view message)
+    bool SameGuid(const FAudioGUID& left, const FAudioGUID& right) noexcept
     {
-        if (!condition)
-            throw std::runtime_error(std::string(message));
+        return std::memcmp(&left, &right, sizeof(FAudioGUID)) == 0;
     }
 
     void RequireClose(float expected, float actual, float tolerance,
                       std::string_view message)
     {
-        if (!std::isfinite(actual) || std::abs(expected - actual) > tolerance)
-            throw std::runtime_error(std::string(message));
+        NATIVE_REQUIRE(
+            std::isfinite(actual) && std::abs(expected - actual) <= tolerance,
+            message);
     }
 
     struct FapoReleaser
@@ -87,14 +93,24 @@ namespace
     };
     using UniqueSwrContext = std::unique_ptr<SwrContext, SwrContextReleaser>;
 
+    struct AudioFifoReleaser
+    {
+        void operator()(AVAudioFifo* fifo) const noexcept
+        {
+            if (fifo != nullptr)
+                av_audio_fifo_free(fifo);
+        }
+    };
+    using UniqueAudioFifo = std::unique_ptr<AVAudioFifo, AudioFifoReleaser>;
+
     UniqueFapo MakeFapo(
         const EqualizerDspSnapshot& initial,
         const LimiterConfig& limiter)
     {
         FAPO* effect = nullptr;
-        Require(CreateEqualizerFapo(initial, limiter, &effect) == FAUDIO_OK,
+        NATIVE_REQUIRE(CreateEqualizerFapo(initial, limiter, &effect) == FAUDIO_OK,
                 "CreateEqualizerFapo failed");
-        Require(effect != nullptr, "CreateEqualizerFapo returned a null effect");
+        NATIVE_REQUIRE(effect != nullptr, "CreateEqualizerFapo returned a null effect");
         return UniqueFapo(effect);
     }
 
@@ -121,6 +137,53 @@ namespace
         return format;
     }
 
+    FAudioWaveFormatExtensible MakePcm24Format(
+        std::uint32_t sampleRate = 48'000,
+        std::uint16_t channelCount = 2,
+        std::uint16_t containerBits = 32)
+    {
+        FAudioWaveFormatExtensible format{};
+        format.Format.wFormatTag = FAUDIO_FORMAT_EXTENSIBLE;
+        format.Format.nChannels = channelCount;
+        format.Format.nSamplesPerSec = sampleRate;
+        format.Format.nBlockAlign = static_cast<std::uint16_t>(
+            channelCount * containerBits / 8);
+        format.Format.nAvgBytesPerSec =
+            sampleRate * format.Format.nBlockAlign;
+        format.Format.wBitsPerSample = containerBits;
+        format.Format.cbSize = static_cast<std::uint16_t>(
+            sizeof(FAudioWaveFormatExtensible) - sizeof(FAudioWaveFormatEx));
+        format.Samples.wValidBitsPerSample = 24;
+        format.dwChannelMask = channelCount == 2 ? SPEAKER_STEREO : 0;
+        format.SubFormat = PcmSubFormat;
+        return format;
+    }
+
+    void RequirePackedFrameLayoutMatchesFaudio(
+        const MusicPlayerLibrary::AudioOutputFormat& format,
+        int frameCount)
+    {
+        const int bytesPerSample = av_get_bytes_per_sample(format.sample_format);
+        NATIVE_REQUIRE(bytesPerSample > 0 && !av_sample_fmt_is_planar(format.sample_format),
+                "resolved output must use a valid packed FFmpeg sample format");
+        NATIVE_REQUIRE(format.wave_format.Format.nBlockAlign ==
+                    format.channel_count * bytesPerSample,
+                "FFmpeg and FAudio disagree on the output frame size");
+        NATIVE_REQUIRE(format.wave_format.Format.nAvgBytesPerSec ==
+                    format.sample_rate * format.wave_format.Format.nBlockAlign,
+                "FAudio average byte rate does not match its frame size");
+
+        int lineSize = 0;
+        const int fifoBufferBytes = av_samples_get_buffer_size(
+            &lineSize, format.channel_count, frameCount,
+            format.sample_format, 1);
+        const int faudioBufferBytes =
+            frameCount * format.wave_format.Format.nBlockAlign;
+        NATIVE_REQUIRE(fifoBufferBytes == faudioBufferBytes &&
+                    lineSize == faudioBufferBytes,
+                "FFmpeg FIFO buffer bytes do not match FAudio frame bytes");
+    }
+
     MusicPlayerLibrary::AudioOutputFormat MakeResolvedOutputFormat(
         MusicPlayerLibrary::AudioChannelMode channelMode,
         MusicPlayerLibrary::AudioBitDepth bitDepth,
@@ -141,11 +204,11 @@ namespace
     {
         AVChannelLayout inputLayout{};
         if (format.channel_mask != 0)
-            Require(av_channel_layout_from_mask(&inputLayout, format.channel_mask) >= 0,
+            NATIVE_REQUIRE(av_channel_layout_from_mask(&inputLayout, format.channel_mask) >= 0,
                     "reference swresample input layout failed");
         else
             av_channel_layout_default(&inputLayout, format.channel_count);
-        Require(inputLayout.nb_channels == format.channel_count,
+        NATIVE_REQUIRE(inputLayout.nb_channels == format.channel_count,
                 "reference swresample channel count mismatch");
 
         AVChannelLayout fftLayout = AV_CHANNEL_LAYOUT_STEREO;
@@ -162,13 +225,13 @@ namespace
             nullptr);
         av_channel_layout_uninit(&fftLayout);
         av_channel_layout_uninit(&inputLayout);
-        Require(allocationResult >= 0 && rawContext != nullptr,
+        NATIVE_REQUIRE(allocationResult >= 0 && rawContext != nullptr,
                 "reference swr_alloc_set_opts2 failed");
         UniqueSwrContext context(rawContext);
-        Require(swr_init(context.get()) >= 0, "reference swr_init failed");
+        NATIVE_REQUIRE(swr_init(context.get()) >= 0, "reference swr_init failed");
 
         const int outputCapacity = swr_get_out_samples(context.get(), frameCount);
-        Require(outputCapacity >= 0, "reference swr_get_out_samples failed");
+        NATIVE_REQUIRE(outputCapacity >= 0, "reference swr_get_out_samples failed");
         std::vector<std::uint8_t> output(
             static_cast<std::size_t>(outputCapacity) * 2 * sizeof(std::int16_t));
         const std::uint8_t* inputPlanes[] = {input};
@@ -176,7 +239,7 @@ namespace
         const int converted = swr_convert(
             context.get(), outputPlanes, outputCapacity,
             inputPlanes, frameCount);
-        Require(converted >= 0, "reference swr_convert failed");
+        NATIVE_REQUIRE(converted >= 0, "reference swr_convert failed");
         output.resize(static_cast<std::size_t>(converted) * 2 * sizeof(std::int16_t));
         return output;
     }
@@ -225,7 +288,7 @@ namespace
         [[nodiscard]] std::vector<float> Analyze(
             const std::vector<std::uint8_t>& samples)
         {
-            Require(samples.size() == FrameByteCount(),
+            NATIVE_REQUIRE(samples.size() == FrameByteCount(),
                     "FFT probe input must contain exactly one analysis frame");
             {
                 std::lock_guard lock(ring_buffer_mutex);
@@ -237,7 +300,7 @@ namespace
             std::vector<float> result(32);
             const int copied = CopyAudioFFTData(
                 result.data(), static_cast<int>(result.size()));
-            Require(copied == static_cast<int>(result.size()),
+            NATIVE_REQUIRE(copied == static_cast<int>(result.size()),
                     "FFT probe did not return all legacy spectrum bands");
             return result;
         }
@@ -296,7 +359,7 @@ namespace
         EqualizerDsp dsp;
         LimiterConfig limiter;
         limiter.enabled = false;
-        Require(dsp.Prepare(sampleRate, 2, frameCount, limiter),
+        NATIVE_REQUIRE(dsp.Prepare(sampleRate, 2, frameCount, limiter),
                 "EqualizerDsp::Prepare rejected a supported stereo format");
         return dsp;
     }
@@ -308,7 +371,7 @@ namespace
     {
         EqualizerDsp dsp;
         LimiterConfig limiter;
-        Require(dsp.Prepare(sampleRate, channelCount, frameCount, limiter),
+        NATIVE_REQUIRE(dsp.Prepare(sampleRate, channelCount, frameCount, limiter),
                 "EqualizerDsp::Prepare rejected a supported limiter format");
         return dsp;
     }
@@ -327,7 +390,7 @@ namespace
         const auto snapshot = CompileEqualizerSnapshot(
             MakeDefaultTenBandConfig(), SampleRate, 1);
 
-        Require(dsp.Process(snapshot, input.data(), output.data(), FrameCount, false),
+        NATIVE_REQUIRE(dsp.Process(snapshot, input.data(), output.data(), FrameCount, false),
                 "EqualizerDsp::Process rejected valid zero-gain input");
         for (std::size_t index = 0; index < input.size(); ++index)
             RequireClose(input[index], output[index], 1.0e-6f,
@@ -351,7 +414,7 @@ namespace
         auto dsp = MakePreparedDsp(SampleRate, FrameCount);
         const auto snapshot = CompileEqualizerSnapshot(config, SampleRate, 2);
 
-        Require(dsp.Process(snapshot, input.data(), output.data(), FrameCount, false),
+        NATIVE_REQUIRE(dsp.Process(snapshot, input.data(), output.data(), FrameCount, false),
                 "EqualizerDsp::Process rejected valid boosted input");
 
         double inputSquareSum = 0.0;
@@ -391,7 +454,7 @@ namespace
             const auto snapshot = CompileEqualizerSnapshot(config, sampleRate, 3);
             for (const auto& coefficients : snapshot.bands)
             {
-                Require(std::isfinite(coefficients.b0) &&
+                NATIVE_REQUIRE(std::isfinite(coefficients.b0) &&
                         std::isfinite(coefficients.b1) &&
                         std::isfinite(coefficients.b2) &&
                         std::isfinite(coefficients.a1) &&
@@ -402,20 +465,20 @@ namespace
             if (sampleRate == 16'000)
             {
                 const auto& coefficients = snapshot.bands[9];
-                Require(coefficients.b0 == 1.0f && coefficients.b1 == 0.0f &&
+                NATIVE_REQUIRE(coefficients.b0 == 1.0f && coefficients.b1 == 0.0f &&
                         coefficients.b2 == 0.0f && coefficients.a1 == 0.0f &&
                         coefficients.a2 == 0.0f,
                         "16 kHz band must be identity at a 16 kHz sample rate");
-                Require((snapshot.enabled_mask & (1u << 9)) == 0,
+                NATIVE_REQUIRE((snapshot.enabled_mask & (1u << 9)) == 0,
                         "Nyquist-rejected 16 kHz band must not be enabled");
             }
 
             const auto input = StereoSine(sampleRate, 1'000.0f, 0.1f, FrameCount);
             std::vector<float> output(input.size());
             auto dsp = MakePreparedDsp(sampleRate, FrameCount);
-            Require(dsp.Process(snapshot, input.data(), output.data(), FrameCount, false),
+            NATIVE_REQUIRE(dsp.Process(snapshot, input.data(), output.data(), FrameCount, false),
                     "EqualizerDsp::Process rejected a configured sample rate");
-            Require(std::all_of(output.begin(), output.end(),
+            NATIVE_REQUIRE(std::all_of(output.begin(), output.end(),
                                 [](float sample) { return std::isfinite(sample); }),
                     "configured-rate output must remain finite");
         }
@@ -444,9 +507,9 @@ namespace
             const auto snapshot = CompileEqualizerSnapshot(
                 MakeDefaultTenBandConfig(), testCase.sample_rate, 10);
 
-            Require(dsp.GetLimiterDelayFrames() == testCase.delay_frames,
+            NATIVE_REQUIRE(dsp.GetLimiterDelayFrames() == testCase.delay_frames,
                     "limiter reported the wrong look-ahead delay");
-            Require(dsp.Process(snapshot, input.data(), output.data(), frameCount, false),
+            NATIVE_REQUIRE(dsp.Process(snapshot, input.data(), output.data(), frameCount, false),
                     "limiter rejected an impulse input");
             for (std::uint32_t frame = 0; frame < testCase.delay_frames; ++frame)
             {
@@ -477,7 +540,7 @@ namespace
         auto dsp = MakePreparedLimiter(SampleRate, FrameCount);
         const auto snapshot = CompileEqualizerSnapshot(
             MakeDefaultTenBandConfig(), SampleRate, 11);
-        Require(dsp.Process(snapshot, input.data(), output.data(), FrameCount, false),
+        NATIVE_REQUIRE(dsp.Process(snapshot, input.data(), output.data(), FrameCount, false),
                 "limiter rejected linked-stereo input");
 
         RequireClose(0.70f, output[static_cast<std::size_t>(DelayFrames) * 2],
@@ -498,7 +561,7 @@ namespace
         auto dsp = MakePreparedLimiter(SampleRate, FrameCount);
         const auto snapshot = CompileEqualizerSnapshot(
             MakeDefaultTenBandConfig(), SampleRate, 12);
-        Require(dsp.Process(snapshot, input.data(), output.data(), FrameCount, false),
+        NATIVE_REQUIRE(dsp.Process(snapshot, input.data(), output.data(), FrameCount, false),
                 "limiter rejected below-ceiling input");
 
         for (std::uint32_t frame = DelayFrames; frame < FrameCount; ++frame)
@@ -523,7 +586,7 @@ namespace
         auto dsp = MakePreparedLimiter(SampleRate, FrameCount);
         const auto snapshot = CompileEqualizerSnapshot(
             MakeDefaultTenBandConfig(), SampleRate, 13);
-        Require(dsp.Process(snapshot, input.data(), output.data(), FrameCount, false),
+        NATIVE_REQUIRE(dsp.Process(snapshot, input.data(), output.data(), FrameCount, false),
                 "limiter rejected release-ramp input");
 
         const auto leftAt = [&output](std::uint32_t frame)
@@ -553,12 +616,12 @@ namespace
         const std::array<float, 2> impulse{0.5f, 0.5f};
         std::array<float, 2> initialOutput{};
 
-        Require(dsp.Process(snapshot, impulse.data(), initialOutput.data(), 1, false),
+        NATIVE_REQUIRE(dsp.Process(snapshot, impulse.data(), initialOutput.data(), 1, false),
                 "limiter rejected queued tail input");
-        Require(dsp.HasTail(), "limiter did not report a queued tail");
+        NATIVE_REQUIRE(dsp.HasTail(), "limiter did not report a queued tail");
 
         std::vector<float> drained(static_cast<std::size_t>(DelayFrames) * 2, -1.0f);
-        Require(dsp.Process(snapshot, nullptr, drained.data(), DelayFrames, true),
+        NATIVE_REQUIRE(dsp.Process(snapshot, nullptr, drained.data(), DelayFrames, true),
                 "silent processing did not return the queued impulse");
         RequireClose(0.5f, drained[(static_cast<std::size_t>(DelayFrames) - 1) * 2],
                      1.0e-6f, "silent processing did not drain the queued impulse");
@@ -566,13 +629,13 @@ namespace
                      1.0e-6f, "silent processing did not drain the queued impulse");
 
         std::array<float, 2> finalOutput{1.0f, 1.0f};
-        Require(!dsp.Process(snapshot, nullptr, finalOutput.data(), 1, true),
+        NATIVE_REQUIRE(!dsp.Process(snapshot, nullptr, finalOutput.data(), 1, true),
                 "silent processing reported a tail after it drained");
         RequireClose(0.0f, finalOutput[0], 1.0e-7f,
                      "drained limiter emitted a nonzero sample");
         RequireClose(0.0f, finalOutput[1], 1.0e-7f,
                      "drained limiter emitted a nonzero sample");
-        Require(!dsp.HasTail(), "limiter tail did not clear after silent draining");
+        NATIVE_REQUIRE(!dsp.HasTail(), "limiter tail did not clear after silent draining");
     }
 
     void TestLimiterResetGenerationDropsTail()
@@ -586,17 +649,17 @@ namespace
             MakeDefaultTenBandConfig(), SampleRate, 16);
         const std::array<float, 2> impulse{0.5f, 0.5f};
         std::array<float, 2> initialOutput{};
-        Require(dsp.Process(firstSnapshot, impulse.data(), initialOutput.data(), 1, false),
+        NATIVE_REQUIRE(dsp.Process(firstSnapshot, impulse.data(), initialOutput.data(), 1, false),
                 "limiter rejected pre-reset input");
-        Require(dsp.HasTail(), "limiter did not queue pre-reset history");
+        NATIVE_REQUIRE(dsp.HasTail(), "limiter did not queue pre-reset history");
 
         std::vector<float> output(static_cast<std::size_t>(DelayFrames + 1) * 2, 1.0f);
-        Require(!dsp.Process(resetSnapshot, nullptr, output.data(), DelayFrames + 1, true),
+        NATIVE_REQUIRE(!dsp.Process(resetSnapshot, nullptr, output.data(), DelayFrames + 1, true),
                 "reset limiter reported discarded history as a tail");
-        Require(std::all_of(output.begin(), output.end(),
+        NATIVE_REQUIRE(std::all_of(output.begin(), output.end(),
                             [](float sample) { return sample == 0.0f; }),
                 "reset generation did not discard queued limiter history");
-        Require(!dsp.HasTail(), "reset generation left limiter tail state behind");
+        NATIVE_REQUIRE(!dsp.HasTail(), "reset generation left limiter tail state behind");
     }
 
     void TestLimiterIsChunkInvariant()
@@ -619,7 +682,7 @@ namespace
         const auto snapshot = CompileEqualizerSnapshot(config, SampleRate, 17);
         std::vector<float> oneBlock(input.size(), 0.0f);
         auto wholeDsp = MakePreparedLimiter(SampleRate, FrameCount);
-        Require(wholeDsp.Process(snapshot, input.data(), oneBlock.data(), FrameCount, false),
+        NATIVE_REQUIRE(wholeDsp.Process(snapshot, input.data(), oneBlock.data(), FrameCount, false),
                 "limiter rejected one-block input");
 
         std::vector<float> chunked = input;
@@ -628,7 +691,7 @@ namespace
         {
             const std::uint32_t count = std::min(ChunkFrames, FrameCount - offset);
             float* const block = chunked.data() + static_cast<std::size_t>(offset) * 2;
-            Require(chunkedDsp.Process(snapshot, block, block, count, false),
+            NATIVE_REQUIRE(chunkedDsp.Process(snapshot, block, block, count, false),
                     "limiter rejected a 127-frame in-place chunk");
         }
 
@@ -648,13 +711,13 @@ namespace
         limiter.enabled = false;
         auto effect = MakeFapo(snapshot, limiter);
 
-        Require(effect->AddRef(effect.get()) == 2,
+        NATIVE_REQUIRE(effect->AddRef(effect.get()) == 2,
                 "factory reference count was not one");
-        Require(effect->Release(effect.get()) == 1,
+        NATIVE_REQUIRE(effect->Release(effect.get()) == 1,
                 "factory reference count did not return to one");
 
         FAPORegistrationProperties* properties = nullptr;
-        Require(effect->GetRegistrationProperties(
+        NATIVE_REQUIRE(effect->GetRegistrationProperties(
                     effect.get(), &properties) == FAUDIO_OK &&
                 properties != nullptr,
                 "FAPO registration properties were unavailable");
@@ -664,9 +727,9 @@ namespace
             FAPO_FLAG_BITSPERSAMPLE_MUST_MATCH |
             FAPO_FLAG_BUFFERCOUNT_MUST_MATCH |
             FAPO_FLAG_INPLACE_SUPPORTED;
-        Require(properties->Flags == RequiredFlags,
+        NATIVE_REQUIRE(properties->Flags == RequiredFlags,
                 "FAPO registration flags were incorrect");
-        Require((properties->Flags & FAPO_FLAG_INPLACE_REQUIRED) == 0,
+        NATIVE_REQUIRE((properties->Flags & FAPO_FLAG_INPLACE_REQUIRED) == 0,
                 "FAPO incorrectly required in-place processing");
         reinterpret_cast<FAPOBase*>(effect.get())->pFree(properties);
     }
@@ -679,11 +742,11 @@ namespace
         auto effect = MakeFapo(snapshot, LimiterConfig{});
         const auto valid = MakeFloatFormat(SampleRate);
 
-        Require(effect->IsInputFormatSupported(
+        NATIVE_REQUIRE(effect->IsInputFormatSupported(
                     effect.get(), &valid.Format, &valid.Format, nullptr) ==
                     FAUDIO_OK,
                 "FAPO did not advertise its supported extensible input format");
-        Require(effect->IsOutputFormatSupported(
+        NATIVE_REQUIRE(effect->IsOutputFormatSupported(
                     effect.get(), &valid.Format, &valid.Format, nullptr) ==
                     FAUDIO_OK,
                 "FAPO did not advertise its supported extensible output format");
@@ -692,12 +755,12 @@ namespace
         legacyFloat.Format.wFormatTag = FAUDIO_FORMAT_IEEE_FLOAT;
         legacyFloat.Format.cbSize = 0;
         FAudioWaveFormatEx* closestFormat = nullptr;
-        Require(effect->IsInputFormatSupported(
+        NATIVE_REQUIRE(effect->IsInputFormatSupported(
                     effect.get(), &valid.Format, &legacyFloat.Format,
                     &closestFormat) == FAPO_E_FORMAT_UNSUPPORTED &&
                 closestFormat == nullptr,
                 "FAPO advertised an unsupported legacy input format");
-        Require(effect->IsOutputFormatSupported(
+        NATIVE_REQUIRE(effect->IsOutputFormatSupported(
                     effect.get(), &valid.Format, &legacyFloat.Format,
                     &closestFormat) == FAPO_E_FORMAT_UNSUPPORTED &&
                 closestFormat == nullptr,
@@ -705,20 +768,20 @@ namespace
 
         auto mismatched = valid;
         mismatched.dwChannelMask = 0;
-        Require(effect->IsInputFormatSupported(
+        NATIVE_REQUIRE(effect->IsInputFormatSupported(
                     effect.get(), &valid.Format, &mismatched.Format, nullptr) ==
                     FAPO_E_FORMAT_UNSUPPORTED,
                 "FAPO advertised a nonmatching input format pair");
-        Require(effect->IsOutputFormatSupported(
+        NATIVE_REQUIRE(effect->IsOutputFormatSupported(
                     effect.get(), &valid.Format, &mismatched.Format, nullptr) ==
                     FAPO_E_FORMAT_UNSUPPORTED,
                 "FAPO advertised a nonmatching output format pair");
 
-        Require(effect->IsInputFormatSupported(
+        NATIVE_REQUIRE(effect->IsInputFormatSupported(
                     effect.get(), nullptr, &valid.Format, nullptr) ==
                     FAUDIO_E_INVALID_ARG,
                 "input-format probing did not safely reject a null output format");
-        Require(effect->IsOutputFormatSupported(
+        NATIVE_REQUIRE(effect->IsOutputFormatSupported(
                     effect.get(), nullptr, &valid.Format, nullptr) ==
                     FAUDIO_E_INVALID_ARG,
                 "output-format probing did not safely reject a null input format");
@@ -743,9 +806,9 @@ namespace
             outOfPlaceEffect.get(), &updated, sizeof(updated));
 
         const auto format = MakeFloatFormat(SampleRate);
-        Require(LockFapo(inPlaceEffect.get(), format, format, FrameCount) == FAUDIO_OK,
+        NATIVE_REQUIRE(LockFapo(inPlaceEffect.get(), format, format, FrameCount) == FAUDIO_OK,
                 "in-place FAPO lock failed");
-        Require(LockFapo(outOfPlaceEffect.get(), format, format, FrameCount) == FAUDIO_OK,
+        NATIVE_REQUIRE(LockFapo(outOfPlaceEffect.get(), format, format, FrameCount) == FAUDIO_OK,
                 "out-of-place FAPO lock failed");
 
         auto input = StereoSine(SampleRate, 1'000.0f, 0.1f, FrameCount);
@@ -762,7 +825,7 @@ namespace
         const auto outOfPlaceResult = ProcessFapo(
             outOfPlaceEffect.get(), input.data(), FAPO_BUFFER_VALID,
             outOfPlace.data(), FrameCount, true);
-        Require(inPlaceResult.BufferFlags == FAPO_BUFFER_VALID &&
+        NATIVE_REQUIRE(inPlaceResult.BufferFlags == FAPO_BUFFER_VALID &&
                 outOfPlaceResult.BufferFlags == FAPO_BUFFER_VALID &&
                 inPlaceResult.ValidFrameCount == FrameCount &&
                 outOfPlaceResult.ValidFrameCount == FrameCount,
@@ -772,7 +835,7 @@ namespace
             RequireClose(inPlace[index], outOfPlace[index], 1.0e-6f,
                          "in-place and out-of-place FAPO output differed");
         }
-        Require(std::any_of(
+        NATIVE_REQUIRE(std::any_of(
                     outOfPlace.begin(), outOfPlace.end(),
                     [&input, index = std::size_t{0}](float sample) mutable
                     { return sample != input[index++]; }),
@@ -791,7 +854,7 @@ namespace
         const auto snapshot = CompileEqualizerSnapshot(config, SampleRate, 23);
         auto effect = MakeFapo(snapshot, LimiterConfig{});
         const auto format = MakeFloatFormat(SampleRate);
-        Require(LockFapo(effect.get(), format, format, FrameCount) == FAUDIO_OK,
+        NATIVE_REQUIRE(LockFapo(effect.get(), format, format, FrameCount) == FAUDIO_OK,
                 "disabled pass-through FAPO lock failed");
 
         auto input = StereoSine(SampleRate, 777.0f, 0.37f, FrameCount);
@@ -800,10 +863,10 @@ namespace
         const auto result = ProcessFapo(
             effect.get(), input.data(), FAPO_BUFFER_VALID,
             output.data(), FrameCount, false);
-        Require(result.BufferFlags == FAPO_BUFFER_VALID &&
+        NATIVE_REQUIRE(result.BufferFlags == FAPO_BUFFER_VALID &&
                 result.ValidFrameCount == FrameCount,
                 "disabled pass-through did not preserve valid metadata");
-        Require(output == input,
+        NATIVE_REQUIRE(output == input,
                 "disabled out-of-place FAPO was not an exact pass-through");
         effect->UnlockForProcess(effect.get());
     }
@@ -818,7 +881,7 @@ namespace
         limiter.enabled = false;
         auto effect = MakeFapo(snapshot, limiter);
         const auto format = MakeFloatFormat(SampleRate);
-        Require(LockFapo(
+        NATIVE_REQUIRE(LockFapo(
                     effect.get(), format, format, LockedFrameCount) == FAUDIO_OK,
                 "process-bounds FAPO lock failed");
 
@@ -828,10 +891,10 @@ namespace
         const auto oversizedResult = ProcessFapo(
             effect.get(), oversizedInput.data(), FAPO_BUFFER_VALID,
             guardedOutput.data(), LockedFrameCount + 1, false);
-        Require(oversizedResult.BufferFlags == FAPO_BUFFER_SILENT &&
+        NATIVE_REQUIRE(oversizedResult.BufferFlags == FAPO_BUFFER_SILENT &&
                 oversizedResult.ValidFrameCount == 0,
                 "FAPO did not reject a frame count larger than its lock");
-        Require(guardedOutput == originalGuardedOutput,
+        NATIVE_REQUIRE(guardedOutput == originalGuardedOutput,
                 "rejected oversized processing touched output or its sentinel");
 
         std::array<float, 2> output{11.0f, 12.0f};
@@ -839,21 +902,21 @@ namespace
         const auto nullInputResult = ProcessFapo(
             effect.get(), nullptr, FAPO_BUFFER_VALID,
             output.data(), LockedFrameCount, false);
-        Require(nullInputResult.BufferFlags == FAPO_BUFFER_SILENT &&
+        NATIVE_REQUIRE(nullInputResult.BufferFlags == FAPO_BUFFER_SILENT &&
                 nullInputResult.ValidFrameCount == 0 && output == originalOutput,
                 "FAPO did not safely reject a null VALID input buffer");
 
         const auto nullOutputResult = ProcessFapo(
             effect.get(), oversizedInput.data(), FAPO_BUFFER_VALID,
             nullptr, LockedFrameCount, false);
-        Require(nullOutputResult.BufferFlags == FAPO_BUFFER_SILENT &&
+        NATIVE_REQUIRE(nullOutputResult.BufferFlags == FAPO_BUFFER_SILENT &&
                 nullOutputResult.ValidFrameCount == 0,
                 "FAPO did not safely reject a required null output buffer");
 
         const auto silentResult = ProcessFapo(
             effect.get(), nullptr, FAPO_BUFFER_SILENT,
             output.data(), LockedFrameCount, false);
-        Require(silentResult.BufferFlags == FAPO_BUFFER_SILENT &&
+        NATIVE_REQUIRE(silentResult.BufferFlags == FAPO_BUFFER_SILENT &&
                 silentResult.ValidFrameCount == LockedFrameCount &&
                 output[0] == 0.0f && output[1] == 0.0f,
                 "FAPO incorrectly required input storage for SILENT input");
@@ -877,17 +940,17 @@ namespace
         for (const bool enabled : {false, true})
         {
             auto effect = MakeFapo(snapshot, limiter);
-            Require(LockFapo(effect.get(), format, format, FrameCount) == FAUDIO_OK,
+            NATIVE_REQUIRE(LockFapo(effect.get(), format, format, FrameCount) == FAUDIO_OK,
                     "silent-input FAPO lock failed");
             std::vector<float> output(
                 nanInput.size(), std::numeric_limits<float>::quiet_NaN());
             const auto result = ProcessFapo(
                 effect.get(), nanInput.data(), FAPO_BUFFER_SILENT,
                 output.data(), FrameCount, enabled);
-            Require(result.BufferFlags == FAPO_BUFFER_SILENT &&
+            NATIVE_REQUIRE(result.BufferFlags == FAPO_BUFFER_SILENT &&
                     result.ValidFrameCount == FrameCount,
                     "drained silent input was not reported silent");
-            Require(std::all_of(
+            NATIVE_REQUIRE(std::all_of(
                         output.begin(), output.end(),
                         [](float sample) { return sample == 0.0f; }),
                     "silent NaN input was read or output was not fully written");
@@ -915,14 +978,14 @@ namespace
         {
             auto effect = MakeFapo(initial, limiter);
             effect->SetParameters(effect.get(), &update, byteCount);
-            Require(LockFapo(effect.get(), format, format, FrameCount) == FAUDIO_OK,
+            NATIVE_REQUIRE(LockFapo(effect.get(), format, format, FrameCount) == FAUDIO_OK,
                     "parameter-validation FAPO lock failed");
             std::vector<float> output(
                 input.size(), std::numeric_limits<float>::quiet_NaN());
             const auto result = ProcessFapo(
                 effect.get(), const_cast<float*>(input.data()), FAPO_BUFFER_VALID,
                 output.data(), FrameCount, true);
-            Require(result.BufferFlags == FAPO_BUFFER_VALID && output == input,
+            NATIVE_REQUIRE(result.BufferFlags == FAPO_BUFFER_VALID && output == input,
                     message);
             effect->UnlockForProcess(effect.get());
         };
@@ -957,7 +1020,7 @@ namespace
         effect->GetParameters(
             effect.get(), oversized.data(),
             static_cast<std::uint32_t>(oversized.size()));
-        Require(std::all_of(
+        NATIVE_REQUIRE(std::all_of(
                     oversized.begin(), oversized.end(),
                     [](std::uint8_t value) { return value == Sentinel; }),
                 "FAPO GetParameters accepted an oversized destination");
@@ -967,14 +1030,14 @@ namespace
         effect->GetParameters(
             effect.get(), undersized.data(),
             sizeof(EqualizerDspSnapshot) - 1);
-        Require(std::all_of(
+        NATIVE_REQUIRE(std::all_of(
                     undersized.begin(), undersized.end(),
                     [](std::uint8_t value) { return value == Sentinel; }),
                 "FAPO GetParameters accepted an undersized destination");
 
         EqualizerDspSnapshot actual{};
         effect->GetParameters(effect.get(), &actual, sizeof(actual));
-        Require(std::memcmp(&actual, &initial, sizeof(actual)) == 0,
+        NATIVE_REQUIRE(std::memcmp(&actual, &initial, sizeof(actual)) == 0,
                 "FAPO GetParameters did not return the exact current snapshot");
 
         effect->GetParameters(
@@ -989,9 +1052,9 @@ namespace
         auto effect = MakeFapo(snapshot, LimiterConfig{});
         const auto valid = MakeFloatFormat(SampleRate);
 
-        Require(LockFapo(effect.get(), valid, valid, 128, 0, 1) != FAUDIO_OK,
+        NATIVE_REQUIRE(LockFapo(effect.get(), valid, valid, 128, 0, 1) != FAUDIO_OK,
                 "FAPO accepted zero input buffers");
-        Require(LockFapo(effect.get(), valid, valid, 128, 1, 2) != FAUDIO_OK,
+        NATIVE_REQUIRE(LockFapo(effect.get(), valid, valid, 128, 1, 2) != FAUDIO_OK,
                 "FAPO accepted two output buffers");
 
         auto mismatchedChannels = valid;
@@ -999,35 +1062,35 @@ namespace
         mismatchedChannels.Format.nBlockAlign = sizeof(float);
         mismatchedChannels.Format.nAvgBytesPerSec = SampleRate * sizeof(float);
         mismatchedChannels.dwChannelMask = 0;
-        Require(LockFapo(effect.get(), valid, mismatchedChannels) != FAUDIO_OK,
+        NATIVE_REQUIRE(LockFapo(effect.get(), valid, mismatchedChannels) != FAUDIO_OK,
                 "FAPO accepted mismatched channel formats");
 
         auto legacyFloat = valid;
         legacyFloat.Format.wFormatTag = FAUDIO_FORMAT_IEEE_FLOAT;
         legacyFloat.Format.cbSize = 0;
-        Require(LockFapo(effect.get(), legacyFloat, legacyFloat) != FAUDIO_OK,
+        NATIVE_REQUIRE(LockFapo(effect.get(), legacyFloat, legacyFloat) != FAUDIO_OK,
                 "FAPO accepted a non-extensible float format");
 
         auto pcm = valid;
         pcm.SubFormat = PcmSubFormat;
-        Require(LockFapo(effect.get(), pcm, pcm) != FAUDIO_OK,
+        NATIVE_REQUIRE(LockFapo(effect.get(), pcm, pcm) != FAUDIO_OK,
                 "FAPO accepted a non-float32 extensible format");
 
         auto mismatchedRate = valid;
         mismatchedRate.Format.nSamplesPerSec = 44'100;
         mismatchedRate.Format.nAvgBytesPerSec =
             mismatchedRate.Format.nBlockAlign * 44'100;
-        Require(LockFapo(effect.get(), valid, mismatchedRate) != FAUDIO_OK,
+        NATIVE_REQUIRE(LockFapo(effect.get(), valid, mismatchedRate) != FAUDIO_OK,
                 "FAPO accepted mismatched sample rates");
 
         auto mismatchedMask = valid;
         mismatchedMask.dwChannelMask = 0;
-        Require(LockFapo(effect.get(), valid, mismatchedMask) != FAUDIO_OK,
+        NATIVE_REQUIRE(LockFapo(effect.get(), valid, mismatchedMask) != FAUDIO_OK,
                 "FAPO accepted nonmatching extensible formats");
-        Require(LockFapo(effect.get(), valid, valid, 128, 1, 1, 256) != FAUDIO_OK,
+        NATIVE_REQUIRE(LockFapo(effect.get(), valid, valid, 128, 1, 1, 256) != FAUDIO_OK,
                 "FAPO accepted mismatched maximum frame counts");
 
-        Require(LockFapo(effect.get(), valid, valid) == FAUDIO_OK,
+        NATIVE_REQUIRE(LockFapo(effect.get(), valid, valid) == FAUDIO_OK,
                 "FAPO rejected an exact float32 extensible format pair");
         effect->UnlockForProcess(effect.get());
     }
@@ -1040,7 +1103,7 @@ namespace
             MakeDefaultTenBandConfig(), SampleRate, 28);
         auto effect = MakeFapo(snapshot, LimiterConfig{});
         const auto format = MakeFloatFormat(SampleRate);
-        Require(LockFapo(effect.get(), format, format, DelayFrames) == FAUDIO_OK,
+        NATIVE_REQUIRE(LockFapo(effect.get(), format, format, DelayFrames) == FAUDIO_OK,
                 "tail-drain FAPO lock failed");
 
         std::array<float, 2> impulse{0.5f, 0.5f};
@@ -1050,7 +1113,7 @@ namespace
         const auto initialResult = ProcessFapo(
             effect.get(), impulse.data(), FAPO_BUFFER_VALID,
             initialOutput.data(), 1, true);
-        Require(initialResult.BufferFlags == FAPO_BUFFER_VALID,
+        NATIVE_REQUIRE(initialResult.BufferFlags == FAPO_BUFFER_VALID,
                 "valid input did not keep FAPO output valid");
 
         std::vector<float> silentInput(
@@ -1061,7 +1124,7 @@ namespace
         const auto drainResult = ProcessFapo(
             effect.get(), silentInput.data(), FAPO_BUFFER_SILENT,
             drained.data(), DelayFrames, true);
-        Require(drainResult.BufferFlags == FAPO_BUFFER_VALID,
+        NATIVE_REQUIRE(drainResult.BufferFlags == FAPO_BUFFER_VALID,
                 "FAPO stopped reporting valid output before its tail ended");
         RequireClose(0.5f, drained[(static_cast<std::size_t>(DelayFrames) - 1) * 2],
                      1.0e-6f, "FAPO did not drain its limiter tail");
@@ -1075,7 +1138,7 @@ namespace
         const auto finalResult = ProcessFapo(
             effect.get(), finalInput.data(), FAPO_BUFFER_SILENT,
             finalOutput.data(), 1, true);
-        Require(finalResult.BufferFlags == FAPO_BUFFER_SILENT &&
+        NATIVE_REQUIRE(finalResult.BufferFlags == FAPO_BUFFER_SILENT &&
                 finalOutput[0] == 0.0f && finalOutput[1] == 0.0f,
                 "FAPO did not become silent after its tail ended");
         effect->UnlockForProcess(effect.get());
@@ -1084,32 +1147,32 @@ namespace
     void TestAudioPipelineBufferingProfiles()
     {
         const auto fast = SelectAudioPipelineBufferingProfile(15.0);
-        Require(fast.fifo_target_milliseconds == 80 &&
+        NATIVE_REQUIRE(fast.fifo_target_milliseconds == 80 &&
             fast.decoded_queue_target_milliseconds == 24,
             "fast CPU buffering profile changed unexpectedly");
 
         const auto balanced = SelectAudioPipelineBufferingProfile(15.01);
-        Require(balanced.fifo_target_milliseconds == 140 &&
+        NATIVE_REQUIRE(balanced.fifo_target_milliseconds == 140 &&
             balanced.decoded_queue_target_milliseconds == 32,
             "balanced CPU buffering profile changed unexpectedly");
 
         const auto slow = SelectAudioPipelineBufferingProfile(50.01);
-        Require(slow.fifo_target_milliseconds == 220 &&
+        NATIVE_REQUIRE(slow.fifo_target_milliseconds == 220 &&
             slow.decoded_queue_target_milliseconds == 48,
             "slow CPU buffering profile changed unexpectedly");
 
         const auto fallback = SelectAudioPipelineBufferingProfile(
             std::numeric_limits<double>::quiet_NaN());
-        Require(fallback.fifo_target_milliseconds == 140 &&
+        NATIVE_REQUIRE(fallback.fifo_target_milliseconds == 140 &&
             fallback.decoded_queue_target_milliseconds == 32,
             "failed FFT benchmark did not select the safe fallback profile");
-        Require(fast.fifo_target_milliseconds > fast.decoded_queue_target_milliseconds &&
+        NATIVE_REQUIRE(fast.fifo_target_milliseconds > fast.decoded_queue_target_milliseconds &&
             balanced.fifo_target_milliseconds > balanced.decoded_queue_target_milliseconds &&
             slow.fifo_target_milliseconds > slow.decoded_queue_target_milliseconds,
             "buffering profiles must keep most depth in the normalized PCM FIFO");
 
         const auto& measured = GetAudioPipelineBufferingProfile();
-        Require(measured.fifo_target_milliseconds >
+        NATIVE_REQUIRE(measured.fifo_target_milliseconds >
             measured.decoded_queue_target_milliseconds,
             "measured CPU profile did not favor the normalized PCM FIFO");
     }
@@ -1139,13 +1202,13 @@ namespace
             requested.requested_bit_depth = MusicPlayerLibrary::AudioBitDepth::Bit16;
             const auto resolved = MusicPlayerLibrary::ResolveAudioOutputFormat(
                 requested, systemFormat);
-            Require(resolved.sample_rate == 96'000,
+            NATIVE_REQUIRE(resolved.sample_rate == 96'000,
                     "explicit output sample rate was not retained");
-            Require(resolved.channel_count == mapping.channels &&
+            NATIVE_REQUIRE(resolved.channel_count == mapping.channels &&
                     resolved.channel_mask == mapping.mask &&
                     resolved.ffmpeg_channel_layout == mapping.layout,
                     "explicit channel mode mapped to the wrong FFmpeg/FAudio layout");
-            Require(resolved.sample_format == AV_SAMPLE_FMT_S16 &&
+            NATIVE_REQUIRE(resolved.sample_format == AV_SAMPLE_FMT_S16 &&
                     resolved.wave_format.Format.wBitsPerSample == 16 &&
                     resolved.wave_format.Format.nBlockAlign == mapping.channels * 2,
                     "16-bit output format was not resolved consistently");
@@ -1156,11 +1219,164 @@ namespace
         floatRequest.requested_bit_depth = MusicPlayerLibrary::AudioBitDepth::Bit32;
         const auto floatResolved = MusicPlayerLibrary::ResolveAudioOutputFormat(
             floatRequest, systemFormat);
-        Require(floatResolved.sample_rate == 48'000 &&
+        NATIVE_REQUIRE(floatResolved.sample_rate == 48'000 &&
                 floatResolved.sample_format == AV_SAMPLE_FMT_FLT &&
                 floatResolved.wave_format.Format.wBitsPerSample == 32 &&
                 floatResolved.wave_format.Format.nBlockAlign == 8,
                 "32-bit float output format was not resolved consistently");
+    }
+
+    void TestRawAudioFormatInfoMappings()
+    {
+        static_assert(std::is_trivially_copyable_v<
+            MusicPlayerLibrary::AudioFormatInfo>);
+
+        constexpr int Unknown = static_cast<int>(
+            MusicPlayerLibrary::AudioChannelMode::Unknown);
+        const MusicPlayerLibrary::AudioFormatInfo empty{};
+        NATIVE_REQUIRE(empty.channel_type_id == Unknown &&
+                    empty.sample_rate == 0 &&
+                    empty.bit_depth == static_cast<int>(
+                        MusicPlayerLibrary::AudioBitDepth::Unknown),
+                "raw audio format defaults were not unknown");
+
+        struct Mapping
+        {
+            MusicPlayerLibrary::AudioChannelMode mode;
+            int expectedChannelTypeId;
+        };
+        constexpr Mapping mappings[] = {
+            {MusicPlayerLibrary::AudioChannelMode::Mono, 1},
+            {MusicPlayerLibrary::AudioChannelMode::Stereo, 2},
+            {MusicPlayerLibrary::AudioChannelMode::Surround51, 3},
+            {MusicPlayerLibrary::AudioChannelMode::Surround71, 4}
+        };
+        for (const auto& mapping : mappings)
+        {
+            MusicPlayerLibrary::AudioOutputFormat requested{};
+            requested.requested_sample_rate = 96'000;
+            requested.requested_channel_mode = mapping.mode;
+            requested.requested_bit_depth =
+                MusicPlayerLibrary::AudioBitDepth::Bit24;
+            const auto resolved = MusicPlayerLibrary::ResolveAudioOutputFormat(
+                requested, MakeFloatFormat());
+            const auto info = MusicPlayerLibrary::GetAudioFormatInfo(resolved);
+            NATIVE_REQUIRE(info.channel_type_id == mapping.expectedChannelTypeId &&
+                        info.sample_rate == 96'000 && info.bit_depth == 24,
+                    "resolved output was not converted to raw format metadata");
+        }
+
+        NATIVE_REQUIRE(MusicPlayerLibrary::GetAudioChannelTypeId(
+                    6, SPEAKER_5POINT1) == 3 &&
+                    MusicPlayerLibrary::GetAudioChannelTypeId(
+                    6, SPEAKER_5POINT1_SURROUND) == 3 &&
+                    MusicPlayerLibrary::GetAudioChannelTypeId(
+                    8, SPEAKER_7POINT1) == 4 &&
+                    MusicPlayerLibrary::GetAudioChannelTypeId(
+                    8, SPEAKER_7POINT1_SURROUND) == 4,
+                "standard surround layouts were assigned the wrong channel type id");
+        NATIVE_REQUIRE(MusicPlayerLibrary::GetAudioChannelTypeId(4) == Unknown &&
+                    MusicPlayerLibrary::GetAudioChannelTypeId(6) == Unknown &&
+                    MusicPlayerLibrary::GetAudioChannelTypeId(8) == Unknown,
+                "non-specific channel layouts were misclassified as surround");
+    }
+
+    void TestAudioSourceBitrateCalculation()
+    {
+        const double bitrate =
+            MusicPlayerLibrary::CalculateAudioBitrateKBytesPerSecond(
+                32'000, 2.0);
+        NATIVE_REQUIRE(std::abs(bitrate - 16.0) < 1.0e-9,
+                "128 kbit/s did not resolve to 16 KByte/s");
+        NATIVE_REQUIRE(MusicPlayerLibrary::CalculateAudioBitrateKBytesPerSecond(
+                    256'000, 0.0) == 0.0 &&
+                    MusicPlayerLibrary::CalculateAudioBitrateKBytesPerSecond(
+                    0, 2.0) == 0.0,
+                "audio bitrate accepted an incomplete observation");
+        NATIVE_REQUIRE(MusicPlayerLibrary::CalculateAudioBitrateKBytesPerSecond(
+                    256'000, std::numeric_limits<double>::infinity()) == 0.0,
+                "audio bitrate accepted a non-finite duration");
+
+        MusicPlayerLibrary::AudioBitrateTracker tracker;
+        NATIVE_REQUIRE(tracker.GetKBytesPerSecond() == 0.0,
+                "audio bitrate tracker did not start empty");
+        tracker.ObserveEncodedBytes(16'000);
+        tracker.ObserveDecodedSamples(12'000, 48'000);
+        tracker.ObserveDecodedSamples(12'000, 48'000);
+        NATIVE_REQUIRE(std::abs(tracker.GetKBytesPerSecond() - 32.0) < 1.0e-9,
+                "audio bitrate tracker did not combine multiple decoded frames");
+
+        tracker.ObserveEncodedBytes(48'000);
+        tracker.ObserveDecodedSamples(24'000, 48'000);
+        NATIVE_REQUIRE(std::abs(tracker.GetKBytesPerSecond() - 64.0) < 1.0e-9,
+                "audio bitrate tracker did not compute a VBR weighted average");
+
+        tracker.ObserveEncodedBytes(0);
+        tracker.ObserveDecodedSamples(1'024, 0);
+        NATIVE_REQUIRE(std::abs(tracker.GetKBytesPerSecond() - 64.0) < 1.0e-9,
+                "audio bitrate tracker accepted an invalid observation");
+        tracker.Reset();
+        NATIVE_REQUIRE(tracker.GetKBytesPerSecond() == 0.0,
+                "audio bitrate tracker did not reset for a new decode epoch");
+    }
+
+    void TestAverageAudioQualityClassification()
+    {
+        const double thresholdBitrate =
+            MusicPlayerLibrary::CalculateAverageAudioBitrateBitsPerSecond(
+                20'000'000, 200.0);
+        NATIVE_REQUIRE(std::abs(thresholdBitrate - 800'000.0) < 1.0e-9,
+                "whole-stream average bitrate was calculated incorrectly");
+        NATIVE_REQUIRE(!MusicPlayerLibrary::IsLoselessAudio(thresholdBitrate),
+                "exactly 800 kbit/s was classified as loseless audio");
+
+        const double aboveThresholdBitrate =
+            MusicPlayerLibrary::CalculateAverageAudioBitrateBitsPerSecond(
+                25'000'000, 200.0);
+        NATIVE_REQUIRE(MusicPlayerLibrary::IsLoselessAudio(aboveThresholdBitrate),
+                "audio above 800 kbit/s was not classified as loseless");
+        NATIVE_REQUIRE(!MusicPlayerLibrary::IsLoselessAudio(
+                    MusicPlayerLibrary::CalculateAverageAudioBitrateBitsPerSecond(
+                        25'000'000, 0.0)),
+                "audio with an unknown duration was classified as loseless");
+        NATIVE_REQUIRE(MusicPlayerLibrary::CalculateAverageAudioBitrateBitsPerSecond(
+                    25'000'000, -1.0) == 0.0 &&
+                    MusicPlayerLibrary::CalculateAverageAudioBitrateBitsPerSecond(
+                    25'000'000, std::numeric_limits<double>::quiet_NaN()) == 0.0 &&
+                    !MusicPlayerLibrary::IsLoselessAudio(
+                        std::numeric_limits<double>::infinity()),
+                "invalid average bitrate inputs were accepted");
+
+        NATIVE_REQUIRE(!MusicPlayerLibrary::IsHiResAudio(48'000) &&
+                    MusicPlayerLibrary::IsHiResAudio(48'001) &&
+                    MusicPlayerLibrary::IsHiResAudio(96'000),
+                "Hi-Res sample-rate threshold was applied incorrectly");
+    }
+
+    void TestExplicit24BitAudioOutputFormatMapping()
+    {
+        MusicPlayerLibrary::AudioOutputFormat requested{};
+        requested.requested_sample_rate = 96'000;
+        requested.requested_channel_mode =
+            MusicPlayerLibrary::AudioChannelMode::Stereo;
+        requested.requested_bit_depth = MusicPlayerLibrary::AudioBitDepth::Bit24;
+        const auto resolved = MusicPlayerLibrary::ResolveAudioOutputFormat(
+            requested, MakeFloatFormat());
+        const auto& waveFormat = resolved.wave_format;
+
+        NATIVE_REQUIRE(resolved.sample_rate == 96'000 &&
+                    resolved.channel_count == 2 &&
+                    resolved.bit_depth == MusicPlayerLibrary::AudioBitDepth::Bit24,
+                "explicit 24-bit output request was not retained");
+        NATIVE_REQUIRE(resolved.sample_format == AV_SAMPLE_FMT_S32,
+                "explicit 24-bit output did not use FFmpeg's S32 container");
+        NATIVE_REQUIRE(waveFormat.Format.wFormatTag == FAUDIO_FORMAT_EXTENSIBLE &&
+                    waveFormat.Format.wBitsPerSample == 32 &&
+                    waveFormat.Samples.wValidBitsPerSample == 24 &&
+                    waveFormat.Format.nBlockAlign == 8 &&
+                    SameGuid(waveFormat.SubFormat, PcmSubFormat),
+                "explicit 24-bit output did not use 24-valid-in-32 PCM");
+        RequirePackedFrameLayoutMatchesFaudio(resolved, 257);
     }
 
     void TestSystemAudioOutputFormatMapping()
@@ -1169,14 +1385,19 @@ namespace
         systemFormat.dwChannelMask = SPEAKER_5POINT1_SURROUND;
         const auto resolved = MusicPlayerLibrary::ResolveAudioOutputFormat(
             MusicPlayerLibrary::AudioOutputFormat{}, systemFormat);
-        Require(resolved.sample_rate == 44'100 &&
+        NATIVE_REQUIRE(resolved.sample_rate == 44'100 &&
                 resolved.channel_count == 6 &&
                 resolved.channel_mask == SPEAKER_5POINT1_SURROUND &&
                 resolved.ffmpeg_channel_layout == "5.1(side)",
                 "System channel mode did not use the device format");
-        Require(resolved.bit_depth == MusicPlayerLibrary::AudioBitDepth::Bit32 &&
+        NATIVE_REQUIRE(resolved.bit_depth == MusicPlayerLibrary::AudioBitDepth::Bit32 &&
                 resolved.sample_format == AV_SAMPLE_FMT_FLT,
                 "System bit depth did not use the float device format");
+        const auto resolvedInfo = MusicPlayerLibrary::GetAudioFormatInfo(resolved);
+        NATIVE_REQUIRE(resolvedInfo.channel_type_id == 3 &&
+                    resolvedInfo.sample_rate == 44'100 &&
+                    resolvedInfo.bit_depth == 32,
+                "System request did not report the resolved device metadata");
 
         systemFormat.Format.wFormatTag = FAUDIO_FORMAT_EXTENSIBLE;
         systemFormat.Format.wBitsPerSample = 16;
@@ -1184,9 +1405,38 @@ namespace
         systemFormat.SubFormat = PcmSubFormat;
         const auto pcmResolved = MusicPlayerLibrary::ResolveAudioOutputFormat(
             MusicPlayerLibrary::AudioOutputFormat{}, systemFormat);
-        Require(pcmResolved.bit_depth == MusicPlayerLibrary::AudioBitDepth::Bit16 &&
+        NATIVE_REQUIRE(pcmResolved.bit_depth == MusicPlayerLibrary::AudioBitDepth::Bit16 &&
                 pcmResolved.sample_format == AV_SAMPLE_FMT_S16,
                 "System bit depth did not use the PCM16 device format");
+        NATIVE_REQUIRE(MusicPlayerLibrary::GetAudioFormatInfo(pcmResolved).bit_depth == 16,
+                "PCM16 device metadata reported the wrong bit depth");
+    }
+
+    void TestSystem24BitPcmOutputFormatMapping()
+    {
+        constexpr std::uint16_t SystemContainerBits[] = {24, 32};
+        for (const auto containerBits : SystemContainerBits)
+        {
+            const auto systemFormat = MakePcm24Format(
+                88'200, 2, containerBits);
+            const auto resolved = MusicPlayerLibrary::ResolveAudioOutputFormat(
+                MusicPlayerLibrary::AudioOutputFormat{}, systemFormat);
+            const auto& waveFormat = resolved.wave_format;
+
+            NATIVE_REQUIRE(resolved.sample_rate == 88'200 &&
+                        resolved.channel_count == 2 &&
+                        resolved.bit_depth == MusicPlayerLibrary::AudioBitDepth::Bit24,
+                    "System PCM24 format was not detected from its valid bits");
+            NATIVE_REQUIRE(resolved.sample_format == AV_SAMPLE_FMT_S32,
+                    "System PCM24 format did not resolve to FFmpeg S32");
+            NATIVE_REQUIRE(waveFormat.Format.wFormatTag == FAUDIO_FORMAT_EXTENSIBLE &&
+                        waveFormat.Format.wBitsPerSample == 32 &&
+                        waveFormat.Samples.wValidBitsPerSample == 24 &&
+                        waveFormat.Format.nBlockAlign == 8 &&
+                        SameGuid(waveFormat.SubFormat, PcmSubFormat),
+                    "System PCM24 format did not normalize to 24-valid-in-32 PCM");
+            RequirePackedFrameLayoutMatchesFaudio(resolved, 511);
+        }
     }
 
     void TestAresampleAcceptsOutputFormats()
@@ -1200,6 +1450,7 @@ namespace
         };
         constexpr MusicPlayerLibrary::AudioBitDepth bitDepths[] = {
             MusicPlayerLibrary::AudioBitDepth::Bit16,
+            MusicPlayerLibrary::AudioBitDepth::Bit24,
             MusicPlayerLibrary::AudioBitDepth::Bit32
         };
 
@@ -1214,47 +1465,47 @@ namespace
                 const auto output = MusicPlayerLibrary::ResolveAudioOutputFormat(
                     requested, systemFormat);
                 const char* sampleFormatName = av_get_sample_fmt_name(output.sample_format);
-                Require(sampleFormatName != nullptr,
+                NATIVE_REQUIRE(sampleFormatName != nullptr,
                         "resolved output format has no FFmpeg sample-format name");
 
                 UniqueFilterGraph graph(avfilter_graph_alloc());
-                Require(graph != nullptr, "avfilter_graph_alloc failed");
+                NATIVE_REQUIRE(graph != nullptr, "avfilter_graph_alloc failed");
                 AVFilterContext* source = nullptr;
                 AVFilterContext* resample = nullptr;
                 AVFilterContext* format = nullptr;
                 AVFilterContext* sink = nullptr;
                 const std::string sourceArgs =
                     "sample_rate=44100:sample_fmt=fltp:channel_layout=stereo";
-                Require(avfilter_graph_create_filter(
+                NATIVE_REQUIRE(avfilter_graph_create_filter(
                     &source, avfilter_get_by_name("abuffer"), "src",
                     sourceArgs.c_str(), nullptr, graph.get()) >= 0,
                     "FFmpeg rejected the test abuffer format");
                 const std::string resampleArgs = std::format(
                     "sample_rate={}:out_chlayout={}:out_sample_fmt={}",
                     output.sample_rate, output.ffmpeg_channel_layout, sampleFormatName);
-                Require(avfilter_graph_create_filter(
+                NATIVE_REQUIRE(avfilter_graph_create_filter(
                     &resample, avfilter_get_by_name("aresample"), "resample",
                     resampleArgs.c_str(), nullptr, graph.get()) >= 0,
                     "aresample rejected a resolved output format");
                 const std::string formatArgs = std::format(
                     "sample_fmts={}:sample_rates={}:channel_layouts={}",
                     sampleFormatName, output.sample_rate, output.ffmpeg_channel_layout);
-                Require(avfilter_graph_create_filter(
+                NATIVE_REQUIRE(avfilter_graph_create_filter(
                     &format, avfilter_get_by_name("aformat"), "format",
                     formatArgs.c_str(), nullptr, graph.get()) >= 0,
                     "aformat rejected a resolved output format");
-                Require(avfilter_graph_create_filter(
+                NATIVE_REQUIRE(avfilter_graph_create_filter(
                     &sink, avfilter_get_by_name("abuffersink"), "sink",
                     nullptr, nullptr, graph.get()) >= 0,
                     "avfilter_graph_create_filter failed for abuffersink");
-                Require(avfilter_link(source, 0, resample, 0) >= 0 &&
+                NATIVE_REQUIRE(avfilter_link(source, 0, resample, 0) >= 0 &&
                         avfilter_link(resample, 0, format, 0) >= 0 &&
                         avfilter_link(format, 0, sink, 0) >= 0,
                         "failed to link the aresample test graph");
-                Require(avfilter_graph_config(graph.get(), nullptr) >= 0,
+                NATIVE_REQUIRE(avfilter_graph_config(graph.get(), nullptr) >= 0,
                         "FFmpeg could not configure a resolved output format");
                 const AVFilterLink* outputLink = sink->inputs[0];
-                Require(outputLink->sample_rate == output.sample_rate &&
+                NATIVE_REQUIRE(outputLink->sample_rate == output.sample_rate &&
                         outputLink->ch_layout.nb_channels == output.channel_count &&
                         outputLink->format == output.sample_format,
                         "aresample graph negotiated a different output format");
@@ -1273,13 +1524,13 @@ namespace
             reinterpret_cast<const std::uint8_t*>(mono.data()), 2);
         const auto monoReference = ReferenceSwrFftConversion(
             monoFormat, reinterpret_cast<const std::uint8_t*>(mono.data()), 2);
-        Require(monoResult == monoReference,
+        NATIVE_REQUIRE(monoResult == monoReference,
                 "mono FFT conversion did not produce reference S16 stereo PCM");
-        Require(monoResult.size() == 2 * 2 * sizeof(std::int16_t),
+        NATIVE_REQUIRE(monoResult.size() == 2 * 2 * sizeof(std::int16_t),
                 "mono FFT conversion returned the wrong byte count");
         std::array<std::int16_t, 4> monoPcm{};
         std::memcpy(monoPcm.data(), monoResult.data(), monoResult.size());
-        Require(monoPcm[0] == monoPcm[1] && monoPcm[0] > 0 &&
+        NATIVE_REQUIRE(monoPcm[0] == monoPcm[1] && monoPcm[0] > 0 &&
                     monoPcm[2] == monoPcm[3] && monoPcm[2] < 0,
                 "mono FFT conversion did not produce matching stereo channels");
 
@@ -1304,11 +1555,62 @@ namespace
         const auto stereoReference = ReferenceSwrFftConversion(
             stereoFormat, reinterpret_cast<const std::uint8_t*>(stereo.data()),
             InputFrames);
-        Require(stereoResult == stereoReference,
+        NATIVE_REQUIRE(stereoResult == stereoReference,
                 "44.1 kHz float FFT conversion differed from 48 kHz S16 stereo reference");
-        Require(!stereoResult.empty() &&
+        NATIVE_REQUIRE(!stereoResult.empty() &&
                     stereoResult.size() % (2 * sizeof(std::int16_t)) == 0,
                 "FFT conversion did not return packed S16 stereo frames");
+    }
+
+    void Test24BitFifoAndFftFrameSizing()
+    {
+        constexpr int FrameCount = 4;
+        const auto format = MakeResolvedOutputFormat(
+            MusicPlayerLibrary::AudioChannelMode::Stereo,
+            MusicPlayerLibrary::AudioBitDepth::Bit24,
+            48'000);
+        RequirePackedFrameLayoutMatchesFaudio(format, FrameCount);
+
+        const std::array<std::int32_t, FrameCount * 2> input{
+            0x40000000, -0x40000000,
+            0x20000000, -0x20000000,
+            0x10000000, -0x10000000,
+            0x08000000, -0x08000000};
+        NATIVE_REQUIRE(sizeof(input) == static_cast<std::size_t>(
+                    FrameCount * format.wave_format.Format.nBlockAlign),
+                "PCM24 test storage does not contain whole FAudio frames");
+
+        UniqueAudioFifo fifo(av_audio_fifo_alloc(
+            format.sample_format, format.channel_count, FrameCount));
+        NATIVE_REQUIRE(fifo != nullptr, "failed to allocate the PCM24 audio FIFO");
+        void* writePlanes[] = {const_cast<std::int32_t*>(input.data())};
+        NATIVE_REQUIRE(av_audio_fifo_write(fifo.get(), writePlanes, FrameCount) == FrameCount &&
+                    av_audio_fifo_size(fifo.get()) == FrameCount,
+                "PCM24 FIFO did not preserve the input frame count");
+
+        std::array<std::int32_t, FrameCount * 2> fifoOutput{};
+        void* readPlanes[] = {fifoOutput.data()};
+        NATIVE_REQUIRE(av_audio_fifo_read(fifo.get(), readPlanes, FrameCount) == FrameCount &&
+                    fifoOutput == input,
+                "PCM24 FIFO round-trip changed S32 container samples");
+
+        MusicPlayerLibrary::FFTExecuter executor(format);
+        const auto* fifoBytes = reinterpret_cast<const std::uint8_t*>(
+            fifoOutput.data());
+        const auto fftPcm = executor.ResampleToFftFormat(fifoBytes, FrameCount);
+        const auto reference = ReferenceSwrFftConversion(
+            format, fifoBytes, FrameCount);
+        NATIVE_REQUIRE(fftPcm == reference,
+                "PCM24 FFT conversion differed from the S32 swresample reference");
+        NATIVE_REQUIRE(fftPcm.size() ==
+                    static_cast<std::size_t>(FrameCount * 2 * sizeof(std::int16_t)),
+                "PCM24 FFT conversion returned the wrong frame byte count");
+
+        std::array<std::int16_t, FrameCount * 2> fftSamples{};
+        std::memcpy(fftSamples.data(), fftPcm.data(), fftPcm.size());
+        NATIVE_REQUIRE(fftSamples[0] > 0 && fftSamples[1] < 0 &&
+                    fftSamples[2] > 0 && fftSamples[3] < 0,
+                "PCM24 FFT conversion did not preserve stereo sample framing");
     }
 
     void TestFftSurroundResampleMatchesSwresample()
@@ -1318,14 +1620,14 @@ namespace
         {
             const auto format = MakeResolvedOutputFormat(
                 channelMode, MusicPlayerLibrary::AudioBitDepth::Bit32);
-            Require(input.size() % format.channel_count == 0,
+            NATIVE_REQUIRE(input.size() % format.channel_count == 0,
                     "surround FFT test input is not frame aligned");
             const int frameCount = static_cast<int>(input.size() / format.channel_count);
             MusicPlayerLibrary::FFTExecuter executor(format);
             const auto* inputBytes = reinterpret_cast<const std::uint8_t*>(input.data());
             const auto actual = executor.ResampleToFftFormat(inputBytes, frameCount);
             const auto expected = ReferenceSwrFftConversion(format, inputBytes, frameCount);
-            Require(actual == expected,
+            NATIVE_REQUIRE(actual == expected,
                     "surround FFT conversion differed from S16 stereo libswresample reference");
         };
 
@@ -1348,9 +1650,9 @@ namespace
             48'000);
         FFTExecuterProbe executor(format);
 
-        Require(executor.FrameCount() == 2'048,
+        NATIVE_REQUIRE(executor.FrameCount() == 2'048,
                 "legacy FFT frame size is no longer fixed at 2048");
-        Require(executor.SampleRate() == 48'000,
+        NATIVE_REQUIRE(executor.SampleRate() == 48'000,
                 "legacy FFT sample rate is no longer fixed at 48 kHz");
 
         constexpr std::array<std::size_t, 33> ExpectedBoundaries{
@@ -1360,7 +1662,7 @@ namespace
             554, 687, 853
         };
         const auto boundaries = executor.Boundaries();
-        Require(boundaries.size() == ExpectedBoundaries.size() &&
+        NATIVE_REQUIRE(boundaries.size() == ExpectedBoundaries.size() &&
                     std::equal(boundaries.begin(), boundaries.end(),
                                ExpectedBoundaries.begin()),
                 "legacy logarithmic FFT band boundaries changed");
@@ -1370,7 +1672,7 @@ namespace
         std::memcpy(
             fullScaleBytes.data(), fullScalePcm.data(), fullScaleBytes.size());
         const auto windowed = executor.Window(fullScaleBytes);
-        Require(windowed.size() == executor.FrameCount(),
+        NATIVE_REQUIRE(windowed.size() == executor.FrameCount(),
                 "legacy FFT window returned the wrong frame count");
         RequireClose(0.0f, static_cast<float>(windowed.front()), 1.0e-7f,
                      "legacy FFT window no longer begins at zero");
@@ -1413,62 +1715,53 @@ namespace
         const float loudPeak = analyzeBins(MidTone, 0.5f);
         const float highPeak = analyzeBins(HighTone, 0.1f);
         const float twoHighPeak = analyzeBins(TwoHighTones, 0.1f);
-        Require(ordinaryPeak > 0.68f && ordinaryPeak < 0.74f,
+        NATIVE_REQUIRE(ordinaryPeak > 0.68f && ordinaryPeak < 0.74f,
                 "legacy raw-magnitude dB scaling changed");
-        Require(loudPeak > 0.99f,
+        NATIVE_REQUIRE(loudPeak > 0.99f,
                 "legacy FFT no longer clamps a loud mid-frequency tone");
-        Require(highPeak < ordinaryPeak * 0.9f,
+        NATIVE_REQUIRE(highPeak < ordinaryPeak * 0.9f,
                 "legacy high-frequency attenuation changed");
-        Require(twoHighPeak < highPeak + 0.03f,
+        NATIVE_REQUIRE(twoHighPeak < highPeak + 0.03f,
                 "legacy FFT bands no longer use peak-bin aggregation");
     }
 
-    struct TestCase { const char* group; const char* name; void (*run)(); };
-    const TestCase Tests[] = {
-        {"eq", "zero dB identity", TestZeroDbIdentity},
-        {"eq", "1 kHz +6 dB", TestOneKilohertzPlusSixDb},
-        {"eq", "Nyquist and configured rates", TestNyquistAndConfiguredRates},
-        {"limiter", "configured look-ahead delay", TestLimiterDelayAtConfiguredRates},
-        {"limiter", "linked stereo ceiling", TestLimiterLinksStereoAtCeiling},
-        {"limiter", "no make-up gain", TestLimiterDoesNotApplyMakeupGain},
-        {"limiter", "linear release", TestLimiterReleaseIsLinear},
-        {"limiter", "silent tail drain", TestLimiterSilentInputDrainsTail},
-        {"limiter", "reset generation drops tail", TestLimiterResetGenerationDropsTail},
-        {"limiter", "chunk invariance", TestLimiterIsChunkInvariant},
-        {"fapo", "factory and registration", TestFapoFactoryAndRegistration},
-        {"fapo", "extensible formats advertised", TestFapoAdvertisesExtensibleFormats},
-        {"fapo", "in-place matches out-of-place", TestFapoInPlaceMatchesOutOfPlace},
-        {"fapo", "disabled valid pass-through", TestFapoDisabledValidPassThrough},
-        {"fapo", "unsafe process buffers rejected", TestFapoRejectsUnsafeProcessBuffers},
-        {"fapo", "silent input is never read", TestFapoSilentInputNeverReadsBuffer},
-        {"fapo", "invalid parameter blocks rejected", TestFapoRejectsInvalidParameterBlocks},
-        {"fapo", "GetParameters destination validated", TestFapoGetParametersValidatesDestination},
-        {"fapo", "invalid lock formats rejected", TestFapoLockRejectsInvalidFormats},
-        {"fapo", "silent input drains tail", TestFapoSilentInputDrainsTail},
-		{"format", "explicit mappings", TestAudioOutputFormatMappings},
-		{"format", "System device mapping", TestSystemAudioOutputFormatMapping},
-		{"format", "aresample accepts mappings", TestAresampleAcceptsOutputFormats},
-		{"fft", "fixed 48 kHz S16 stereo resampling", TestFftResamplesToLegacyFormat},
-		{"fft", "surround resampling", TestFftSurroundResampleMatchesSwresample},
-		{"fft", "legacy core behavior", TestFftLegacyCoreBehavior},
-        {"buffering", "CPU profiles favor normalized FIFO", TestAudioPipelineBufferingProfiles}
-    };
-}
+#define NATIVE_TEST_CASE(suite, name, function) \
+    TEST_CASE(name * doctest::test_suite(suite)) { function(); }
 
-int main(int argc, char** argv)
-{
-    const std::string_view selected = argc > 1 ? argv[1] : "all";
-    int failed = 0;
-    for (const auto& test : Tests)
-    {
-        if (selected != "all" && selected != test.group)
-            continue;
-        try { test.run(); std::cout << "PASS " << test.name << '\n'; }
-        catch (const std::exception& error)
-        {
-            ++failed;
-            std::cerr << "FAIL " << test.name << ": " << error.what() << '\n';
-        }
-    }
-    return failed == 0 ? 0 : 1;
+    NATIVE_TEST_CASE("eq", "zero dB identity", TestZeroDbIdentity)
+    NATIVE_TEST_CASE("eq", "1 kHz +6 dB", TestOneKilohertzPlusSixDb)
+    NATIVE_TEST_CASE("eq", "Nyquist and configured rates", TestNyquistAndConfiguredRates)
+    NATIVE_TEST_CASE("limiter", "configured look-ahead delay", TestLimiterDelayAtConfiguredRates)
+    NATIVE_TEST_CASE("limiter", "linked stereo ceiling", TestLimiterLinksStereoAtCeiling)
+    NATIVE_TEST_CASE("limiter", "no make-up gain", TestLimiterDoesNotApplyMakeupGain)
+    NATIVE_TEST_CASE("limiter", "linear release", TestLimiterReleaseIsLinear)
+    NATIVE_TEST_CASE("limiter", "silent tail drain", TestLimiterSilentInputDrainsTail)
+    NATIVE_TEST_CASE("limiter", "reset generation drops tail", TestLimiterResetGenerationDropsTail)
+    NATIVE_TEST_CASE("limiter", "chunk invariance", TestLimiterIsChunkInvariant)
+    NATIVE_TEST_CASE("fapo", "factory and registration", TestFapoFactoryAndRegistration)
+    NATIVE_TEST_CASE("fapo", "extensible formats advertised", TestFapoAdvertisesExtensibleFormats)
+    NATIVE_TEST_CASE("fapo", "in-place matches out-of-place", TestFapoInPlaceMatchesOutOfPlace)
+    NATIVE_TEST_CASE("fapo", "disabled valid pass-through", TestFapoDisabledValidPassThrough)
+    NATIVE_TEST_CASE("fapo", "unsafe process buffers rejected", TestFapoRejectsUnsafeProcessBuffers)
+    NATIVE_TEST_CASE("fapo", "silent input is never read", TestFapoSilentInputNeverReadsBuffer)
+    NATIVE_TEST_CASE("fapo", "invalid parameter blocks rejected", TestFapoRejectsInvalidParameterBlocks)
+    NATIVE_TEST_CASE("fapo", "GetParameters destination validated", TestFapoGetParametersValidatesDestination)
+    NATIVE_TEST_CASE("fapo", "invalid lock formats rejected", TestFapoLockRejectsInvalidFormats)
+    NATIVE_TEST_CASE("fapo", "silent input drains tail", TestFapoSilentInputDrainsTail)
+    NATIVE_TEST_CASE("format", "explicit mappings", TestAudioOutputFormatMappings)
+    NATIVE_TEST_CASE("format", "raw metadata mappings", TestRawAudioFormatInfoMappings)
+    NATIVE_TEST_CASE("format", "source bitrate calculation", TestAudioSourceBitrateCalculation)
+    NATIVE_TEST_CASE("format", "average bitrate quality flags", TestAverageAudioQualityClassification)
+    NATIVE_TEST_CASE("format", "explicit PCM24 mapping and frame bytes", TestExplicit24BitAudioOutputFormatMapping)
+    NATIVE_TEST_CASE("format", "System device mapping", TestSystemAudioOutputFormatMapping)
+    NATIVE_TEST_CASE("format", "System PCM24 mapping and frame bytes", TestSystem24BitPcmOutputFormatMapping)
+    NATIVE_TEST_CASE("format", "aresample accepts mappings", TestAresampleAcceptsOutputFormats)
+    NATIVE_TEST_CASE("fft", "fixed 48 kHz S16 stereo resampling", TestFftResamplesToLegacyFormat)
+    NATIVE_TEST_CASE("fft", "PCM24 FIFO and resampling frame bytes", Test24BitFifoAndFftFrameSizing)
+    NATIVE_TEST_CASE("fft", "surround resampling", TestFftSurroundResampleMatchesSwresample)
+    NATIVE_TEST_CASE("fft", "legacy core behavior", TestFftLegacyCoreBehavior)
+    NATIVE_TEST_CASE("buffering", "CPU profiles favor normalized FIFO", TestAudioPipelineBufferingProfiles)
+
+#undef NATIVE_TEST_CASE
+#undef NATIVE_REQUIRE
 }

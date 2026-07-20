@@ -5,6 +5,7 @@
 #include "Audio/AudioOutputFormat.h"
 
 #include <bit>
+#include <cmath>
 #include <cstring>
 #include <stdexcept>
 
@@ -104,6 +105,7 @@ namespace
 		result.SubFormat = IeeeFloatSubFormat;
 		return result;
 	}
+
 }
 
 MusicPlayerLibrary::AudioOutputFormat MusicPlayerLibrary::ResolveAudioOutputFormat(
@@ -163,40 +165,60 @@ MusicPlayerLibrary::AudioOutputFormat MusicPlayerLibrary::ResolveAudioOutputForm
 		const bool system_is_float = system_wfx.wFormatTag == FAUDIO_FORMAT_IEEE_FLOAT ||
 			(system_wfx.wFormatTag == FAUDIO_FORMAT_EXTENSIBLE &&
 				SameGuid(system_format.SubFormat, IeeeFloatSubFormat));
-		result.bit_depth = system_is_float || system_wfx.wBitsPerSample > 16
+		std::uint16_t system_valid_bits = system_wfx.wBitsPerSample;
+		if (system_wfx.wFormatTag == FAUDIO_FORMAT_EXTENSIBLE &&
+			SameGuid(system_format.SubFormat, PcmSubFormat) &&
+			system_format.Samples.wValidBitsPerSample > 0 &&
+			system_format.Samples.wValidBitsPerSample <= system_wfx.wBitsPerSample)
+		{
+			system_valid_bits = system_format.Samples.wValidBitsPerSample;
+		}
+		result.bit_depth = system_is_float
 			? AudioBitDepth::Bit32
-			: AudioBitDepth::Bit16;
+			: system_valid_bits <= 16
+				? AudioBitDepth::Bit16
+				: system_valid_bits <= 24
+					? AudioBitDepth::Bit24
+					: AudioBitDepth::Bit32;
 	}
 	else
 	{
 		result.bit_depth = requested.requested_bit_depth;
 	}
 
-	if (result.bit_depth != AudioBitDepth::Bit16 &&
-		result.bit_depth != AudioBitDepth::Bit32)
+	switch (result.bit_depth)
 	{
+	case AudioBitDepth::Bit16:
+		result.sample_format = AV_SAMPLE_FMT_S16; break;
+	case AudioBitDepth::Bit24:
+		// FFmpeg has no packed 24-bit sample format. Keep 24 significant bits in
+		// an S32 container so the FIFO, FAudio frame size, and FFT input agree.
+		result.sample_format = AV_SAMPLE_FMT_S32; break;
+	case AudioBitDepth::Bit32:
+		result.sample_format = AV_SAMPLE_FMT_FLT; break;
+	default:
 		throw std::invalid_argument("Unsupported audio bit depth");
 	}
 
 	const bool use_float = result.bit_depth == AudioBitDepth::Bit32;
-	result.sample_format = use_float ? AV_SAMPLE_FMT_FLT : AV_SAMPLE_FMT_S16;
-	const std::uint16_t bits_per_sample = static_cast<std::uint16_t>(result.bit_depth);
+	const std::uint16_t container_bits = result.bit_depth == AudioBitDepth::Bit24
+		? 32
+		: static_cast<std::uint16_t>(result.bit_depth);
+	const std::uint16_t valid_bits = static_cast<std::uint16_t>(result.bit_depth);
 	FAudioWaveFormatExtensible& wave_format = result.wave_format;
 	wave_format = {};
 	wave_format.Format.wFormatTag = FAUDIO_FORMAT_EXTENSIBLE;
 	wave_format.Format.nChannels = result.channel_count;
 	wave_format.Format.nSamplesPerSec = result.sample_rate;
-	wave_format.Format.wBitsPerSample = bits_per_sample;
+	wave_format.Format.wBitsPerSample = container_bits;
 	wave_format.Format.nBlockAlign = static_cast<std::uint16_t>(
-		result.channel_count * bits_per_sample / 8);
+		result.channel_count * container_bits / 8);
 	wave_format.Format.nAvgBytesPerSec =
 		wave_format.Format.nSamplesPerSec * wave_format.Format.nBlockAlign;
 	wave_format.Format.cbSize = sizeof(FAudioWaveFormatExtensible) - sizeof(FAudioWaveFormatEx);
-	wave_format.Samples.wValidBitsPerSample = bits_per_sample;
+	wave_format.Samples.wValidBitsPerSample = valid_bits;
 	wave_format.dwChannelMask = result.channel_mask;
-	wave_format.SubFormat = use_float
-		? IeeeFloatSubFormat
-		: PcmSubFormat;
+	wave_format.SubFormat = use_float ? IeeeFloatSubFormat : PcmSubFormat;
 	return result;
 }
 
@@ -213,4 +235,117 @@ MusicPlayerLibrary::AudioOutputFormat MusicPlayerLibrary::ResolveAudioOutputForm
 		FAudio_Release(query_engine);
 	}
 	return ResolveAudioOutputFormat(requested, system_format);
+}
+
+int MusicPlayerLibrary::GetAudioChannelTypeId(
+	const int channel_count,
+	const std::uint64_t channel_mask) noexcept
+{
+	switch (channel_count)
+	{
+	case 1:
+		if (channel_mask == 0 || channel_mask == SPEAKER_MONO)
+			return static_cast<int>(AudioChannelMode::Mono);
+		break;
+	case 2:
+		if (channel_mask == 0 || channel_mask == SPEAKER_STEREO)
+			return static_cast<int>(AudioChannelMode::Stereo);
+		break;
+	case 6:
+		if (channel_mask == SPEAKER_5POINT1 ||
+			channel_mask == SPEAKER_5POINT1_SURROUND)
+		{
+			return static_cast<int>(AudioChannelMode::Surround51);
+		}
+		break;
+	case 8:
+		if (channel_mask == SPEAKER_7POINT1 ||
+			channel_mask == SPEAKER_7POINT1_SURROUND)
+		{
+			return static_cast<int>(AudioChannelMode::Surround71);
+		}
+		break;
+	default:
+		break;
+	}
+	return static_cast<int>(AudioChannelMode::Unknown);
+}
+
+MusicPlayerLibrary::AudioFormatInfo MusicPlayerLibrary::GetAudioFormatInfo(
+	const AudioOutputFormat& format) noexcept
+{
+	return {
+		GetAudioChannelTypeId(format.channel_count, format.channel_mask),
+		format.sample_rate,
+		static_cast<int>(format.bit_depth)
+	};
+}
+
+double MusicPlayerLibrary::CalculateAudioBitrateKBytesPerSecond(
+	const std::uint64_t encoded_bytes,
+	const double decoded_duration_seconds) noexcept
+{
+	if (encoded_bytes == 0 || decoded_duration_seconds <= 0.0 ||
+		!std::isfinite(decoded_duration_seconds))
+	{
+		return 0.0;
+	}
+	return static_cast<double>(encoded_bytes) /
+		decoded_duration_seconds / 1000.0;
+}
+
+void MusicPlayerLibrary::AudioBitrateTracker::Reset() noexcept
+{
+	encoded_bytes_ = 0;
+	decoded_duration_seconds_ = 0.0;
+	kbytes_per_second_.store(0.0, std::memory_order_relaxed);
+}
+
+void MusicPlayerLibrary::AudioBitrateTracker::ObserveEncodedBytes(
+	const std::uint64_t encoded_bytes) noexcept
+{
+	encoded_bytes_ += encoded_bytes;
+}
+
+void MusicPlayerLibrary::AudioBitrateTracker::ObserveDecodedSamples(
+	const int sample_count,
+	const int sample_rate) noexcept
+{
+	if (sample_count <= 0 || sample_rate <= 0)
+		return;
+
+	decoded_duration_seconds_ += static_cast<double>(sample_count) / sample_rate;
+	kbytes_per_second_.store(
+		CalculateAudioBitrateKBytesPerSecond(
+			encoded_bytes_, decoded_duration_seconds_),
+		std::memory_order_relaxed);
+}
+
+double MusicPlayerLibrary::AudioBitrateTracker::GetKBytesPerSecond() const noexcept
+{
+	return kbytes_per_second_.load(std::memory_order_relaxed);
+}
+
+double MusicPlayerLibrary::CalculateAverageAudioBitrateBitsPerSecond(
+	const std::uint64_t stream_length_bytes,
+	const double duration_seconds) noexcept
+{
+	if (stream_length_bytes == 0 || duration_seconds <= 0.0 ||
+		!std::isfinite(duration_seconds))
+	{
+		return 0.0;
+	}
+	return static_cast<double>(stream_length_bytes) * 8.0 / duration_seconds;
+}
+
+bool MusicPlayerLibrary::IsLoselessAudio(
+	const double average_bitrate_bits_per_second) noexcept
+{
+	return std::isfinite(average_bitrate_bits_per_second) &&
+		average_bitrate_bits_per_second > 800000.0;
+}
+
+bool MusicPlayerLibrary::IsHiResAudio(const int source_sample_rate) noexcept
+{
+	return source_sample_rate > 48000;
 }
