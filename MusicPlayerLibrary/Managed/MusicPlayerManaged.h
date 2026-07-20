@@ -22,7 +22,7 @@ namespace MusicPlayerLibrary
 	public ref class MusicPlayerManaged:
 		System::ICloneable, System::IDisposable
 	{
-		MusicPlayer* native_handle = nullptr;
+		AudioFile* native_handle = nullptr;
 		MusicPlayerEventBridge* event_bridge = nullptr;
 
 	public:
@@ -48,8 +48,13 @@ namespace MusicPlayerLibrary
 		public:
 			int EventType;
 			Object^ Payload;
+			Object^ Callback;
 		};
+		System::Collections::Concurrent::ConcurrentQueue<ProcessEventState^>^
+			event_queue = gcnew System::Collections::Concurrent::ConcurrentQueue<ProcessEventState^>();
+		int event_dispatch_scheduled = 0;
 		void ProcessEventCore(Object^ state);
+		void DrainEventQueue(Object^ state);
 		void release_native_resources();
 
 		/*
@@ -67,10 +72,36 @@ namespace MusicPlayerLibrary
 		bool IsPlaying();
 		void OpenFile(const System::String^ fileName);
 		void OpenFile(const System::String^ fileName, bool skipAlbumArtLoading);
+		void CloseFile();
 		double GetMusicTimeLength();
 		double GetCurrentMusicPosition();
 		System::String^ GetSongTitle();
 		System::String^ GetSongArtist();
+		System::String^ GetAudioSourceFormat();
+		System::String^ GetDeviceOutputFormat();
+		System::String^ GetSharedDeviceOutputFormat();
+		static void GetSystemDefaultOutputFormat(
+			[System::Runtime::InteropServices::OutAttribute] int% channel_type_id,
+			[System::Runtime::InteropServices::OutAttribute] int% sample_rate,
+			[System::Runtime::InteropServices::OutAttribute] int% bit_depth);
+		static System::String^ FormatAudioChannelType(int channel_type_id);
+		static System::String^ FormatAudioSampleRate(int sample_rate);
+		static System::String^ FormatAudioBitDepth(int bit_depth);
+		static System::String^ FormatAudioFormat(
+			int channel_type_id,
+			int sample_rate,
+			int bit_depth,
+			int bit_rate);
+		
+		static System::String^ FormatAudioFormat(
+			int channel_type_id,
+			int sample_rate,
+			int bit_depth);
+		double GetAudioSourceBitrate();
+		int GetAverageAudioBitrate();
+		bool IsLoselessAudio();
+		bool IsHiResAudio();
+		bool IsBitPerfect();
 		void Start();
 		void Pause();
 		void Stop();

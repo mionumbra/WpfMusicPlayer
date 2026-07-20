@@ -149,6 +149,15 @@
     <ClCompile Include="..\MusicPlayerLibrary\Audio\DSP\FapoEqualizer.cpp">
       <Link>FapoEqualizer.cpp</Link>
     </ClCompile>
+    <ClCompile Include="..\MusicPlayerLibrary\Audio\Pipeline\Device\FAudioOutputDevice.cpp">
+      <Link>FAudioOutputDevice.cpp</Link>
+    </ClCompile>
+    <ClCompile Include="..\MusicPlayerLibrary\Audio\Pipeline\Sink\FAudioSink.cpp">
+      <Link>FAudioSink.cpp</Link>
+    </ClCompile>
+    <ClCompile Include="..\MusicPlayerLibrary\Audio\Pipeline\Observer\FFTAudioObserve.cpp">
+      <Link>FFTAudioObserve.cpp</Link>
+    </ClCompile>
     <ClCompile Include="NativeTests.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

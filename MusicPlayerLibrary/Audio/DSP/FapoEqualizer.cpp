@@ -7,6 +7,8 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -54,6 +56,9 @@ namespace MusicPlayerLibrary::AudioDsp
             LimiterConfig limiter{};
             std::uint32_t channel_count = 0;
             std::uint32_t max_frame_count = 0;
+			bool processing_enabled = false;
+            std::atomic_bool tail_active{false};
+            std::atomic<std::uint64_t> process_sequence{0};
         };
 
         static_assert(offsetof(EqualizerFapo, base) == 0);
@@ -69,7 +74,9 @@ namespace MusicPlayerLibrary::AudioDsp
             const EqualizerDspSnapshot& snapshot) noexcept
         {
             return snapshot.abi_version == EqualizerSnapshotAbiVersion &&
-                snapshot.byte_size == sizeof(EqualizerDspSnapshot);
+                snapshot.byte_size == sizeof(EqualizerDspSnapshot) &&
+                std::isfinite(snapshot.pre_gain) &&
+                snapshot.pre_gain >= 0.0f && snapshot.pre_gain <= 4.0f;
         }
 
         [[nodiscard]] bool GuidEquals(
@@ -156,7 +163,11 @@ namespace MusicPlayerLibrary::AudioDsp
         void FAPOCALL ResetCallback(void* fapo) noexcept
         {
             if (fapo != nullptr)
-                FromFapo(fapo)->dsp.Reset();
+            {
+                auto* equalizer = FromFapo(fapo);
+                equalizer->dsp.Reset();
+                equalizer->tail_active.store(false, std::memory_order_release);
+            }
         }
 
         std::uint32_t FAPOCALL LockForProcessCallback(
@@ -224,6 +235,8 @@ namespace MusicPlayerLibrary::AudioDsp
 
             equalizer->channel_count = inputParameters[0].pFormat->nChannels;
             equalizer->max_frame_count = inputParameters[0].MaxFrameCount;
+			equalizer->processing_enabled = false;
+            equalizer->tail_active.store(false, std::memory_order_release);
             return FAUDIO_OK;
         }
 
@@ -321,9 +334,14 @@ namespace MusicPlayerLibrary::AudioDsp
                     }
                     output.BufferFlags = FAPO_BUFFER_VALID;
                 }
+				if (equalizer->processing_enabled)
+					equalizer->dsp.Reset();
+				equalizer->processing_enabled = false;
+                equalizer->tail_active.store(false, std::memory_order_release);
                 return;
             }
 
+			equalizer->processing_enabled = true;
             const auto* snapshot = reinterpret_cast<const EqualizerDspSnapshot*>(
                 FAPOBase_BeginProcess(&equalizer->base));
             bool outputActive = false;
@@ -336,12 +354,15 @@ namespace MusicPlayerLibrary::AudioDsp
                     input.ValidFrameCount,
                     inputSilent);
             }
+            equalizer->tail_active.store(
+                equalizer->dsp.HasTail(), std::memory_order_release);
             if (!outputActive && outputSamples != nullptr)
                 std::fill_n(outputSamples, sampleCount, 0.0f);
             output.BufferFlags = outputActive
                 ? FAPO_BUFFER_VALID
                 : FAPO_BUFFER_SILENT;
             FAPOBase_EndProcess(&equalizer->base);
+            equalizer->process_sequence.fetch_add(1, std::memory_order_release);
         }
     }
 
@@ -392,5 +413,17 @@ namespace MusicPlayerLibrary::AudioDsp
         {
             return FAUDIO_E_FAIL;
         }
+    }
+
+    bool EqualizerFapoHasTail(FAPO* effect) noexcept
+    {
+        return effect != nullptr && FromFapo(effect)->tail_active.load(
+            std::memory_order_acquire);
+    }
+
+    std::uint64_t EqualizerFapoProcessSequence(FAPO* effect) noexcept
+    {
+        return effect == nullptr ? 0 : FromFapo(effect)->process_sequence.load(
+            std::memory_order_acquire);
     }
 }

@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: MIT
 
+using System.Collections.ObjectModel;
 using System.Runtime.CompilerServices;
 using System.Windows;
 using CommunityToolkit.Mvvm.ComponentModel;
+using CommunityToolkit.Mvvm.Input;
 using WpfMusicPlayer.Helpers;
 using WpfMusicPlayer.Services.Abstractions;
 using static WpfMusicPlayer.Models.ConfigData;
@@ -19,16 +21,22 @@ public sealed record BitDepthOption(AudioSettings.BitDepthType Value, string Dis
     public override string ToString() => DisplayName;
 }
 
-public class SettingsViewModel : ObservableObject
+public partial class SettingsViewModel : ObservableObject
 {
+    public const string AudioOutputSettingsChangeName = "AudioOutputSettings";
+
     private readonly IConfigProvider _configProvider;
+    private readonly IAudioOutputFormatProvider _audioOutputFormatProvider;
     private bool _isLoading;
 
     public event EventHandler<SettingChangedEventArgs>? SettingChanged;
 
-    public SettingsViewModel(IConfigProvider configProvider)
+    public SettingsViewModel(
+        IConfigProvider configProvider,
+        IAudioOutputFormatProvider audioOutputFormatProvider)
     {
         _configProvider = configProvider;
+        _audioOutputFormatProvider = audioOutputFormatProvider;
         LoadFromConfig();
     }
 
@@ -143,32 +151,93 @@ public class SettingsViewModel : ObservableObject
         Enum.GetValues<UISettings.BackgroundMode>();
 
     public AudioSettings.ChannelType[] ChannelOptions { get; } =
-        Enum.GetValues<AudioSettings.ChannelType>();
+        Enum.GetValues<AudioSettings.ChannelType>()
+            .Where(option => option != AudioSettings.ChannelType.System)
+            .ToArray();
 
     public BitDepthOption[] BitDepthOptions { get; } =
     [
-        new(AudioSettings.BitDepthType.System, "System"),
         new(AudioSettings.BitDepthType.Bit16, "16bit"),
+        new(AudioSettings.BitDepthType.Bit24, "24bit"),
         new(AudioSettings.BitDepthType.Bit32, "32bit")
     ];
 
-    public int[] SampleRateOptions { get; } = [8000, 11025, 16000, 22050, 44100, 48000, 88200, 96000, 192000];
+    public ObservableCollection<int> SampleRateOptions { get; } =
+        [8000, 11025, 16000, 22050, 44100, 48000, 88200, 96000, 192000];
+
+    [RelayCommand]
+    private void ApplySystemOutputSettings()
+    {
+        WpfMusicPlayer.Models.SystemAudioOutputFormat systemFormat;
+        try
+        {
+            systemFormat = _audioOutputFormatProvider.GetSystemDefaultOutputFormat();
+        }
+        catch (Exception exception)
+        {
+            WpfMessageBox.Show(
+                $"无法读取系统默认输出格式。\n{exception.Message}",
+                "应用系统输出设置",
+                WpfMessageBoxIcon.Error);
+            return;
+        }
+
+        if (SelectedChannel == systemFormat.Channel &&
+            SelectedBitDepth == systemFormat.BitDepth &&
+            SelectedSampleRate == systemFormat.SampleRate)
+        {
+            return;
+        }
+
+        _isLoading = true;
+        try
+        {
+            EnsureSampleRateOption(systemFormat.SampleRate);
+            SelectedChannel = systemFormat.Channel;
+            SelectedBitDepth = systemFormat.BitDepth;
+            SelectedSampleRate = systemFormat.SampleRate;
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+
+        ApplyToConfig(AudioOutputSettingsChangeName);
+    }
 
     private void LoadFromConfig()
     {
         _isLoading = true;
-        ref var config = ref _configProvider.GetConfig();
-        SelectedTheme = config.UI.Theme;
-        SelectedBackground = config.UI.Background;
-        SelectedChannel = config.Audio.Channel;
-        SelectedBitDepth = config.Audio.BitDepth;
-        SelectedSampleRate = config.Audio.SampleRate;
-        SelectedVolume = config.Audio.Volume;
-        SelectedDesktopLyricEnabled = config.DesktopLyric.IsDesktopLyricEnabled;
-        SelectedDesktopLyricFontSize = config.DesktopLyric.DesktopLyricFontSize;
-        SelectedDesktopLyricIsAuxInfoCustomizable = config.DesktopLyric.IsDesktopLyricAuxCustomizable;
-        SelectedDesktopLyricAuxFontSize = config.DesktopLyric.DesktopLyricAuxFontSize;
-        _isLoading = false;
+        try
+        {
+            ref var config = ref _configProvider.GetConfig();
+            EnsureSampleRateOption(config.Audio.SampleRate);
+            SelectedTheme = config.UI.Theme;
+            SelectedBackground = config.UI.Background;
+            SelectedChannel = config.Audio.Channel;
+            SelectedBitDepth = config.Audio.BitDepth;
+            SelectedSampleRate = config.Audio.SampleRate;
+            SelectedVolume = config.Audio.Volume;
+            SelectedDesktopLyricEnabled = config.DesktopLyric.IsDesktopLyricEnabled;
+            SelectedDesktopLyricFontSize = config.DesktopLyric.DesktopLyricFontSize;
+            SelectedDesktopLyricIsAuxInfoCustomizable = config.DesktopLyric.IsDesktopLyricAuxCustomizable;
+            SelectedDesktopLyricAuxFontSize = config.DesktopLyric.DesktopLyricAuxFontSize;
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+
+    private void EnsureSampleRateOption(int sampleRate)
+    {
+        if (sampleRate <= 0 || SampleRateOptions.Contains(sampleRate))
+            return;
+
+        var index = 0;
+        while (index < SampleRateOptions.Count && SampleRateOptions[index] < sampleRate)
+            index++;
+        SampleRateOptions.Insert(index, sampleRate);
     }
 
     private void ApplyToConfig([CallerMemberName] string? settingName = null)

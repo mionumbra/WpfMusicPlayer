@@ -33,16 +33,21 @@ namespace MusicPlayerLibrary
 		static constexpr size_t FFT_SIZE = 2048;     // fixed fft size
 		static constexpr size_t RING_BUFFER_MAX_SIZE = FFT_SIZE * BYTES_PER_FRAME;
 		static constexpr int FFT_FRAME_INTERVAL_MS = 16;
+		static constexpr size_t FFT_HOP_SIZE =
+			FFT_SAMPLE_RATE * FFT_FRAME_INTERVAL_MS / 1000;
+		static constexpr size_t MAX_SPECTRUM_QUEUE_SIZE = 128;
+		static constexpr size_t RING_BUFFER_CAPACITY =
+			(FFT_SIZE + FFT_HOP_SIZE * MAX_SPECTRUM_QUEUE_SIZE) *
+			BYTES_PER_FRAME;
 	public:
 		void AddSamplesToRingBuffer(
 			const uint8_t* interleaved_samples,
-			int frame_count);
+			int frame_count,
+			double pts_seconds);
 		[[nodiscard]] std::vector<uint8_t> ResampleToFftFormat(
 			const uint8_t* interleaved_samples,
 			int frame_count);
 		[[nodiscard]] int GetRingBufferSize() const;
-		// XAudio2 output latency compensation.
-		void SetOutputDelayMilliseconds(int milliseconds);
 	protected:
 		// apply window to ring buffer, convert to vector
 		void ApplyWindow(const std::vector<uint8_t>& input, std::vector<double>& output);
@@ -53,6 +58,10 @@ namespace MusicPlayerLibrary
 	public:
 		void ExecuteAudioFFT();
 		int CopyAudioFFTData(float* destination, int destination_length);
+		int CopyAudioFFTDataAt(
+			float* destination,
+			int destination_length,
+			double presentation_pts_seconds);
 		void ResetBuffers();
 		void StartFFTThread();
 		void StopFFTThread();
@@ -73,11 +82,20 @@ namespace MusicPlayerLibrary
 		bool ring_buffer_has_unprocessed_data = false;
 		std::thread fft_worker_thread;
 		std::atomic<bool> fft_thread_running{ false };
+		std::atomic<std::uint64_t> timeline_epoch{0};
 
-		// delay queue for latency compensation
-		std::deque<std::vector<float>> spectrum_delay_queue;
-		std::atomic<int> delay_frames{0};
-		static constexpr size_t MAX_DELAY_QUEUE_SIZE = 128;
+		struct TimestampedSpectrum
+		{
+			double end_pts_seconds = 0.0;
+			std::vector<float> bands;
+		};
+		// Spectra use the normalized media timeline. Queue depth is deliberately
+		// not part of synchronization because Source, FIFO and Sink are decoupled.
+		std::deque<TimestampedSpectrum> spectrum_timeline;
+		double ring_buffer_start_pts_seconds = 0.0;
+		double next_input_pts_seconds = 0.0;
+		bool ring_timeline_initialized = false;
+		int input_sample_rate = 0;
 
 		// avoid duplicate allocation
 		kiss_fft_cfg fft_cfg = nullptr;

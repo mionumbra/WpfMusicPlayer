@@ -26,6 +26,7 @@ namespace WpfMusicPlayer.Models
             {
                 [XmlEnum("system")] System = 0,
                 [XmlEnum("16bit")] Bit16 = 16,
+                [XmlEnum("24bit")] Bit24 = 24,
                 [XmlEnum("32bit")] Bit32 = 32
             }
 

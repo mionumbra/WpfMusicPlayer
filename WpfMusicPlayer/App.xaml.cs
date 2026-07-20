@@ -40,6 +40,7 @@ public partial class App : Application
                 {
                     services.AddSingleton<NativeLoggerBridge>();
 
+                    services.AddSingleton<IAudioOutputFormatProvider, AudioOutputFormatProvider>();
                     services.AddSingleton<IConfigProvider, ConfigProvider>();
                     services.AddSingleton<ISmtcService, SmtcService>();
                     services.AddSingleton<ISongDatabaseService, SongDatabaseService>();
